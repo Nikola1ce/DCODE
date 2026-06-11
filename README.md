@@ -24,7 +24,8 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - [环境要求](#环境要求)
 - [快速开始（5 分钟）](#快速开始5-分钟)
 - [安装](#安装)
-  - [从 GitHub 克隆安装（推荐）](#从-github-克隆安装推荐)
+  - [免命令安装（Release 安装包，推荐）](#免命令安装release-安装包推荐)
+  - [从 GitHub 克隆安装](#从-github-克隆安装)
   - [Windows 详细步骤](#windows-详细步骤)
   - [macOS / Linux 详细步骤](#macos--linux-详细步骤)
   - [卸载](#卸载)
@@ -78,7 +79,9 @@ npm -v
 
 ## 快速开始（5 分钟）
 
-按顺序完成以下五步即可上手：
+**不想敲命令？** 直接看 [免命令安装（Release 安装包）](#免命令安装release-安装包推荐)：下载 ZIP → 解压 → 双击 `启动 DCODE.bat`。
+
+开发者可按顺序完成以下五步：
 
 ```bash
 # 1. 克隆仓库
@@ -109,7 +112,47 @@ dcode
 
 ## 安装
 
-### 从 GitHub 克隆安装（推荐）
+### 免命令安装（Release 安装包，推荐）
+
+> 无需 `git clone`、`npm install`、`npm run build`，下载解压后**双击即可运行**。
+
+**1. 下载**
+
+打开 [GitHub Releases](https://github.com/Nikola1ce/DCODE/releases/latest)，下载 **`DCODE-vX.X.X-portable.zip`**。
+
+**2. 安装 Node.js（仅首次，一次性）**
+
+若尚未安装 Node.js，前往 [https://nodejs.org](https://nodejs.org) 下载 **LTS** 安装包，安装时勾选 **Add to PATH**。
+
+**3. 解压并运行**
+
+将 ZIP 解压到任意目录（例如 `D:\Tools\DCODE`），然后：
+
+| 方式 | 操作 |
+| --- | --- |
+| **双击即用** | 双击 **`启动 DCODE.bat`**，按提示输入项目文件夹路径（回车则使用桌面） |
+| **安装到本机** | 双击 **`安装到本机.bat`**（只需一次），重开终端后在任意项目目录输入 `dcode` |
+| **macOS / Linux** | 终端执行 `chmod +x dcode.sh && ./dcode.sh` |
+
+解压后的目录结构示例：
+
+```
+DCODE-v1.0.0/
+├── dist/cli.js          # 已预构建，无需 npm
+├── 启动 DCODE.bat       # Windows 双击启动
+├── 安装到本机.bat       # Windows 一键注册 dcode 命令
+├── dcode.bat / dcode.sh # 命令行启动器
+├── 安装说明.txt
+└── LICENSE
+```
+
+首次运行后，可在同目录编辑 **`工作目录.txt`** 修改默认项目路径；API Key 配置见下文 [配置 API Key](#配置-api-key)。
+
+---
+
+### 从 GitHub 克隆安装
+
+适合开发者或需要修改源码的用户：
 
 ```bash
 git clone https://github.com/Nikola1ce/DCODE.git
@@ -122,7 +165,7 @@ dcode --version
 
 应输出：`DCODE v1.0.0（制作人：Moriarty_Dox）`
 
-> **说明**：仓库不包含 `dist/`（已在 `.gitignore` 中忽略），克隆后必须先执行 `npm run build` 生成 `dist/cli.js`，全局命令才能正常运行。
+> **说明**：源码仓库不包含 `dist/`（已在 `.gitignore` 中忽略），克隆后必须先执行 `npm run build`。若不想构建，请使用上方 **Release 安装包**。
 
 也可以不克隆，直接指定 GitHub 路径安装（同样会先构建）：
 
@@ -463,6 +506,10 @@ dcode --plan
 - 检查 Key 是否以 `sk-` 开头、无多余空格
 - 环境变量名必须为 `DEEPSEEK_API_KEY`
 - 在界面输入 `/login` 重新配置，或编辑 `~/.dcode/config.json`
+
+### 不想用命令行怎么安装？
+
+请使用 [Release 安装包](#免命令安装release-安装包推荐)：在 [Releases 页面](https://github.com/Nikola1ce/DCODE/releases) 下载 ZIP，解压后双击 **`启动 DCODE.bat`** 即可（仍需先安装 Node.js）。
 
 ### 克隆后运行 `dcode` 报错找不到 `dist/cli.js`
 

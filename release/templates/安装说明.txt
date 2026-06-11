@@ -1,0 +1,33 @@
+DCODE 免命令安装包
+==================
+
+制作人：Moriarty_Dox
+项目：https://github.com/Nikola1ce/DCODE
+
+【环境要求】
+  Node.js 18 或更高版本（仅安装一次）
+  下载：https://nodejs.org （选 LTS，安装时勾选 Add to PATH）
+
+【方式一：双击即用（推荐新手）】
+  1. 解压本 ZIP 到任意文件夹（例如 D:\Tools\DCODE）
+  2. 双击「启动 DCODE.bat」
+  3. 首次运行按提示输入你的项目文件夹路径（或直接回车使用桌面）
+  4. 之后可在本目录编辑「工作目录.txt」修改默认项目路径
+
+【方式二：安装到本机（推荐常用）】
+  1. 双击「安装到本机.bat」（只需运行一次）
+  2. 关闭并重新打开终端
+  3. 进入任意项目文件夹，输入：dcode
+  4. 或在开始菜单搜索「DCODE」
+
+【配置 API Key】
+  首次运行 dcode 后，界面会引导输入 DeepSeek API Key。
+  或在 https://platform.deepseek.com 创建 Key 后，在程序内输入 /login。
+
+【macOS / Linux】
+  解压后在终端执行：chmod +x dcode.sh && ./dcode.sh
+
+【卸载】
+  删除解压文件夹；若曾运行「安装到本机.bat」，另删：
+  %LOCALAPPDATA%\DCODE
+  并从系统环境变量 PATH 中移除对应 bin 目录。
