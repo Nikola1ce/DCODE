@@ -34,6 +34,7 @@ import { runHeadless } from './headless.js'
 import { initMcp, shutdownMcp } from './mcp/client.js'
 import { initHooks, shutdownHooks, getHookManager } from './core/hooks.js'
 import { ensureBuiltinSkills } from './core/skills.js'
+import { getCheckpointExitHint } from './core/checkpoint.js'
 import { App } from './ui/App.js'
 import { messagesToItems } from './ui/messagesToItems.js'
 
@@ -290,6 +291,7 @@ async function main(): Promise<void> {
     })
     await shutdownHooks(cwd, agent.getSessionId())
     await shutdownMcp()
+    printCheckpointExitHint(cwd)
     process.exit(code)
   }
 
@@ -338,6 +340,7 @@ async function main(): Promise<void> {
   await app.waitUntilExit()
   await shutdownHooks(cwd, agent.getSessionId())
   await shutdownMcp()
+  printCheckpointExitHint(cwd)
 }
 
 /** 是否已注册 MCP 退出清理（避免重复绑定）。 */
@@ -392,6 +395,15 @@ async function triggerSessionStartHooks(
   const mgr = getHookManager()
   if (!mgr) return
   await mgr.runSessionStart({ cwd, sessionId })
+}
+
+/**
+ * 退出时若有未清理检查点，向 stderr 打印提示。
+ * @param cwd 工作目录。
+ */
+function printCheckpointExitHint(cwd: string): void {
+  const hint = getCheckpointExitHint(cwd)
+  if (hint) process.stderr.write(hint + '\n')
 }
 
 /**

@@ -4,4 +4,5 @@ release/out/
 *.log
 .DS_Store
 .dcode-local/
+.dcode/checkpoints/
 docs

@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import { buildDiffPreview } from './diff.js'
 import { resolveWithinCwd, toDisplayPath } from './util.js'
@@ -68,6 +69,9 @@ export const writeFileTool: ToolDefinition = {
     // 确保父目录存在。
     const dir = dirname(abs)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
+    // 写入前创建检查点，供 /undo 回退。
+    saveCheckpointBeforeWrite(ctx.cwd, abs, 'write_file')
 
     writeFileSync(abs, input.content, 'utf8')
     const lineCount = input.content.split('\n').length

@@ -17,6 +17,12 @@ import {
   renderSkillList,
   getProjectSkillsDir,
 } from '../core/skills.js'
+import {
+  clearCheckpoints,
+  renderCheckpointList,
+  undoCheckpoints,
+  renderUndoResult,
+} from '../core/checkpoint.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -305,6 +311,36 @@ export const COMMANDS: SlashCommand[] = [
       // 默认：按名称加载技能。
       const result = ctx.agent.loadSkill(sub)
       return { message: result.message }
+    },
+  },
+  {
+    name: 'checkpoints',
+    description: '查看文件检查点列表（write/edit 自动备份）',
+    aliases: ['cp-list'],
+    run: (ctx) => {
+      const sub = ctx.args.trim().toLowerCase()
+      if (sub === 'clear') {
+        const n = clearCheckpoints(ctx.agent.cwd)
+        return { message: n > 0 ? `已清理 ${n} 个检查点及备份文件。` : '没有可清理的检查点。' }
+      }
+      return { message: renderCheckpointList(ctx.agent.cwd) }
+    },
+  },
+  {
+    name: 'undo',
+    description: '回退最近 N 个文件检查点（默认 1）',
+    run: (ctx) => {
+      const arg = ctx.args.trim()
+      if (arg.toLowerCase() === 'clear') {
+        const n = clearCheckpoints(ctx.agent.cwd)
+        return { message: n > 0 ? `已清理 ${n} 个检查点及备份文件。` : '没有可清理的检查点。' }
+      }
+      const n = arg ? parseInt(arg, 10) : 1
+      if (!Number.isFinite(n) || n < 1) {
+        return { message: '用法：/undo [N]（默认 1）\n      /undo clear 或 /checkpoints clear 清空备份' }
+      }
+      const result = undoCheckpoints(ctx.agent.cwd, n)
+      return { message: renderUndoResult(result) }
     },
   },
   {

@@ -5,6 +5,7 @@
 // 制作人：Moriarty_Dox
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import { buildDiffPreview, countDiff } from './diff.js'
 import { resolveWithinCwd, toDisplayPath } from './util.js'
@@ -104,6 +105,10 @@ export const editFileTool: ToolDefinition = {
     }
 
     const newContent = applyEdit(oldContent, input)
+
+    // 写入前创建检查点，供 /undo 回退。
+    saveCheckpointBeforeWrite(ctx.cwd, abs, 'edit_file')
+
     writeFileSync(abs, newContent, 'utf8')
 
     const { added, removed } = countDiff(oldContent, newContent)

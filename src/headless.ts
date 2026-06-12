@@ -4,6 +4,7 @@
 // 制作人：Moriarty_Dox
 
 import type { Agent } from './core/agent.js'
+import { getCheckpointExitHint } from './core/checkpoint.js'
 import type { PermissionDecision, PermissionRequest } from './core/types.js'
 
 // 无头执行选项。
@@ -62,6 +63,8 @@ export async function runHeadless(
     if (sessionId) {
       process.stderr.write(`[会话已保存] ${sessionId}（可用 dcode -c 继续）\n`)
     }
+    const cpHint = getCheckpointExitHint(agent.cwd)
+    if (cpHint) process.stderr.write(cpHint + '\n')
     return 0
   } catch (e: any) {
     process.stderr.write(`\n错误：${e?.message ?? String(e)}\n`)
