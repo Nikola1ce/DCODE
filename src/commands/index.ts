@@ -23,6 +23,11 @@ import {
   undoCheckpoints,
   renderUndoResult,
 } from '../core/checkpoint.js'
+import {
+  buildCommitAgentPrompt,
+  buildPrAgentPrompt,
+  renderGitStatusReport,
+} from '../core/gitUtils.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -341,6 +346,55 @@ export const COMMANDS: SlashCommand[] = [
       }
       const result = undoCheckpoints(ctx.agent.cwd, n)
       return { message: renderUndoResult(result) }
+    },
+  },
+  {
+    name: 'commit',
+    description: '根据 staged 变更生成 Conventional Commits 并提交（需确认）',
+    run: (ctx) => {
+      const sub = ctx.args.trim().toLowerCase()
+      if (sub === 'status') {
+        return { message: renderGitStatusReport(ctx.agent.cwd) }
+      }
+      const built = buildCommitAgentPrompt(ctx.agent.cwd)
+      if (!built.ok) {
+        return { message: built.error }
+      }
+      return {
+        message: `开始分析已暂存变更并生成 commit message…\n\n${built.summary}`,
+        submitPrompt: built.prompt,
+      }
+    },
+  },
+  {
+    name: 'pr',
+    description: '生成 PR 标题与描述（/pr create 可尝试 gh pr create）',
+    run: (ctx) => {
+      const raw = ctx.args.trim()
+      if (!raw || raw.toLowerCase() === 'status') {
+        return { message: renderGitStatusReport(ctx.agent.cwd) }
+      }
+
+      let baseBranch: string | undefined
+      let wantCreate = false
+
+      if (raw.toLowerCase() === 'create') {
+        wantCreate = true
+      } else if (raw.toLowerCase().startsWith('create ')) {
+        wantCreate = true
+        baseBranch = raw.slice('create'.length).trim() || undefined
+      } else {
+        baseBranch = raw
+      }
+
+      const built = buildPrAgentPrompt(ctx.agent.cwd, baseBranch, wantCreate)
+      if (!built.ok) {
+        return { message: built.error }
+      }
+      return {
+        message: `开始生成 Pull Request 描述…\n\n${built.summary}`,
+        submitPrompt: built.prompt,
+      }
     },
   },
   {
