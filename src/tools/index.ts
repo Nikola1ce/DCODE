@@ -19,8 +19,12 @@ import { MCP_PROXY_TOOLS } from './mcpProxy.js'
 import { readFileTool } from './readFile.js'
 import { globalToolRegistry, registerMcpTools } from './registry.js'
 import { runCommandTool } from './runCommand.js'
+import { taskTool } from './task.js'
 import { todoWriteTool } from './todo.js'
 import { writeFileTool } from './writeFile.js'
+
+// 子代理不可使用的工具名（防止递归 spawn）。
+const SUBAGENT_EXCLUDED_TOOLS = new Set(['task'])
 
 // 全部内置工具（顺序影响在 /help 等处的展示顺序；不含 MCP 动态工具）。
 export const ALL_TOOLS: ToolDefinition[] = [
@@ -32,6 +36,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   grepTool,
   runCommandTool,
   todoWriteTool,
+  taskTool,
   ...MCP_PROXY_TOOLS,
 ]
 
@@ -57,6 +62,15 @@ export function getTool(name: string): ToolDefinition | undefined {
  */
 export function getAvailableTools(permissionMode: string): ToolDefinition[] {
   return globalToolRegistry.getAvailable(permissionMode)
+}
+
+/**
+ * 返回子代理可用的工具集合（排除 task 以防递归）。
+ * @param permissionMode 当前权限模式。
+ * @returns 过滤后的工具列表。
+ */
+export function getSubAgentTools(permissionMode: string): ToolDefinition[] {
+  return getAvailableTools(permissionMode).filter((t) => !SUBAGENT_EXCLUDED_TOOLS.has(t.name))
 }
 
 /**

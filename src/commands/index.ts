@@ -8,6 +8,7 @@ import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isS
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
+import { renderSubAgentsStatus } from '../core/subAgent.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -201,6 +202,12 @@ export const COMMANDS: SlashCommand[] = [
       }
       return { message: renderMcpStatus(mgr) }
     },
+  },
+  {
+    name: 'subagents',
+    description: '查看子代理（Task 工具）运行状态与历史',
+    aliases: ['agents'],
+    run: () => ({ message: renderSubAgentsStatus() }),
   },
   {
     name: 'mode',

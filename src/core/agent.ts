@@ -15,6 +15,7 @@ import {
   executeToolCall,
   getAvailableTools,
   toOpenAITools,
+  type ExecutedToolResult,
 } from '../tools/index.js'
 import { buildSystemPrompt } from './systemPrompt.js'
 import { compactMessages, shouldCompact } from './compact.js'
@@ -319,35 +320,51 @@ export class Agent {
       const toolCalls = assistantMsg.toolCalls ?? []
       if (toolCalls.length === 0) return
 
-      // 5) 依次执行每个工具调用，并把结果作为 tool 消息回填历史。
-      for (const call of toolCalls) {
-        if (handlers.abortSignal.aborted) return
+      // 5) 并行执行本轮所有工具调用（支持 Task 子代理并行），结果按原顺序回填历史。
+      const executedResults = await Promise.all(
+        toolCalls.map(async (call) => {
+          if (handlers.abortSignal.aborted) {
+            return {
+              call,
+              executed: {
+                toolCallId: call.id,
+                toolName: call.name,
+                result: {
+                  llmContent: '操作已取消。',
+                  isError: true,
+                },
+              } as ExecutedToolResult,
+            }
+          }
 
-        // 生成调用摘要供 UI 展示。
-        const tool = availableTools.find((t) => t.name === call.name)
-        let summary = call.name
-        try {
-          const parsed = call.argsJson ? JSON.parse(call.argsJson) : {}
-          summary = tool?.renderCall?.(parsed) ?? call.name
-        } catch {
-          summary = call.name
-        }
-        handlers.onToolStart?.({ id: call.id, name: call.name, summary })
+          const tool = availableTools.find((t) => t.name === call.name)
+          let summary = call.name
+          try {
+            const parsed = call.argsJson ? JSON.parse(call.argsJson) : {}
+            summary = tool?.renderCall?.(parsed) ?? call.name
+          } catch {
+            summary = call.name
+          }
+          handlers.onToolStart?.({ id: call.id, name: call.name, summary })
 
-        // 为本次调用绑定进度回调（转发到 UI）。
-        toolCtx.onProgress = (text) =>
-          handlers.onToolProgress?.({ id: call.id, text })
-        // 同步最新权限模式（可能在交互中被切换）。
-        toolCtx.permissionMode = this.permissionMode
+          const localCtx: ToolContext = {
+            ...toolCtx,
+            permissionMode: this.permissionMode,
+            onProgress: (text) =>
+              handlers.onToolProgress?.({ id: call.id, text }),
+          }
 
-        const executed = await executeToolCall(call, toolCtx)
-        handlers.onToolEnd?.({
-          id: call.id,
-          name: call.name,
-          result: executed.result,
-        })
+          const executed = await executeToolCall(call, localCtx)
+          handlers.onToolEnd?.({
+            id: call.id,
+            name: call.name,
+            result: executed.result,
+          })
+          return { call, executed }
+        }),
+      )
 
-        // 把工具结果作为 tool 消息加入历史。
+      for (const { call, executed } of executedResults) {
         const toolMsg: DeepMessage = {
           role: 'tool',
           content: executed.result.llmContent,

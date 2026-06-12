@@ -61,6 +61,53 @@ export const MEMORY_FILE_NAME = 'DCODE.md'
 // 单轮 Agent 主循环的最大工具调用迭代次数，防止模型陷入死循环。
 export const MAX_AGENT_ITERATIONS = 50
 
+// 子代理同时运行的最大数量（Task 工具并发上限）。
+export const MAX_CONCURRENT_SUBAGENTS = 5
+
+// 单个子代理主循环的最大工具调用迭代次数（低于主 Agent，控制成本）。
+export const MAX_SUBAGENT_ITERATIONS = 30
+
+/** 内置子代理类型标识。 */
+export const SUBAGENT_TYPE_NAMES = ['generalPurpose', 'explore', 'shell'] as const
+export type SubAgentType = (typeof SUBAGENT_TYPE_NAMES)[number]
+
+/** 子代理类型元数据：说明、专用系统提示、是否默认只读。 */
+export const SUBAGENT_TYPES: Record<
+  SubAgentType,
+  { description: string; systemPrompt: string; readonlyDefault: boolean }
+> = {
+  generalPurpose: {
+    description: '通用子代理：研究、多步骤任务与综合编码',
+    readonlyDefault: false,
+    systemPrompt:
+      '你是通用子代理，可读写文件、运行命令、检索代码库。' +
+      '专注完成父 Agent 委托的子任务，返回清晰可操作的结论。',
+  },
+  explore: {
+    description: '快速探索子代理：只读检索代码库、搜索文件与 API',
+    readonlyDefault: true,
+    systemPrompt:
+      '你是代码库探索子代理，只能使用只读工具（read_file、grep、glob、list_dir）。' +
+      '快速定位相关文件、符号与模式，返回结构化发现列表，不要修改任何文件。',
+  },
+  shell: {
+    description: '命令执行子代理：git、构建、测试等终端操作',
+    readonlyDefault: false,
+    systemPrompt:
+      '你是命令执行子代理，擅长 git 操作、构建、测试与脚本执行。' +
+      '用 run_command 完成任务，解释命令输出中的关键信息，避免交互式命令。',
+  },
+}
+
+/**
+ * 判断子代理类型名是否合法。
+ * @param value 类型字符串。
+ * @returns 合法返回 true。
+ */
+export function isValidSubAgentType(value: string): value is SubAgentType {
+  return (SUBAGENT_TYPE_NAMES as readonly string[]).includes(value)
+}
+
 // 触发上下文自动压缩的 token 阈值（估算值，超过则提示/执行压缩）。
 export const COMPACT_TOKEN_THRESHOLD = 60000
 
