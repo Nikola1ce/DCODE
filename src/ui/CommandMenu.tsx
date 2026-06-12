@@ -42,7 +42,11 @@ export function CommandMenu({
   const visible = items.slice(start, start + MAX_VISIBLE)
 
   // 命令名列宽：用于让说明文字左对齐（命令名均为 ASCII，可按长度对齐）。
-  const nameWidth = Math.max(...items.map((it) => it.name.length)) + 1
+  const nameWidth = Math.max(
+    ...items.map((it) =>
+      (it.completion.startsWith('/') ? it.completion.slice(1) : it.name).length,
+    ),
+  ) + 1
 
   return (
     <Box
@@ -61,10 +65,11 @@ export function CommandMenu({
       {visible.map((it, i) => {
         const realIndex = start + i
         const selected = realIndex === selectedIndex
+        const label = it.completion.startsWith('/') ? it.completion.slice(1) : it.name
         return (
-          <Box key={it.name}>
+          <Box key={`${it.completion}-${realIndex}`}>
             <Text color={selected ? theme.accent : theme.text} bold={selected}>
-              {selected ? '❯ ' : '  '}/{it.name.padEnd(nameWidth, ' ')}
+              {selected ? '❯ ' : '  '}/{label.padEnd(nameWidth, ' ')}
             </Text>
             <Text color={theme.dim}>  {truncate(it.description, 46)}</Text>
           </Box>

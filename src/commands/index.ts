@@ -7,7 +7,7 @@
 import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isSupportedModelName, isValidReasoningEffort } from '../constants.js'
 import { join } from 'node:path'
 import type { DCodeConfig, PermissionMode } from '../config.js'
-import { updateConfig } from '../config.js'
+import { updateConfig, resolveApiKey } from '../config.js'
 import type { Agent } from '../core/agent.js'
 import { renderSubAgentsStatus } from '../core/subAgent.js'
 import { renderShellsStatus } from '../core/shellManager.js'
@@ -34,6 +34,27 @@ import { formatCost } from '../deepseek/pricing.js'
 import { getProjectMemoryPath, hasProjectMemory } from '../memory.js'
 import { ALL_TOOLS } from '../tools/index.js'
 import { globalToolRegistry } from '../tools/registry.js'
+import {
+  buildProviderSwitchPatch,
+  getActiveProviderId,
+  getProviderDefinition,
+  getSuggestedModelsForProvider,
+  isModelAllowedForProvider,
+  isValidProviderId,
+  PROVIDER_COMMAND_NAME,
+  PROVIDER_SWITCH_OPTIONS,
+  renderProviderList,
+  renderProviderStatus,
+  resolveProviderApiKey,
+} from '../providers/registry.js'
+import {
+  formatProxyDisplay,
+  isForeignProvider,
+  renderProxyHint,
+  resolveProviderProxy,
+} from '../providers/proxy.js'
+import type { ProviderId } from '../providers/types.js'
+import { isZhipuFreeModel, ZHIPU_FREE_MODEL_BADGE } from '../providers/zhipuModels.js'
 
 // 命令可触发的特殊 UI 交互流程类型。
 export type SpecialFlow = 'model' | 'login' | 'resume' | 'theme'
@@ -96,15 +117,117 @@ export const COMMANDS: SlashCommand[] = [
       const target = ctx.args.trim()
       // 无参数：打开模型选择器。
       if (!target) return { openFlow: 'model' }
-      // 校验模型名是否受支持。
-      if (!isSupportedModelName(target)) {
+      const providerId = getActiveProviderId(ctx.config)
+      // DeepSeek 仍校验内置模型列表；其它 Provider 允许 OpenAI 兼容模型名。
+      if (!isModelAllowedForProvider(target, ctx.config)) {
+        if (providerId === 'deepseek') {
+          return {
+            message: `不支持的模型：${target}\n可用模型：${getSuggestedModelsForProvider(ctx.config).join('、')}`,
+          }
+        }
+        const def = getProviderDefinition(providerId)
+        const suggested = def.suggestedModels?.join('、') ?? '任意 OpenAI 兼容模型名'
         return {
-          message: `不支持的模型：${target}\n可用模型：${SUPPORTED_MODELS.join('、')}`,
+          message: `无效的模型名：${target}\n当前 Provider (${def.name}) 建议：${suggested}`,
         }
       }
       ctx.agent.setModel(target)
       ctx.applyConfig({ model: target })
       return { message: `已切换模型为 ${target}` }
+    },
+  },
+  {
+    name: 'provider',
+    description: '查看或切换 LLM Provider（zhipu / deepseek / openai）',
+    aliases: ['providers'],
+    run: (ctx) => {
+      const target = ctx.args.trim().toLowerCase()
+      if (!target) {
+        return { message: renderProviderStatus(ctx.config) }
+      }
+      if (target === 'list') {
+        return { message: renderProviderList(ctx.config) }
+      }
+      if (!isValidProviderId(target)) {
+        return {
+          message: `未知 Provider：${target}\n\n${renderProviderList(ctx.config)}`,
+        }
+      }
+      if (target === 'ollama' || target === 'custom') {
+        return {
+          message:
+            (target === 'ollama'
+              ? 'Ollama 供应商已暂时下线。'
+              : '自定义 Provider 暂不在切换列表中。') +
+            '\n请使用 /provider zhipu、/provider openai 或 /provider deepseek。\n\n' +
+            renderProviderList(ctx.config),
+        }
+      }
+      if (!PROVIDER_SWITCH_OPTIONS.some((o) => o.id === target)) {
+        return {
+          message: `暂不支持切换至：${target}\n\n${renderProviderList(ctx.config)}`,
+        }
+      }
+      const patch = buildProviderSwitchPatch(ctx.config, target as ProviderId)
+      ctx.applyConfig(patch)
+      const merged = { ...ctx.config, ...patch }
+      const def = getProviderDefinition(target as ProviderId)
+      const modelNote =
+        patch.model && patch.model !== ctx.config.model
+          ? `\n模型已自动切换为：${patch.model}`
+          : ''
+      const key = resolveProviderApiKey(merged)
+      const keyNote = key
+        ? `\n已加载 ${def.name} API Key。`
+        : `\n⚠ 尚未配置 ${def.name} Key，请执行 /login。`
+      return {
+        message:
+          `已切换 Provider 为 ${def.name} (${target})${modelNote}${keyNote}\n\n` +
+          renderProviderStatus(merged),
+      }
+    },
+  },
+  {
+    name: 'proxy',
+    description: '查看或设置 HTTP(S) 代理（外国 Provider 如 OpenAI 需配置）',
+    run: (ctx) => {
+      const target = ctx.args.trim()
+      if (!target) {
+        const id = getActiveProviderId(ctx.config)
+        const proxy = resolveProviderProxy(ctx.config, id)
+        const lines = [
+          `当前代理：${formatProxyDisplay(proxy)}`,
+          renderProxyHint(ctx.config),
+          '',
+          '设置：/proxy http://127.0.0.1:10793',
+          '清除配置：/proxy clear（环境变量仍生效）',
+          '环境变量：DCODE_PROXY、HTTPS_PROXY、HTTP_PROXY',
+        ]
+        return { message: lines.join('\n') }
+      }
+      if (target.toLowerCase() === 'clear') {
+        ctx.applyConfig({ proxy: undefined })
+        return {
+          message:
+            '已清除 ~/.dcode/config.json 中的 proxy 字段。\n' +
+            '若设置了环境变量 HTTPS_PROXY/DCODE_PROXY，仍会生效。',
+        }
+      }
+      if (!/^https?:\/\/.+/i.test(target)) {
+        return {
+          message:
+            '代理地址需以 http:// 或 https:// 开头。\n' +
+            '示例：/proxy http://127.0.0.1:10793',
+        }
+      }
+      ctx.applyConfig({ proxy: target })
+      const id = getActiveProviderId(ctx.config)
+      const foreignNote = isForeignProvider({ ...ctx.config, proxy: target }, id)
+        ? '\n外国 Provider 请求将通过此代理发出。'
+        : ''
+      return {
+        message: `已设置代理：${target}${foreignNote}\n\n${renderProxyHint({ ...ctx.config, proxy: target })}`,
+      }
     },
   },
   {
@@ -149,7 +272,7 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'login',
-    description: '设置或更新 DeepSeek API Key',
+    description: '设置或更新当前 Provider 的 API Key（随 /provider 切换）',
     aliases: ['key'],
     run: () => ({ openFlow: 'login' }),
   },
@@ -489,35 +612,156 @@ export function isSlashCommand(input: string): boolean {
 
 // 命令建议项：供输入框自动补全菜单展示的轻量结构（不含执行逻辑）。
 export interface CommandSuggestion {
-  // 命令主名称（不含前导 /）。
+  // 展示用短标签（命令名或参数名）。
   name: string
   // 命令说明（与 /help 中一致）。
   description: string
+  // 补全/回车时写入的完整斜杠命令（含前导 /）。
+  completion: string
   // 命令别名列表（可选，用于提示）。
   aliases?: string[]
 }
 
 /**
- * 根据用户在 "/" 之后输入的前缀，过滤出匹配的命令建议列表。
- * 匹配规则：命令主名或任一别名以该前缀开头（不区分大小写）；
- * 前缀为空（刚输入 "/"）时返回全部命令。供 InputPrompt 的命令补全菜单使用。
- * @param query "/" 之后、空格之前的查询文本（不含 /）。
- * @returns 匹配的命令建议数组，保持 COMMANDS 的定义顺序。
+ * 为已选命令生成参数补全候选。
+ * @param cmdName 命令主名。
+ * @param argPrefix 空格后的参数前缀（小写）。
+ * @returns 参数级建议；无参数补全则返回空数组。
  */
-export function filterCommands(query: string): CommandSuggestion[] {
-  const q = query.trim().toLowerCase()
+function getCommandArgSuggestions(
+  cmdName: string,
+  argPrefix: string,
+  config?: DCodeConfig,
+): CommandSuggestion[] {
+  const q = argPrefix.trim().toLowerCase()
+
+  if (cmdName === 'provider') {
+    const options = [
+      ...PROVIDER_SWITCH_OPTIONS.map((o) => ({
+        name: o.id,
+        description: o.description,
+      })),
+      { name: 'list', description: '列出全部 Provider' },
+    ]
+    return options
+      .filter((o) => q === '' || o.name.startsWith(q))
+      .map((o) => ({
+        name: o.name,
+        description: o.description,
+        completion: `/provider ${o.name}`,
+      }))
+  }
+
+  if (cmdName === 'model') {
+    const models = config ? getSuggestedModelsForProvider(config) : [...SUPPORTED_MODELS]
+    const providerId = config ? getActiveProviderId(config) : 'deepseek'
+    return models.filter((m) => q === '' || m.toLowerCase().startsWith(q)).map((m) => {
+      const isFree = providerId === 'zhipu' && isZhipuFreeModel(m)
+      return {
+        name: isFree ? `★ ${m}` : m,
+        description: isFree ? ZHIPU_FREE_MODEL_BADGE : '切换模型',
+        completion: `/model ${m}`,
+      }
+    })
+  }
+
+  return []
+}
+
+/**
+ * 将 Provider 子选项插入到 /provider 命令项之后。
+ * @param commandItems 已匹配的顶层命令建议。
+ * @param args Provider 参数级建议。
+ * @returns 合并后的建议列表。
+ */
+function appendProviderArgSuggestions(
+  commandItems: CommandSuggestion[],
+  args: CommandSuggestion[],
+): CommandSuggestion[] {
+  if (args.length === 0) return commandItems
+  const idx = commandItems.findIndex((c) => c.completion === '/provider')
+  if (idx >= 0) {
+    return [...commandItems.slice(0, idx + 1), ...args, ...commandItems.slice(idx + 1)]
+  }
+  return [...commandItems, ...args]
+}
+
+/**
+ * 过滤与 query 前缀匹配的顶层斜杠命令。
+ * @param q 命令名查询（小写，不含 /）。
+ * @returns 命令建议列表。
+ */
+function matchingCommandSuggestions(q: string): CommandSuggestion[] {
   return COMMANDS.filter((cmd) => {
-    // 空前缀返回全部，便于刚输入 "/" 时展示完整命令清单。
     if (q === '') return true
-    // 主名前缀匹配。
     if (cmd.name.toLowerCase().startsWith(q)) return true
-    // 别名前缀匹配。
     return (cmd.aliases ?? []).some((a) => a.toLowerCase().startsWith(q))
   }).map((cmd) => ({
     name: cmd.name,
     description: cmd.description,
+    completion: `/${cmd.name}`,
     aliases: cmd.aliases,
   }))
+}
+
+/**
+ * 根据当前输入生成斜杠命令补全候选（含命令名与部分命令的参数补全）。
+ * @param input 输入框完整内容（可含前导 /）。
+ * @returns 建议列表。
+ */
+export function getSlashSuggestions(input: string, config?: DCodeConfig): CommandSuggestion[] {
+  const trimmed = input.trimStart()
+  if (!trimmed.startsWith('/')) return []
+
+  const body = trimmed.slice(1)
+  const spaceIdx = body.indexOf(' ')
+
+  // 仍在输入命令名阶段（尚无空格）。
+  if (spaceIdx === -1) {
+    const q = body.toLowerCase()
+    const commandItems = matchingCommandSuggestions(q)
+    const providerArgs = getCommandArgSuggestions('provider', '', config)
+
+    // 仅输入 /：全部命令 + 最底层 Provider 子选项。
+    if (q === '') {
+      return providerArgs.length > 0 ? [...commandItems, ...providerArgs] : commandItems
+    }
+
+    // 输入 /p … /provider 前缀：保留 plan/proxy/provider 等命令，并在 /provider 后追加子选项。
+    if (PROVIDER_COMMAND_NAME.startsWith(q)) {
+      return appendProviderArgSuggestions(commandItems, providerArgs)
+    }
+
+    // 其它命令完整匹配：展示参数子选项（如 /model）。
+    const exact = COMMANDS.find(
+      (cmd) =>
+        cmd.name.toLowerCase() === q ||
+        (cmd.aliases ?? []).some((a) => a.toLowerCase() === q),
+    )
+    if (exact && exact.name !== 'provider') {
+      const args = getCommandArgSuggestions(exact.name, '', config)
+      if (args.length > 0) return args
+    }
+
+    return commandItems
+  }
+
+  // 命令名之后正在输入参数。
+  const cmdName = body.slice(0, spaceIdx).toLowerCase()
+  const argPrefix = body.slice(spaceIdx + 1)
+  const cmd = COMMAND_MAP.get(cmdName)
+  if (!cmd) return []
+  return getCommandArgSuggestions(cmd.name, argPrefix, config)
+}
+
+/**
+ * 根据用户在 "/" 之后输入的前缀，过滤出匹配的命令建议列表。
+ * @deprecated 请使用 getSlashSuggestions；保留供旧调用方兼容。
+ * @param query "/" 之后、空格之前的查询文本（不含 /）。
+ * @returns 匹配的命令建议数组。
+ */
+export function filterCommands(query: string): CommandSuggestion[] {
+  return getSlashSuggestions(`/${query}`)
 }
 
 /**
@@ -588,6 +832,7 @@ function renderCost(agent: Agent): string {
   const u = agent.usage
   return [
     '本次会话用量统计：',
+    `  Provider / 模型：${agent.getProviderId()} / ${agent.getModel()}`,
     `  输入 token：${u.inputTokens}（其中缓存命中 ${u.cacheHitTokens}）`,
     `  输出 token：${u.outputTokens}`,
     `  预估成本：${formatCost(u.costUsd)}`,
@@ -600,18 +845,27 @@ function renderCost(agent: Agent): string {
  * @returns 配置信息。
  */
 function renderConfig(config: DCodeConfig): string {
-  const masked = config.apiKey
-    ? config.apiKey.slice(0, 4) + '****' + config.apiKey.slice(-2)
+  const key = resolveApiKey(config)
+  const masked = key
+    ? key === 'ollama'
+      ? '(本地无需 Key)'
+      : key.slice(0, 4) + '****' + key.slice(-2)
     : '(未设置)'
+  const def = getProviderDefinition(getActiveProviderId(config))
   return [
     '当前配置：',
+    `  Provider：${def.name} (${config.provider ?? 'zhipu'})`,
     `  模型：${config.model}`,
     `  API 端点：${config.baseURL}`,
     `  API Key：${masked}`,
     `  主题：${config.theme}`,
     `  思维链展示：${config.showThinking ? '开' : '关'}`,
-    `  推理强度：${config.reasoningEffort}（Thinking 模式下生效）`,
+    `  推理强度：${config.reasoningEffort}（${def.supportsThinking ? 'Thinking 模式下生效' : '当前 Provider 不支持'}）`,
     `  Hooks：${config.hooksEnabled !== false ? '启用' : '禁用'}`,
+    renderProxyHint(config),
+    '',
+    '切换 Provider：/provider zhipu | deepseek | openai',
+    '设置代理：/proxy http://127.0.0.1:10793',
   ].join('\n')
 }
 

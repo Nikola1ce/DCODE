@@ -1,5 +1,5 @@
-// DeepSeek 流式客户端。
-// 基于 openai SDK（指向 DeepSeek 的 OpenAI 兼容端点）实现：
+// OpenAI 兼容 LLM 流式客户端。
+// 基于 openai SDK 对接 DeepSeek / OpenAI / Ollama 等 OpenAI 兼容端点：
 //   1) 将内部 DeepMessage[] 转换为严格的 API 消息体（剥离思维链等不可回传字段）；
 //   2) 以流式（SSE）方式请求，逐增量产出文本 / 思维链 / 工具调用事件；
 //   3) 合并分片的 tool_calls（按 index 累积 name 与 arguments）；
@@ -11,51 +11,37 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions'
-import type { ReasoningEffort } from '../constants.js'
 import type { DCodeConfig } from '../config.js'
 import { resolveApiKey } from '../config.js'
 import type { DeepMessage, ToolCall } from '../core/types.js'
+import {
+  getActiveProviderId,
+  getProviderDefinition,
+  providerSupportsThinking,
+  resolveProviderBaseURL,
+} from '../providers/registry.js'
+import { buildOpenAIClientAgentOptions } from '../providers/proxy.js'
+import { openaiModelSupportsCustomTemperature } from '../providers/openaiModels.js'
+import {
+  applyStreamContentDelta,
+  collapseObviousRepetition,
+} from '../providers/streamDelta.js'
+import type {
+  LLMClient,
+  ProviderId,
+  StreamChatParams,
+  StreamEvent,
+} from '../providers/types.js'
 import type { DeepSeekUsage } from './pricing.js'
 
-/**
- * 流式过程中产出的事件类型（供 Agent 主循环消费并转发到 UI）。
- */
-export type StreamEvent =
-  // 思维链增量（仅 deepseek-reasoner 会产生）。
-  | { type: 'reasoning'; delta: string }
-  // 正文文本增量。
-  | { type: 'text'; delta: string }
-  // 流结束：返回完整组装好的 assistant 消息、用量与结束原因。
-  | {
-      type: 'done'
-      message: DeepMessage
-      usage?: DeepSeekUsage
-      finishReason: string
-    }
-
-// 发起一次流式对话所需的参数。
-export interface StreamChatParams {
-  // 完整消息历史（含 system）。
-  messages: DeepMessage[]
-  // 可供模型调用的工具定义（OpenAI function 格式）；无工具时传空数组。
-  tools: ChatCompletionTool[]
-  // 使用的模型名称。
-  model: string
-  // 采样温度，编程任务通常用较低温度以保证稳定性。
-  temperature?: number
-  // 取消信号：用户中断时中止请求。
-  abortSignal?: AbortSignal
-  // 覆盖思维链模式；默认跟随 config.showThinking。
-  thinking?: 'enabled' | 'disabled'
-  // 覆盖推理强度；默认跟随 config.reasoningEffort，仅 thinking 启用时发送。
-  reasoningEffort?: ReasoningEffort
-}
+// 向后兼容：类型定义已迁移至 providers/types。
+export type { StreamEvent, StreamChatParams } from '../providers/types.js'
 
 // 触发重试的最大次数。
 const MAX_RETRIES = 3
 
 /**
- * 将内部 DeepMessage 转换为 DeepSeek/OpenAI 接受的消息体。
+ * 将内部 DeepMessage 转换为 OpenAI 兼容 API 接受的消息体。
  * 关键点：
  *   - 无工具调用的 assistant 消息不回传 reasoning（API 会忽略）；
  *   - 含 tool_calls 的 assistant 必须回传 reasoning_content，否则多轮工具调用会 400；
@@ -66,12 +52,10 @@ const MAX_RETRIES = 3
 function toApiMessages(messages: DeepMessage[]): ChatCompletionMessageParam[] {
   return messages.map((m): ChatCompletionMessageParam => {
     if (m.role === 'assistant') {
-      // 组装 assistant 消息：若有工具调用则附上 tool_calls。
       const msg: ChatCompletionMessageParam & { reasoning_content?: string } = {
         role: 'assistant',
         content: m.content || '',
       }
-      // 工具调用链路中，DeepSeek 要求把思维链一并回传，否则会 400。
       if (m.toolCalls && m.toolCalls.length > 0 && m.reasoning) {
         msg.reasoning_content = m.reasoning
       }
@@ -85,7 +69,6 @@ function toApiMessages(messages: DeepMessage[]): ChatCompletionMessageParam[] {
       return msg
     }
     if (m.role === 'tool') {
-      // tool 结果消息：必须携带对应的 tool_call_id。
       return {
         role: 'tool',
         content: m.content,
@@ -95,7 +78,6 @@ function toApiMessages(messages: DeepMessage[]): ChatCompletionMessageParam[] {
     if (m.role === 'system') {
       return { role: 'system', content: m.content }
     }
-    // 其余按 user 处理。
     return { role: 'user', content: m.content }
   })
 }
@@ -109,7 +91,6 @@ function isRetryable(err: any): boolean {
   const status = err?.status ?? err?.response?.status
   if (status === 429) return true
   if (typeof status === 'number' && status >= 500) return true
-  // 常见网络错误码：连接重置/超时等。
   const code = err?.code
   if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND')
     return true
@@ -125,14 +106,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * DeepSeek 客户端封装类。
- * 持有底层 openai SDK 实例与默认配置，对外暴露流式对话方法。
+ * OpenAI 兼容 LLM 客户端：根据 config.provider 连接对应后端。
  */
-export class DeepSeekClient {
-  // 底层 OpenAI 兼容客户端实例。
+export class OpenAICompatibleClient implements LLMClient {
   private client: OpenAI
-  // 关联的配置（用于读取 baseURL / apiKey）。
   private config: DCodeConfig
+  private providerId: ProviderId
 
   /**
    * 构造函数：根据配置初始化底层客户端。
@@ -140,62 +119,71 @@ export class DeepSeekClient {
    */
   constructor(config: DCodeConfig) {
     this.config = config
+    this.providerId = getActiveProviderId(config)
+    const apiKey = resolveApiKey(config) ?? 'MISSING_API_KEY'
     this.client = new OpenAI({
-      apiKey: resolveApiKey(config) ?? 'MISSING_API_KEY',
-      baseURL: config.baseURL,
+      apiKey,
+      baseURL: resolveProviderBaseURL(config),
+      ...buildOpenAIClientAgentOptions(config),
     })
   }
 
-  /**
-   * 校验当前是否已配置可用的 API Key。
-   * @returns 已配置返回 true。
-   */
+  /** @inheritdoc */
   hasApiKey(): boolean {
+    const def = getProviderDefinition(this.providerId)
+    if (!def.requiresApiKey) return true
     const key = resolveApiKey(this.config)
     return !!key && key !== 'MISSING_API_KEY'
   }
 
-  /**
-   * 以流式方式发起一次对话补全，产出增量事件。
-   * 内部对可重试错误做指数退避；不可重试错误直接抛出由上层处理。
-   * @param params 流式请求参数。
-   * @returns 异步事件生成器。
-   */
+  /** @inheritdoc */
+  getProviderId(): ProviderId {
+    return this.providerId
+  }
+
+  /** @inheritdoc */
   async *streamChat(params: StreamChatParams): AsyncGenerator<StreamEvent> {
     const { messages, tools, model, temperature = 0.2, abortSignal } = params
     const apiMessages = toApiMessages(messages)
+    const supportsThinking = providerSupportsThinking(this.config)
     const thinkingType =
       params.thinking ?? (this.config.showThinking ? 'enabled' : 'disabled')
     const reasoningEffort =
       params.reasoningEffort ?? this.config.reasoningEffort ?? 'high'
 
-    // 重试循环：仅在“尚未产出任何增量”时重试，避免重复输出。
     let attempt = 0
     while (true) {
       try {
-        // 创建流式请求；include_usage 让末尾 chunk 带回用量统计。
-        // thinking 为 DeepSeek 扩展字段，OpenAI SDK 类型未收录，故用断言传入。
-        // thinking 关闭时不传 reasoning_effort，避免 API 校验报错。
         const requestBody: Record<string, unknown> = {
           model,
           messages: apiMessages,
           ...(tools.length > 0
             ? { tools, tool_choice: 'auto' as const }
             : {}),
-          temperature,
           stream: true,
           stream_options: { include_usage: true },
-          thinking: { type: thinkingType },
         }
-        if (thinkingType === 'enabled') {
-          requestBody.reasoning_effort = reasoningEffort
+
+        // GPT-5+ / o 系列等仅支持默认 temperature=1，传 0.2 会 400。
+        const maySetTemperature =
+          this.providerId !== 'openai' || openaiModelSupportsCustomTemperature(model)
+        if (maySetTemperature) {
+          requestBody.temperature = temperature
         }
+
+        // 仅 DeepSeek 等支持 thinking 的 Provider 发送扩展字段。
+        if (supportsThinking) {
+          requestBody.thinking = { type: thinkingType }
+          if (thinkingType === 'enabled') {
+            requestBody.reasoning_effort = reasoningEffort
+          }
+        }
+
         const stream = (await this.client.chat.completions.create(
           requestBody as any,
           { signal: abortSignal },
         )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>
 
-        // 累积状态：正文、思维链、按 index 聚合的工具调用。
         let textBuf = ''
         let reasoningBuf = ''
         const toolAccum = new Map<
@@ -206,7 +194,6 @@ export class DeepSeekClient {
         let finishReason = 'stop'
 
         for await (const chunk of stream) {
-          // 末尾 usage chunk 可能没有 choices。
           if (chunk.usage) usage = chunk.usage as DeepSeekUsage
 
           const choice = chunk.choices?.[0]
@@ -214,20 +201,33 @@ export class DeepSeekClient {
           if (choice.finish_reason) finishReason = choice.finish_reason
 
           const delta: any = choice.delta ?? {}
+          const messageContent: string | undefined = (choice as any).message?.content
 
-          // 思维链增量（DeepSeek 扩展字段 reasoning_content）。
           if (delta.reasoning_content) {
-            reasoningBuf += delta.reasoning_content
-            yield { type: 'reasoning', delta: delta.reasoning_content }
+            const { next, delta: reasoningDelta } = applyStreamContentDelta(
+              reasoningBuf,
+              delta.reasoning_content,
+            )
+            reasoningBuf = next
+            if (reasoningDelta) {
+              yield { type: 'reasoning', delta: reasoningDelta }
+            }
           }
 
-          // 正文增量。
-          if (delta.content) {
-            textBuf += delta.content
-            yield { type: 'text', delta: delta.content }
+          const textIncoming =
+            typeof delta.content === 'string' && delta.content.length > 0
+              ? delta.content
+              : typeof messageContent === 'string' && messageContent.length > 0
+                ? messageContent
+                : ''
+          if (textIncoming) {
+            const { next, delta: textDelta } = applyStreamContentDelta(textBuf, textIncoming)
+            textBuf = next
+            if (textDelta) {
+              yield { type: 'text', delta: textDelta }
+            }
           }
 
-          // 工具调用增量：按 index 聚合 name 与 arguments 片段。
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
@@ -240,7 +240,8 @@ export class DeepSeekClient {
           }
         }
 
-        // 组装最终的 assistant 消息。
+        textBuf = collapseObviousRepetition(textBuf)
+
         const toolCalls: ToolCall[] = [...toolAccum.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([, v]) => ({ id: v.id, name: v.name, argsJson: v.args }))
@@ -256,42 +257,54 @@ export class DeepSeekClient {
         yield { type: 'done', message, usage, finishReason }
         return
       } catch (err: any) {
-        // 用户主动中断不算错误，直接终止。
         if (abortSignal?.aborted) {
           throw new Error('已取消请求')
         }
-        // 可重试错误：指数退避后重试；超过上限则抛出。
         if (isRetryable(err) && attempt < MAX_RETRIES) {
           attempt++
           const backoffMs = 500 * 2 ** (attempt - 1)
           await sleep(backoffMs)
           continue
         }
-        throw normalizeApiError(err)
+        throw normalizeApiError(err, this.providerId)
       }
     }
   }
 }
 
+/** 向后兼容别名：历史代码中的 DeepSeekClient 即 OpenAICompatibleClient。 */
+export const DeepSeekClient = OpenAICompatibleClient
+
 /**
  * 将底层 SDK 抛出的错误归一化为带友好中文提示的 Error。
  * @param err 原始错误。
+ * @param providerId 当前 Provider。
  * @returns 处理后的 Error。
  */
-function normalizeApiError(err: any): Error {
+function normalizeApiError(err: any, providerId: ProviderId): Error {
+  const def = getProviderDefinition(providerId)
   const status = err?.status ?? err?.response?.status
   if (status === 401) {
-    return new Error('鉴权失败（401）：API Key 无效或已过期，请用 /login 重新设置。')
+    return new Error(
+      `鉴权失败（401）：${def.name} API Key 无效或已过期，请用 /login 或环境变量 ${def.apiKeyEnv} 重新设置。`,
+    )
   }
-  if (status === 402) {
+  if (status === 402 && providerId === 'deepseek') {
     return new Error('余额不足（402）：请前往 DeepSeek 平台充值后重试。')
   }
   if (status === 429) {
     return new Error('请求过于频繁（429）：已达到速率限制，请稍后重试。')
   }
-  if (typeof status === 'number' && status >= 500) {
-    return new Error(`DeepSeek 服务端错误（${status}）：请稍后重试。`)
-  }
   const msg = err?.message ?? String(err)
+  if (typeof status !== 'number' && /connection|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(msg)) {
+    const hint =
+      providerId === 'openai' || providerId === 'custom'
+        ? ' 外国 Provider 需配置代理，例如 /proxy http://127.0.0.1:10793 或设置 HTTPS_PROXY。'
+        : ''
+    return new Error(`网络连接失败：${msg}${hint}`)
+  }
+  if (typeof status === 'number' && status >= 500) {
+    return new Error(`${def.name} 服务端错误（${status}）：请稍后重试。`)
+  }
   return new Error(`请求失败：${msg}`)
 }

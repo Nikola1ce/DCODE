@@ -14,7 +14,13 @@ import type {
   PermissionRequest,
   TodoItem,
 } from '../core/types.js'
-import { SUPPORTED_MODELS, PRO_MODEL } from '../constants.js'
+import {
+  buildProviderLoginPatch,
+  getActiveProviderId,
+  getModelSelectOptions,
+  getProviderDefinition,
+  getProviderLoginMeta,
+} from '../providers/registry.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
 import { messagesToItems } from './messagesToItems.js'
@@ -344,7 +350,11 @@ export function App({ agent, config, initialItems, needLogin }: AppProps): React
       }
       // 无 API Key 时引导先登录。
       if (!agent.hasApiKey()) {
-        pushSystem('warning', '尚未设置 API Key，请先用 /login 设置（或设置环境变量 DEEPSEEK_API_KEY）。')
+        pushSystem(
+          'warning',
+          `尚未设置 ${getProviderDefinition(agent.getProviderId()).name} API Key，` +
+            `请 /login 或设置环境变量 ${getProviderDefinition(agent.getProviderId()).apiKeyEnv}。`,
+        )
         setFlow('login')
         return
       }
@@ -459,21 +469,23 @@ export function App({ agent, config, initialItems, needLogin }: AppProps): React
           <PermissionPrompt request={permissionReq} onDecision={handleDecision} />
         ) : flow === 'login' ? (
           <LoginPrompt
+            {...getProviderLoginMeta(getActiveProviderId(configRef.current))}
             onSubmit={(apiKey) => {
-              applyConfig({ apiKey })
+              const id = getActiveProviderId(configRef.current)
+              const patch = buildProviderLoginPatch(configRef.current, id, apiKey)
+              applyConfig(patch)
               setFlow(null)
-              pushSystem('success', 'API Key 已保存。现在可以开始对话了。')
+              pushSystem(
+                'success',
+                `${getProviderDefinition(id).name} API Key 已保存，当前 Provider 已生效。`,
+              )
             }}
             onCancel={() => setFlow(null)}
           />
         ) : flow === 'model' ? (
           <Select
             title="选择模型"
-            options={SUPPORTED_MODELS.map((m) => ({
-              label: m,
-              value: m,
-              hint: m === PRO_MODEL ? '高级模型 · 推理/编码更强' : '默认 · 快速且经济',
-            }))}
+            options={getModelSelectOptions(configRef.current)}
             onSelect={(m) => {
               agent.setModel(m)
               applyConfig({ model: m })
@@ -526,6 +538,7 @@ export function App({ agent, config, initialItems, needLogin }: AppProps): React
                 onSubmit={handleSubmit}
                 isActive={inputActive}
                 history={inputHistoryRef.current}
+                getConfig={() => configRef.current}
               />
             ) : null}
             <StatusLine

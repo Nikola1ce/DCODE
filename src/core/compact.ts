@@ -5,7 +5,7 @@
 // 制作人：Moriarty_Dox
 
 import { COMPACT_TOKEN_THRESHOLD } from '../constants.js'
-import type { DeepSeekClient } from '../deepseek/client.js'
+import type { LLMClient } from '../providers/types.js'
 import type { DeepMessage } from './types.js'
 
 // 压缩时保留的最近消息条数（不参与摘要，原样保留）。
@@ -53,13 +53,13 @@ export function shouldCompact(messages: DeepMessage[]): boolean {
  * 流程：分离出 system 消息与最近 KEEP_RECENT 条消息，把中间的历史请模型总结为要点，
  * 然后重组为 [system, 摘要(user), ...最近消息]。
  * 若历史过短或压缩失败，原样返回。
- * @param client DeepSeek 客户端。
+ * @param client LLM 客户端。
  * @param messages 原始消息历史。
  * @param model 用于摘要的模型名。
  * @returns 压缩后的新消息历史。
  */
 export async function compactMessages(
-  client: DeepSeekClient,
+  client: LLMClient,
   messages: DeepMessage[],
   model: string,
 ): Promise<DeepMessage[]> {

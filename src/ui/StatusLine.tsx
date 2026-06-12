@@ -1,5 +1,5 @@
 // 底部状态栏组件 + 加载指示器。
-// 状态栏展示：运行/就绪状态、当前模型、权限模式、累计成本。运行时配合动画 spinner 与中断提示。
+// 状态栏展示：运行/就绪状态、当前模型、权限模式、预估成本。运行时配合动画 spinner 与中断提示。
 // 制作人：Moriarty_Dox
 
 import React, { useEffect, useState } from 'react'
@@ -73,7 +73,7 @@ export function StatusLine({
         </Box>
       ) : (
         <Text color={theme.dim}>
-          {model}　·　权限 {MODE_LABELS[permissionMode]}　·　成本 {formatCost(costUsd)}
+          {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {formatCost(costUsd)}
         </Text>
       )}
     </Box>

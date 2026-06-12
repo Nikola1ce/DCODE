@@ -10,14 +10,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   CONFIG_DIR_NAME,
   CONFIG_FILE_NAME,
-  DEFAULT_BASE_URL,
-  DEFAULT_MODEL,
+  DEFAULT_ZHIPU_BASE_URL,
+  DEFAULT_ZHIPU_MODEL,
   ENV_API_KEY,
   ENV_BASE_URL,
   ENV_MODEL,
+  ENV_PROVIDER,
   ENV_REASONING_EFFORT,
   type ReasoningEffort,
 } from './constants.js'
+import type { ProviderId, ProviderOverrides } from './providers/types.js'
+import {
+  getActiveProviderId,
+  resolveProviderApiKey,
+  resolveProviderBaseURL,
+} from './providers/registry.js'
 
 // UI 主题枚举：暗色 / 亮色。影响终端配色方案。
 export type ThemeName = 'dark' | 'light'
@@ -51,12 +58,18 @@ export interface DCodeConfig {
   onboardingComplete: boolean
   // 是否启用 Hooks 钩子系统（false 时跳过 Pre/Post 与会话钩子）。
   hooksEnabled: boolean
+  // 当前 LLM Provider（zhipu / deepseek / openai / ollama / custom）。
+  provider: ProviderId
+  // 各 Provider 的独立覆盖（baseURL、apiKey、defaultModel、proxy）。
+  providers?: Partial<Record<ProviderId, ProviderOverrides>>
+  // 全局 HTTP(S) 代理（外国 Provider 如 OpenAI 访问 api.openai.com 时使用）。
+  proxy?: string
 }
 
 // 配置默认值：首次运行或字段缺失时回退到这里。
 const DEFAULT_CONFIG: DCodeConfig = {
-  baseURL: DEFAULT_BASE_URL,
-  model: DEFAULT_MODEL,
+  baseURL: DEFAULT_ZHIPU_BASE_URL,
+  model: DEFAULT_ZHIPU_MODEL,
   theme: 'dark',
   showThinking: true,
   reasoningEffort: 'high',
@@ -64,6 +77,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   totalCostUsd: 0,
   onboardingComplete: false,
   hooksEnabled: true,
+  provider: 'zhipu',
 }
 
 /**
@@ -120,8 +134,20 @@ export function loadConfig(): DCodeConfig {
   if (process.env[ENV_REASONING_EFFORT]) {
     merged.reasoningEffort = process.env[ENV_REASONING_EFFORT] as ReasoningEffort
   }
+  if (process.env[ENV_PROVIDER] && isValidProviderEnv(process.env[ENV_PROVIDER])) {
+    merged.provider = process.env[ENV_PROVIDER] as ProviderId
+  }
 
   return merged
+}
+
+/**
+ * 校验环境变量中的 Provider id。
+ * @param value 环境变量值。
+ * @returns 合法返回 true。
+ */
+function isValidProviderEnv(value: string): boolean {
+  return ['zhipu', 'deepseek', 'openai', 'ollama', 'custom'].includes(value)
 }
 
 /**
@@ -143,16 +169,42 @@ export function saveConfig(config: DCodeConfig): void {
  */
 export function updateConfig(patch: Partial<DCodeConfig>): DCodeConfig {
   const current = loadConfig()
-  const next = { ...current, ...patch }
+  const next: DCodeConfig = { ...current, ...patch }
+  // providers 按 Provider id 深合并，避免 /login 覆盖其它供应商已存 Key。
+  if (patch.providers) {
+    next.providers = { ...current.providers }
+    for (const [id, overrides] of Object.entries(patch.providers)) {
+      const pid = id as ProviderId
+      next.providers[pid] = { ...current.providers?.[pid], ...overrides }
+    }
+  }
   saveConfig(next)
   return next
 }
 
 /**
- * 解析最终生效的 API Key：环境变量优先，其次配置文件。
+ * 解析最终生效的 API Key：环境变量优先，其次 Provider 覆盖与顶层 apiKey。
  * @param config 已加载的配置对象。
  * @returns API Key 字符串；未配置则返回 undefined。
  */
 export function resolveApiKey(config: DCodeConfig): string | undefined {
-  return process.env[ENV_API_KEY] || config.apiKey
+  return resolveProviderApiKey(config)
+}
+
+/**
+ * 解析最终生效的 API baseURL。
+ * @param config 已加载的配置对象。
+ * @returns baseURL 字符串。
+ */
+export function resolveBaseURL(config: DCodeConfig): string {
+  return resolveProviderBaseURL(config)
+}
+
+/**
+ * 获取当前 Provider id。
+ * @param config 配置对象。
+ * @returns ProviderId。
+ */
+export function getConfigProviderId(config: DCodeConfig): ProviderId {
+  return getActiveProviderId(config)
 }

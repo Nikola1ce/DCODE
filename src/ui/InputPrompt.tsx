@@ -20,7 +20,8 @@
 import React, { useCallback, useRef, useState } from 'react'
 import { Box, Text, useInput, type Key } from 'ink'
 import { useTheme } from './theme.js'
-import { filterCommands } from '../commands/index.js'
+import type { DCodeConfig } from '../config.js'
+import { getSlashSuggestions } from '../commands/index.js'
 import { CommandMenu } from './CommandMenu.js'
 
 // 组件入参。
@@ -31,6 +32,8 @@ interface InputPromptProps {
   isActive: boolean
   // 历史命令（最近的在数组末尾），用于上下方向键回溯。
   history: string[]
+  // 读取最新配置（用于 /model 等 Provider 感知补全）。
+  getConfig: () => DCodeConfig
 }
 
 // 输入缓冲：把文本与光标位置合并为一个状态，确保二者始终原子一致、互不错位。
@@ -50,6 +53,7 @@ export function InputPrompt({
   onSubmit,
   isActive,
   history,
+  getConfig,
 }: InputPromptProps): React.ReactElement {
   const theme = useTheme()
   // 输入文本与光标合并存储：所有写操作都基于上一状态做“函数式更新”，从根本上避免读到旧值。
@@ -63,10 +67,9 @@ export function InputPrompt({
   const [menuDismissed, setMenuDismissed] = useState(false)
 
   // —— 计算命令补全状态（渲染与按键回调共用同一份派生值）——
-  // 命令模式：以 "/" 开头且尚未输入空格（仍在键入命令名阶段）。
-  const inCommandMode = value.startsWith('/') && !value.includes(' ')
-  // 候选命令列表：命令模式下按 "/" 后前缀过滤，否则为空。
-  const suggestions = inCommandMode ? filterCommands(value.slice(1)) : []
+  // 斜杠输入且存在候选时进入命令补全模式（含 /provider openai 等参数补全）。
+  const suggestions = value.startsWith('/') ? getSlashSuggestions(value, getConfig()) : []
+  const inCommandMode = value.startsWith('/') && suggestions.length > 0
   // 菜单是否展开：激活、有候选且未被手动关闭。
   const menuOpen = isActive && suggestions.length > 0 && !menuDismissed
   // 有效高亮索引：对候选数量取模（含负数归一），保证落在合法范围内。
@@ -126,7 +129,7 @@ export function InputPrompt({
         if (s.menuOpen) {
           const sel = s.suggestions[s.effIndex]
           if (sel) {
-            s.onSubmit(`/${sel.name}`)
+            s.onSubmit(sel.completion)
             resetInput()
           }
           return
@@ -143,9 +146,8 @@ export function InputPrompt({
         if (s.menuOpen) {
           const sel = s.suggestions[s.effIndex]
           if (sel) {
-            const nv = `/${sel.name} `
+            const nv = sel.completion.endsWith(' ') ? sel.completion : `${sel.completion} `
             setBuf({ value: nv, cursor: nv.length })
-            // 已选定命令，关闭菜单进入参数输入阶段。
             setMenuDismissed(true)
             setMenuIndex(0)
           }

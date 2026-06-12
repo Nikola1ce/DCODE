@@ -8,7 +8,8 @@
 
 import { MAX_AGENT_ITERATIONS } from '../constants.js'
 import type { DCodeConfig, PermissionMode } from '../config.js'
-import { DeepSeekClient } from '../deepseek/client.js'
+import { createLLMClient } from '../providers/factory.js'
+import type { LLMClient, ProviderId } from '../providers/types.js'
 import type { DeepSeekUsage, UsageTotals } from '../deepseek/pricing.js'
 import { accumulateUsage, calcCost, emptyUsageTotals } from '../deepseek/pricing.js'
 import {
@@ -64,8 +65,8 @@ export interface TurnHandlers {
 export class Agent {
   // 当前生效配置。
   private config: DCodeConfig
-  // DeepSeek 客户端（apiKey/baseURL 变更时会重建，故为可变私有字段）。
-  private client: DeepSeekClient
+  // LLM 客户端（provider / apiKey / baseURL 变更时会重建）。
+  private client: LLMClient
   // 完整消息历史（含 system）。
   private messages: DeepMessage[]
   // 会话记录器（持久化）。
@@ -94,7 +95,7 @@ export class Agent {
   }) {
     this.config = opts.config
     this.cwd = opts.cwd
-    this.client = new DeepSeekClient(opts.config)
+    this.client = createLLMClient(opts.config)
     this.recorder = opts.recorder ?? null
     this.permissionMode = opts.permissionMode ?? 'default'
 
@@ -137,24 +138,41 @@ export class Agent {
     return this.recorder?.id ?? null
   }
 
+  /** 获取当前 Provider 标识。 */
+  getProviderId(): ProviderId {
+    return this.client.getProviderId()
+  }
+
   /**
    * 应用一组配置补丁到 Agent。
-   * 当 apiKey 或 baseURL 变化时，重建底层 DeepSeek 客户端使其立即生效；
+   * 当 provider / apiKey / baseURL 变化时，重建 LLM 客户端使其立即生效；
    * 当 model 变化时，刷新系统提示。
    * @param patch 配置补丁。
    */
   applyConfigPatch(patch: Partial<DCodeConfig>): void {
     const prev = this.config
-    this.config = { ...this.config, ...patch }
-    // 鉴权相关字段变化：重建客户端。
-    if (
-      patch.apiKey !== undefined && patch.apiKey !== prev.apiKey ||
-      patch.baseURL !== undefined && patch.baseURL !== prev.baseURL
-    ) {
-      this.client = new DeepSeekClient(this.config)
+    const merged: Partial<DCodeConfig> = { ...patch }
+    if (patch.providers) {
+      merged.providers = { ...this.config.providers }
+      for (const [id, overrides] of Object.entries(patch.providers)) {
+        const pid = id as ProviderId
+        merged.providers[pid] = { ...this.config.providers?.[pid], ...overrides }
+      }
     }
-    // 模型变化：刷新系统提示中的模型字段。
-    if (patch.model && patch.model !== prev.model) {
+    this.config = { ...this.config, ...merged }
+    const needsClientRebuild =
+      (merged.provider !== undefined && merged.provider !== prev.provider) ||
+      (merged.apiKey !== undefined && merged.apiKey !== prev.apiKey) ||
+      (merged.baseURL !== undefined && merged.baseURL !== prev.baseURL) ||
+      merged.providers !== undefined ||
+      merged.proxy !== undefined
+    if (needsClientRebuild) {
+      this.client = createLLMClient(this.config)
+    }
+    if (
+      (patch.model && patch.model !== prev.model) ||
+      (merged.provider !== undefined && merged.provider !== prev.provider)
+    ) {
       this.refreshSystemPrompt()
     }
   }
@@ -353,8 +371,14 @@ export class Agent {
             assistantMsg = ev.message
             // 累计用量与成本。
             if (ev.usage) {
-              this.usage = accumulateUsage(this.usage, this.config.model, ev.usage)
-              handlers.onUsage?.(ev.usage, calcCost(this.config.model, ev.usage))
+              const providerId = this.client.getProviderId()
+              this.usage = accumulateUsage(
+                this.usage,
+                this.config.model,
+                ev.usage,
+                providerId,
+              )
+              handlers.onUsage?.(ev.usage, calcCost(this.config.model, ev.usage, providerId))
             }
           }
         }

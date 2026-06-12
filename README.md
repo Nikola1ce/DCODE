@@ -1,13 +1,15 @@
 # DCODE
 
-> 适配 DeepSeek 模型的命令行 AI 编程助手
+> 多 Provider 命令行 AI 编程助手（默认智谱 AI 免费模型）
 >
 > 制作人：**Moriarty_Dox**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
-DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整体架构（Agent 主循环 + 工具系统 + 全屏 TUI + 斜杠命令 + 会话/记忆/上下文压缩），并针对 **DeepSeek** 的 OpenAI 兼容 API 做了适配与优化。它能理解你的代码库、读写与编辑文件、执行命令、检索代码，并以对话方式完成完整的开发任务。
+DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整体架构（Agent 主循环 + 工具系统 + 全屏 TUI + 斜杠命令 + 会话/记忆/上下文压缩），并支持 **智谱 AI、DeepSeek、OpenAI** 等 OpenAI 兼容 API。**默认使用智谱 AI 的免费模型**（`glm-4-flash`），只需在 [智谱开放平台](https://open.bigmodel.cn/usercenter/apikeys) 获取 API Key 即可**零成本**开始编程对话；也可随时切换至 DeepSeek / OpenAI 等其它 Provider。
+
+相对 Claude Code，DCODE 已完成 **MCP、子代理、后台 Shell、Web 工具、Hooks、Skills、文件检查点、Git 集成、多 Provider** 等核心能力（详见 [功能对比与路线图](docs/优化计划_DCODE_vs_ClaudeCode.md)）。
 
 ```
  _____     _____    ____    _____    ______
@@ -29,7 +31,13 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
   - [Windows 详细步骤](#windows-详细步骤)
   - [macOS / Linux 详细步骤](#macos--linux-详细步骤)
   - [卸载](#卸载)
-- [配置 API Key](#配置-api-key)
+- [配置 API Key 与 LLM Provider](#配置-api-key-与-llm-provider)
+- [配置 MCP Server](#配置-mcp-server)
+- [配置 Web 搜索](#配置-web-搜索)
+- [Hooks 钩子](#hooks-钩子)
+- [Skills 技能包](#skills-技能包)
+- [文件检查点与回滚](#文件检查点与回滚)
+- [Git 工作流](#git-工作流)
 - [新手教学](#新手教学)
 - [使用](#使用)
 - [交互界面内的斜杠命令](#交互界面内的斜杠命令)
@@ -38,33 +46,42 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - [项目记忆（DCODE.md）](#项目记忆dcode)
 - [常见问题](#常见问题)
 - [开发](#开发)
+- [功能路线图](#功能路线图)
 - [开源协议](#开源协议)
 
 ## 特性
 
-- **DeepSeek V4 原生适配**：支持 `deepseek-v4-flash`（默认，快速且经济）与 `deepseek-v4-pro`（推理/编码更强），均支持工具调用与思维链 `reasoning_content` 展示；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**，请尽快改用 V4 模型名）。
-- **流式输出**：边生成边显示，支持随时按 `Esc` 中断。
-- **Function Calling 工具系统**：模型可自主调用以下工具完成任务
-  - `read_file` 读取文件（带行号、可分段）
-  - `write_file` 写入/创建文件
-  - `edit_file` 精确字符串替换式编辑
-  - `list_dir` 列目录
-  - `glob` 按文件名模式查找（遵循 `.gitignore`）
-  - `grep` 按正则搜索内容
-  - `run_command` 执行命令（Windows 用 PowerShell，类 Unix 用 sh；支持 `background=true` 后台运行）
-  - `bash_output` 查询后台命令输出（支持 `tail` 增量模式）
-  - `kill_shell` 终止后台命令
-  - `task` 派遣子代理并行处理子任务
-  - `todo_write` 维护任务清单（界面实时展示进度）
-  - `web_fetch` 抓取公开 URL 正文（禁止内网，需授权）
-  - `web_search` Web 搜索（需配置 Bing/SerpAPI Key，需授权）
-- **权限门控**：写文件、执行命令前会请求授权，可选择“允许一次 / 总是允许 / 拒绝”；支持 `plan`（只读）、`auto`（自动接受编辑）、`bypass`（跳过所有确认）三种模式切换。
-- **会话持久化**：自动保存到 `~/.dcode/sessions/`，可用 `-c` 继续、`-r` 恢复。
-- **项目记忆**：读取项目根目录的 `DCODE.md` 注入上下文；`/init` 可自动生成。
-- **上下文自动压缩**：对话过长时自动摘要历史，释放上下文空间。
-- **成本追踪**：实时统计 token 用量与预估费用（区分缓存命中/未命中价）。
-- **MCP 协议支持**：连接 MCP Server，动态注册 `mcp__*` 工具，并可通过代理工具访问 Resources / Prompts（配置 `~/.dcode/mcp.json`，格式与 Cursor 兼容）。
-- **精美终端 UI**：基于 Ink 的全屏交互界面，暗/亮主题可切换。
+### 核心 Agent 与 Provider
+
+- **多 Provider 支持**：默认 **智谱 AI** + 免费模型 `glm-4-flash` / `glm-4.7-flash`（`/model` 中带 **★**）；另支持 DeepSeek、OpenAI；`/provider` 切换供应商，`/proxy` 配置代理；状态栏与 `/cost` 按 Provider **预估成本**（免费模型显示「免费」）。
+- **DeepSeek V4 原生适配**：`deepseek-v4-flash` / `deepseek-v4-pro`，工具调用与思维链 `reasoning_content`；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**）。
+- **流式输出**：边生成边显示，支持 `Esc` 中断；兼容各 Provider 的累积/重复 chunk 归一化，避免回答复读。
+- **上下文自动压缩**：对话过长时自动摘要；`/compact` 可手动触发。
+- **会话持久化**：`~/.dcode/sessions/`，`-c` 继续 / `-r` 恢复。
+- **项目记忆**：读取 `DCODE.md`；`/init` 可自动生成。
+
+### 工具系统（Function Calling）
+
+- **文件与代码**：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob`、`grep`
+- **命令行**：`run_command`（支持 `background=true`）、`bash_output`（含 `tail` 增量）、`kill_shell`
+- **协作与联网**：`task` 子代理并行、`todo_write` 任务清单、`web_fetch`、`web_search`
+- **MCP 动态工具**：连接 MCP Server 后注册 `mcp__*` 工具，及 `list_mcp_resources` 等代理工具
+
+### 工程能力（对标 Claude Code 已落地）
+
+- **MCP Client**：`~/.dcode/mcp.json` / `.dcode/mcp.json`，`/mcp` 管理连接
+- **子代理（Task）**：主 Agent 可并行派遣子任务，`/subagents` 查看状态
+- **后台 Shell**：长时构建/测试不阻塞主循环，界面有后台面板，`/shells` 查看
+- **Hooks**：`PreToolUse` / `PostToolUse` 等事件钩子，`/hooks` 查看与 reload
+- **Skills**：可复用 Markdown 技能包，`/skill list` 加载领域工作流
+- **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
+- **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
+
+### 体验与安全
+
+- **权限门控**：写文件、执行命令、Web/MCP 等需授权；`plan` / `auto` / `bypass` 模式可切换
+- **精美终端 UI**：Ink 全屏 TUI，暗/亮主题，斜杠命令补全（`/` 底部展示 Provider 子选项）
+- **成本追踪**：token 用量与预估成本（区分缓存命中/未命中）
 
 ## 环境要求
 
@@ -73,7 +90,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 | Node.js | **>= 18**（推荐 20 或 24 LTS） |
 | npm | 随 Node.js 自带即可 |
 | 终端 | Windows Terminal、PowerShell、macOS Terminal、Linux 任意终端 |
-| API Key | [DeepSeek 开放平台](https://platform.deepseek.com) 注册并创建 |
+| API Key | **默认智谱 AI**：在 [智谱开放平台](https://open.bigmodel.cn/usercenter/apikeys) 注册并创建 Key（免费模型无需充值）；亦可使用 [DeepSeek](https://platform.deepseek.com) / [OpenAI](https://platform.openai.com/api-keys) |
 
 验证 Node.js 是否已安装：
 
@@ -102,9 +119,10 @@ npm run build
 # 3. 全局安装（注册 dcode 命令）
 npm install -g .
 
-# 4. 设置 API Key（任选一种方式，见下文「配置 API Key」）
-export DEEPSEEK_API_KEY="sk-你的密钥"   # macOS / Linux
-# $env:DEEPSEEK_API_KEY="sk-你的密钥"   # Windows PowerShell
+# 4. 设置 API Key（默认智谱 AI，见下文「配置 API Key 与 LLM Provider」）
+export ZHIPU_API_KEY="你的智谱密钥"   # macOS / Linux（推荐，配合默认免费模型）
+# $env:ZHIPU_API_KEY="你的智谱密钥"   # Windows PowerShell
+# 若使用 DeepSeek：export DEEPSEEK_API_KEY="sk-..."
 
 # 5. 进入你的项目目录，启动 DCODE
 cd /path/to/your-project
@@ -153,7 +171,7 @@ DCODE-v1.0.0/
 └── LICENSE
 ```
 
-首次运行后，可在同目录编辑 **`工作目录.txt`** 修改默认项目路径；API Key 配置见下文 [配置 API Key](#配置-api-key)。
+首次运行后，可在同目录编辑 **`工作目录.txt`** 修改默认项目路径；API Key 与 Provider 配置见下文 [配置 API Key 与 LLM Provider](#配置-api-key-与-llm-provider)。
 
 ---
 
@@ -240,7 +258,8 @@ npm config get prefix
 **5. 配置 API Key 并启动**
 
 ```powershell
-$env:DEEPSEEK_API_KEY="sk-你的密钥"
+# 智谱 AI（默认，免费模型；Key 见 https://open.bigmodel.cn/usercenter/apikeys）
+$env:ZHIPU_API_KEY="你的智谱密钥"
 cd C:\path\to\your-project
 dcode
 ```
@@ -266,8 +285,8 @@ npm install -g .
 # 验证
 dcode --version
 
-# 配置 Key 并启动
-export DEEPSEEK_API_KEY="sk-你的密钥"
+# 配置 Key 并启动（默认智谱 AI 免费模型）
+export ZHIPU_API_KEY="你的智谱密钥"
 cd ~/your-project
 dcode
 ```
@@ -294,49 +313,93 @@ powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
 
 本地克隆目录或便携 ZIP 解压文件夹可直接删除。
 
-## 配置 API Key
+## 配置 API Key 与 LLM Provider
 
-三选一（优先级：**环境变量 > 配置文件 > 交互式输入**）：
+> **推荐新手路径（完全免费）**  
+> DCODE **默认 Provider 为智谱 AI**，默认模型为 **`glm-4-flash`（永久免费）**。你只需：
+> 1. 打开 [智谱 AI 开放平台 · API Keys](https://open.bigmodel.cn/usercenter/apikeys) 注册/登录  
+> 2. 创建 API Key 并复制保存  
+> 3. 运行 `dcode`，按提示 `/login` 粘贴 Key，或设置环境变量 `ZHIPU_API_KEY`  
+>  
+> 无需充值即可使用免费模型（`/model` 中带 **★** 标记的 `glm-4-flash`、`glm-4.7-flash`）。状态栏**预估成本**会显示「免费」。若需更强能力，可在 `/model` 中选择智谱按量计费模型，或 `/provider deepseek` / `/provider openai` 切换供应商。
 
-### 方式一：交互式（最简单）
+### 支持的 Provider
 
-首次运行 `dcode`，界面会引导你输入 Key，自动保存到 `~/.dcode/config.json`。之后可随时输入 `/login` 重新设置。
+| Provider | 环境变量 | 默认模型 | 说明 |
+| --- | --- | --- | --- |
+| **智谱 AI**（**默认**） | `ZHIPU_API_KEY` | `glm-4-flash` | **免费模型可用**；Key 在 [open.bigmodel.cn](https://open.bigmodel.cn/usercenter/apikeys) 获取 |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | [platform.deepseek.com](https://platform.deepseek.com) |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com](https://platform.openai.com/api-keys)；国内通常需配置 `/proxy` |
 
-### 方式二：环境变量（推荐用于 CI / 临时切换）
+运行中切换：`/provider zhipu`、`/provider deepseek`、`/provider openai`。切换后会自动改用该 Provider 的默认模型（若当前模型不属于目标供应商）。查看状态：`/config`、`/provider`。
+
+### 配置 Key 的三种方式
+
+优先级：**环境变量 > 配置文件 > 交互式输入**
+
+#### 方式一：交互式（最简单）
+
+首次运行 `dcode`，界面会引导你输入 Key，自动保存到 `~/.dcode/config.json`（按当前 Provider 写入对应字段）。之后可随时输入 `/login` 重新设置。
+
+#### 方式二：环境变量（推荐用于 CI / 临时切换）
 
 ```bash
-# PowerShell
-$env:DEEPSEEK_API_KEY="sk-你的密钥"
+# PowerShell — 智谱 AI（默认，免费模型）
+$env:ZHIPU_API_KEY="你的智谱密钥"
 
 # bash / zsh
-export DEEPSEEK_API_KEY="sk-你的密钥"
+export ZHIPU_API_KEY="你的智谱密钥"
+
+# 其它 Provider（可选）
+# $env:DEEPSEEK_API_KEY="sk-..."
+# $env:OPENAI_API_KEY="sk-..."
 ```
 
 持久化（bash）：
 
 ```bash
-echo 'export DEEPSEEK_API_KEY="sk-你的密钥"' >> ~/.bashrc
+echo 'export ZHIPU_API_KEY="你的智谱密钥"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 方式三：手动编辑配置文件
+#### 方式三：手动编辑配置文件
 
-创建或编辑 `~/.dcode/config.json`：
+创建或编辑 `~/.dcode/config.json`（智谱 AI 默认示例）：
 
 ```json
 {
+  "provider": "zhipu",
+  "apiKey": "你的智谱密钥",
+  "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+  "model": "glm-4-flash"
+}
+```
+
+DeepSeek 示例：
+
+```json
+{
+  "provider": "deepseek",
   "apiKey": "sk-你的密钥",
   "baseURL": "https://api.deepseek.com",
   "model": "deepseek-v4-flash"
 }
 ```
 
-**获取 Key 的步骤：**
+### 获取智谱 API Key（免费起步）
 
-1. 打开 [https://platform.deepseek.com](https://platform.deepseek.com) 并注册/登录
-2. 进入「API Keys」页面，点击「创建 API Key」
-3. 复制以 `sk-` 开头的密钥（只显示一次，请妥善保存）
-4. 确保账户有余额或已开通按量计费
+1. 打开 [https://open.bigmodel.cn/usercenter/apikeys](https://open.bigmodel.cn/usercenter/apikeys) 并注册/登录  
+2. 点击「创建 API Key」，复制密钥（只显示一次，请妥善保存）  
+3. 在 DCODE 中 `/login` 或设置 `ZHIPU_API_KEY`  
+4. 使用 `/model` 选择带 **★ 永久免费** 标记的模型即可零成本对话  
+
+### 获取 DeepSeek API Key（可选）
+
+1. 打开 [https://platform.deepseek.com](https://platform.deepseek.com) 并注册/登录  
+2. 进入「API Keys」页面，点击「创建 API Key」  
+3. 复制以 `sk-` 开头的密钥  
+4. `/provider deepseek` 后配置 `DEEPSEEK_API_KEY` 或 `/login`  
+5. 按量计费，请确保账户有余额  
 
 ## 配置 MCP Server
 
@@ -390,7 +453,61 @@ export SERPAPI_API_KEY="your-key"
 
 `web_fetch` 与 `web_search` 在 **plan 模式**下不可用；默认模式下执行前会弹出授权确认。
 
-## 新手教学
+## Hooks 钩子
+
+在工具执行前后插入自定义逻辑（lint、格式化、阻断危险操作等）。配置位置（项目覆盖全局）：
+
+- `~/.dcode/hooks.json` 或 `<项目>/.dcode/hooks.json`
+- `~/.dcode/hooks/*.json` 或 `<项目>/.dcode/hooks/*.json`
+
+支持事件类型包括 `PreToolUse`、`PostToolUse`、`Notification`、`OnSessionStart`、`OnSessionEnd` 等。Hook 可配置为 shell 命令；`PreToolUse` 可阻止工具执行或修改参数。
+
+```bash
+/hooks          # 查看当前已加载钩子
+/hooks reload   # 修改配置后重新加载
+```
+
+可在 `config.json` 中设置 `"hooksEnabled": true`（默认随项目启用）。详见 [优化计划 · Hooks](docs/优化计划_DCODE_vs_ClaudeCode.md#5-hooks-系统)。
+
+## Skills 技能包
+
+将常见任务沉淀为可复用 Markdown 技能，加载后注入系统提示。存放位置：
+
+- 全局：`~/.dcode/skills/<name>/SKILL.md`
+- 项目：`.dcode/skills/<name>/SKILL.md`
+
+文件含 YAML frontmatter（`name`、`description`）与正文指令。首次运行会写入若干内置模板。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/skill list` | 列出可用技能 |
+| `/skill <名称>` | 加载技能到当前会话 |
+| `/skill unload` | 卸载已加载技能 |
+| `/skill create <名称>` | 从当前对话摘要创建新技能 |
+
+## 文件检查点与回滚
+
+`write_file`、`edit_file` 成功执行前会自动将原文件备份到 `.dcode/checkpoints/`（建议加入 `.gitignore`）。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/checkpoints` | 查看备份列表（时间、路径、大小） |
+| `/checkpoints clear` | 清空全部检查点 |
+| `/undo` | 回退最近 **1** 个检查点 |
+| `/undo 3` | 回退最近 3 个检查点 |
+
+多步 AI 改码出错时，可快速回滚而无需手动 `git checkout`。
+
+## Git 工作流
+
+| 命令 | 说明 |
+| --- | --- |
+| `/commit` | 读取 `git diff --staged`，生成 Conventional Commits 信息，确认后执行 `git commit` |
+| `/pr` | 根据分支变更生成 PR 标题与 Markdown 描述 |
+| `/pr create` | 若已安装 [GitHub CLI](https://cli.github.com/)（`gh`），可尝试直接创建 PR |
+
+提交与 push 前均需用户确认。Agent 也可通过 `run_command` 调用 git，但推荐优先使用上述斜杠命令以获得更规范的摘要。
+
 
 ### 第一课：第一次对话
 
@@ -417,17 +534,22 @@ export SERPAPI_API_KEY="your-key"
 
 ### 第三课：使用斜杠命令
 
-在输入框键入 `/` 会自动弹出命令菜单：
+在输入框键入 `/` 会自动弹出命令菜单（底部含 **Provider 子选项**：`/provider zhipu` 等）：
 
 | 你想做的事 | 输入 |
 | --- | --- |
 | 查看所有命令 | `/help` |
-| 切换更强模型 | `/model deepseek-v4-pro` |
-| 查看 token 花费 | `/cost` |
+| 切换 Provider（默认智谱免费） | `/provider zhipu` |
+| 切换模型（★ 为免费） | `/model` |
+| 查看预估 token 成本 | `/cost` |
+| 连接 MCP 工具 | `/mcp list` |
+| 查看后台构建任务 | `/shells` |
+| 改码后一键回滚 | `/undo` |
+| 生成 commit / PR | `/commit`、`/pr` |
+| 加载技能包 | `/skill list` |
 | 清空对话重来 | `/clear` |
-| 生成项目记忆文件 | `/init` |
-| 切换暗/亮主题 | `/theme` |
-| 只读规划、不改文件 | `/plan` |
+| 生成项目记忆 | `/init` |
+| 只读规划 | `/plan` |
 | 退出 | `/exit` |
 
 ### 第四课：继续上次会话
@@ -472,10 +594,11 @@ echo "检查 package.json 的依赖是否有已知安全问题" | dcode -p
 ## 使用
 
 ```bash
-# 启动交互式界面
+# 启动交互式界面（默认智谱 glm-4-flash 免费模型）
 dcode
 
-# 用更强的 V4 Pro 模型启动
+# 指定模型启动
+dcode --model glm-4.7-flash
 dcode --model deepseek-v4-pro
 
 # 无头模式：执行一次任务并打印结果（适合脚本/CI）
@@ -504,7 +627,7 @@ dcode --plan
 | `-p, --print` | 无头模式：执行一轮任务并打印后退出 |
 | `-c, --continue` | 继续当前目录最近一次会话 |
 | `-r, --resume [id]` | 恢复指定（或最近）历史会话 |
-| `-m, --model <模型>` | 指定模型（`deepseek-v4-flash` / `deepseek-v4-pro`，默认 flash） |
+| `-m, --model <模型>` | 指定模型（默认 `glm-4-flash`；智谱免费另有 `glm-4.7-flash`；DeepSeek 见 `/model`） |
 | `--cwd <目录>` | 指定工作目录 |
 | `--plan` | 规划模式（只读） |
 | `--auto` | 自动接受编辑模式（文件读写免确认） |
@@ -516,27 +639,35 @@ dcode --plan
 
 ## 交互界面内的斜杠命令
 
-> 在输入框中键入 `/` 会**自动弹出命令补全菜单**：用 `↑`/`↓` 选择，`Tab` 补全命令名（便于继续输入参数），`回车` 执行选中命令，`Esc` 关闭菜单。继续输入字母会按前缀实时过滤候选。
+> 在输入框中键入 `/` 会**自动弹出命令补全菜单**：用 `↑`/`↓` 选择，`Tab` 补全命令名（便于继续输入参数），`回车` 执行选中命令，`Esc` 关闭菜单。继续输入字母会按前缀实时过滤候选；仅输入 `/` 时，**Provider 子选项**排在列表最底部。
 
 | 命令 | 说明 |
 | --- | --- |
 | `/help` | 显示所有命令 |
 | `/about` | 关于（版本与制作人） |
-| `/model [名称]` | 查看或切换模型 |
+| `/model [名称]` | 查看或切换模型（智谱免费模型带 ★ 标记） |
+| `/provider [id]` | 查看或切换 LLM Provider（`zhipu` / `deepseek` / `openai`） |
+| `/proxy [地址\|clear]` | 查看或设置 HTTP(S) 代理（OpenAI 等国外 API 常用） |
 | `/cost` | 显示 token 用量与预估成本 |
 | `/clear` | 清空对话历史 |
 | `/compact` | 立即压缩上下文 |
 | `/init` | 分析项目并生成 `DCODE.md` |
-| `/login` | 设置 / 更新 API Key |
+| `/login` | 设置 / 更新当前 Provider 的 API Key |
 | `/resume` | 从历史会话中恢复 |
 | `/theme` | 切换暗/亮主题 |
 | `/thinking` | 开关思维链展示 |
 | `/effort [high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API） |
 | `/mcp [list\|resources\|prompts\|reload]` | 查看/管理 MCP Server 连接 |
-| `/shells`（别名 `/bg`） | 查看后台 Shell（`run_command background`）状态 |
-| `/subagents`（别名 `/agents`） | 查看子代理（Task 工具）运行状态 |
-| `/plan`、`/auto`、`/bypass` | 切换权限模式：规划（只读）/ 自动接受编辑 / 跳过所有确认 |
-| `/mode <plan\|auto\|bypass>` | 同上，例如 `/mode bypass` |
+| `/shells`（别名 `/bg`） | 查看后台 Shell 状态 |
+| `/subagents`（别名 `/agents`） | 查看子代理（Task 工具）状态 |
+| `/hooks [reload]` | 查看或重载 Hooks 钩子 |
+| `/skill`（别名 `/skills`） | 技能包：list / 加载 / unload / create |
+| `/checkpoints [clear]` | 查看或清空文件检查点 |
+| `/undo [N]` | 回退最近 N 个文件检查点（默认 1） |
+| `/commit` | 根据 staged 变更生成 commit 并提交 |
+| `/pr [create]` | 生成 PR 描述（可选 gh 创建） |
+| `/plan`、`/auto`、`/bypass` | 切换权限模式 |
+| `/mode <plan\|auto\|bypass>` | 同上 |
 | `/memory` | 显示已加载的记忆文件 |
 | `/config` | 显示当前配置（隐藏密钥） |
 | `/exit` | 退出 |
@@ -634,9 +765,10 @@ dcode --plan
 
 ### 启动后提示 API Key 无效或未设置
 
-- 检查 Key 是否以 `sk-` 开头、无多余空格
-- 环境变量名必须为 `DEEPSEEK_API_KEY`
-- 在界面输入 `/login` 重新配置，或编辑 `~/.dcode/config.json`
+- 默认 Provider 为智谱 AI，环境变量名优先使用 **`ZHIPU_API_KEY`**
+- DeepSeek 使用 `DEEPSEEK_API_KEY`，OpenAI 使用 `OPENAI_API_KEY`
+- 检查 Key 无多余空格；智谱 Key 在 [开放平台](https://open.bigmodel.cn/usercenter/apikeys) 创建
+- 在界面输入 `/login` 重新配置，或编辑 `~/.dcode/config.json`；用 `/config` 确认当前 Provider
 
 ### 不想用命令行怎么安装？
 
@@ -657,13 +789,16 @@ npm run build
 
 ### 如何切换模型？
 
-- 启动时：`dcode --model deepseek-v4-pro`
-- 运行中：`/model deepseek-v4-pro`
-- 配置文件：修改 `~/.dcode/config.json` 中的 `"model"` 字段
+- 启动时：`dcode --model glm-4.7-flash` 或 `dcode --model deepseek-v4-pro`
+- 运行中：`/model` 打开选择器，或 `/model glm-4-flash`
+- 配置文件：修改 `~/.dcode/config.json` 中的 `"model"` 字段  
+- 切换 Provider：`/provider zhipu`（默认免费）、`/provider deepseek`、`/provider openai`
 
 ### 费用如何计算？
 
-输入 `/cost` 查看当前会话的 token 用量与预估美元成本。`deepseek-v4-flash` 更经济，复杂推理/编码任务可选用 `deepseek-v4-pro`。
+输入 `/cost` 查看当前会话的 token 用量与**预估**美元成本。  
+- **智谱免费模型**（`glm-4-flash`、`glm-4.7-flash`）：预估成本为 **免费**  
+- 智谱按量计费模型、DeepSeek、OpenAI：按各自价目估算；状态栏显示「预估成本」
 
 ## 开发
 
@@ -678,7 +813,7 @@ npm test        # 运行单元测试（Vitest）
 npm run test:watch  # 监听模式跑测试
 ```
 
-源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest）。主要模块：
+源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest，119+ 用例）。主要模块：
 
 ```
 src/
@@ -688,24 +823,37 @@ src/
 ├── memory.ts            # DCODE.md 记忆加载
 ├── headless.ts          # 无头模式执行器
 ├── mcp/                 # MCP Client（连接 Server、动态工具）
+├── providers/           # 多 Provider（zhipu / deepseek / openai）、代理、计费、流式归一化
 ├── deepseek/
-│   ├── client.ts        # DeepSeek 流式客户端（SSE + 工具调用合并 + 重试）
-│   └── pricing.ts       # 用量与成本计算
+│   ├── client.ts        # OpenAI 兼容流式客户端（SSE + 工具调用 + 重试）
+│   └── pricing.ts       # 用量与成本（委托 providers/pricing）
 ├── core/
 │   ├── agent.ts         # Agent 主循环
+│   ├── subAgent.ts      # 子代理（Task）调度
+│   ├── shellManager.ts  # 后台 Shell 生命周期
+│   ├── hooks.ts         # Hooks 钩子系统
+│   ├── skills.ts        # Skills 技能包
+│   ├── checkpoint.ts    # 文件检查点与 /undo
+│   ├── gitUtils.ts      # Git diff / commit / PR 辅助
 │   ├── systemPrompt.ts  # 系统提示构建
 │   ├── compact.ts       # 上下文压缩
 │   ├── session.ts       # 会话持久化（JSONL）
-│   ├── shellManager.ts  # 后台 Shell 生命周期管理
-│   ├── shellManager.test.ts  # shellManager 单元测试
-│   ├── subAgent.ts      # 子代理调度
 │   └── types.ts         # 核心类型
-├── tools/               # 工具系统（读/写/编辑/列目录/glob/grep/命令/todo/task/MCP）
+├── tools/               # 工具系统（文件/命令/Web/Task/MCP 等）
 ├── commands/            # 斜杠命令系统
 └── ui/                  # Ink TUI 组件
 ```
 
 欢迎提交 Issue 与 Pull Request！
+
+## 功能路线图
+
+| 阶段 | 状态 | 能力 |
+| --- | --- | --- |
+| **P0 核心** | ✅ 已完成 | MCP、子代理 Task、后台 Shell、Web Fetch/Search |
+| **P1 工程** | ✅ 已完成 | Hooks、Skills、文件检查点、Git `/commit` `/pr` |
+| **P2 体验** | 🔶 部分完成 | **多 Provider**（智谱/DeepSeek/OpenAI）、Provider 感知计费、流式去重 |
+| **P2 待办** | ⏳ 规划中 | `.dcodeignore`、`/review`、IDE 扩展、图像多模态、自动更新等 |
 
 ## 开源协议
 

@@ -16,7 +16,7 @@ export const VERSION = '1.0.0'
 export const AUTHOR = 'Moriarty_Dox'
 
 // 产品标语，展示在欢迎横幅下方。
-export const TAGLINE = '适配 DeepSeek 的命令行 AI 编程助手'
+export const TAGLINE = '命令行 AI 编程助手'
 
 // DeepSeek 官方 OpenAI 兼容 API 基础地址。
 export const DEFAULT_BASE_URL = 'https://api.deepseek.com'
@@ -155,6 +155,29 @@ export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'
 export const ENV_MODEL = 'DCODE_MODEL'
 export const ENV_REASONING_EFFORT = 'DCODE_REASONING_EFFORT'
+export const ENV_PROVIDER = 'DCODE_PROVIDER'
+
+// OpenAI Provider 环境变量。
+export const ENV_OPENAI_API_KEY = 'OPENAI_API_KEY'
+export const ENV_OPENAI_BASE_URL = 'OPENAI_BASE_URL'
+
+// 智谱 AI Provider 环境变量（GLM-4-Flash 等永久免费模型）。
+export const ENV_ZHIPU_API_KEY = 'ZHIPU_API_KEY'
+export const ENV_ZHIPU_BASE_URL = 'ZHIPU_BASE_URL'
+export const DEFAULT_ZHIPU_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4'
+export const DEFAULT_ZHIPU_MODEL = 'glm-4-flash'
+
+// Ollama Provider 环境变量。
+export const ENV_OLLAMA_BASE_URL = 'OLLAMA_BASE_URL'
+export const ENV_OLLAMA_API_KEY = 'OLLAMA_API_KEY'
+
+// 自定义 OpenAI 兼容 Provider 环境变量。
+export const ENV_CUSTOM_API_KEY = 'DCODE_API_KEY'
+
+// HTTP(S) 代理环境变量（外国 Provider 如 OpenAI 需配置方可直连）。
+export const ENV_DCODE_PROXY = 'DCODE_PROXY'
+export const ENV_HTTPS_PROXY = 'HTTPS_PROXY'
+export const ENV_HTTP_PROXY = 'HTTP_PROXY'
 
 // V4 Thinking 模式下的推理强度（仅 thinking 启用时生效）。
 export const REASONING_EFFORTS = ['high', 'max'] as const

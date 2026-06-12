@@ -24,6 +24,7 @@ import {
   type ReasoningEffort,
 } from './constants.js'
 import { loadConfig, ensureConfigDir, type PermissionMode } from './config.js'
+import { getActiveProviderId, getProviderDefinition } from './providers/registry.js'
 import { Agent } from './core/agent.js'
 import {
   SessionRecorder,
@@ -271,8 +272,9 @@ async function main(): Promise<void> {
 
     // 缺少 API Key 直接报错退出。
     if (!agent.hasApiKey()) {
+      const def = getProviderDefinition(getActiveProviderId(config))
       process.stderr.write(
-        '错误：未设置 API Key。请设置环境变量 DEEPSEEK_API_KEY，或先以交互模式运行 dcode 并执行 /login。\n',
+        `错误：未设置 ${def.name} API Key。请设置环境变量 ${def.apiKeyEnv}，或交互模式执行 /login。\n`,
       )
       process.exit(1)
     }

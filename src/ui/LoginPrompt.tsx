@@ -1,15 +1,24 @@
 // API Key 录入弹窗。
-// 用于首次启动或 /login 时输入 DeepSeek API Key。输入内容以掩码（•）显示，避免肩窥泄露。
-// 回车提交，Esc 取消。
+// 用于首次启动或 /login 时按当前 Provider 输入对应 API Key；掩码显示，回车提交，Esc 取消。
 // 制作人：Moriarty_Dox
 
 import React, { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { useTheme } from './theme.js'
-import { DEFAULT_BASE_URL } from '../constants.js'
+import type { ProviderId } from '../providers/types.js'
 
 // 组件入参。
 interface LoginPromptProps {
+  /** 当前 Provider 标识。 */
+  providerId: ProviderId
+  /** 展示名称，如 OpenAI、DeepSeek。 */
+  providerName: string
+  /** 获取 Key 的平台链接。 */
+  platformUrl: string
+  /** API 端点（展示用）。 */
+  baseURL: string
+  /** 对应环境变量名。 */
+  apiKeyEnv: string
   // 提交回调：返回用户输入的 API Key。
   onSubmit: (apiKey: string) => void
   // 取消回调。
@@ -17,59 +26,62 @@ interface LoginPromptProps {
 }
 
 /**
- * API Key 录入弹窗。
+ * API Key 录入弹窗（随当前 Provider 切换标题与说明）。
  * @param props 入参。
  * @returns 弹窗 JSX。
  */
-export function LoginPrompt({ onSubmit, onCancel }: LoginPromptProps): React.ReactElement {
+export function LoginPrompt({
+  providerId,
+  providerName,
+  platformUrl,
+  baseURL,
+  apiKeyEnv,
+  onSubmit,
+  onCancel,
+}: LoginPromptProps): React.ReactElement {
   const theme = useTheme()
-  // 输入缓冲区。
   const [value, setValue] = useState('')
 
   useInput((input, key) => {
-    // 回车：提交（去除首尾空白）。
     if (key.return) {
       const v = value.trim()
       if (v.length > 0) onSubmit(v)
       return
     }
-    // Esc：取消。
     if (key.escape) {
       onCancel()
       return
     }
-    // 退格：删除末位。
     if (key.backspace || key.delete) {
       setValue((v) => v.slice(0, -1))
       return
     }
-    // 忽略控制键。
     if (key.ctrl || key.meta || key.tab) return
-    // 追加可见字符。
     if (input && input.length > 0) {
       setValue((v) => v + input)
     }
   })
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.primary}
-      paddingX={1}
-    >
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.primary} paddingX={1}>
       <Text color={theme.primary} bold>
-        设置 DeepSeek API Key
+        设置 {providerName} API Key
       </Text>
       <Box marginTop={1} flexDirection="column">
+        {platformUrl ? (
+          <Text color={theme.dim}>
+            请在 {platformUrl} 获取 API Key（端点：{baseURL}）。
+          </Text>
+        ) : (
+          <Text color={theme.dim}>API 端点：{baseURL}</Text>
+        )}
         <Text color={theme.dim}>
-          请在 https://platform.deepseek.com 获取 API Key（端点：{DEFAULT_BASE_URL}）。
+          密钥保存在 ~/.dcode/config.json（providers.{providerId}，与其它供应商独立）。
         </Text>
-        <Text color={theme.dim}>密钥仅保存在本机 ~/.dcode/config.json。</Text>
+        <Text color={theme.dim}>也可设置环境变量 {apiKeyEnv}。</Text>
       </Box>
       <Box marginTop={1}>
         <Text color={theme.accent}>{'Key ❯ '}</Text>
-        {/* 以掩码显示已输入字符数 */}
         <Text color={theme.text}>{'•'.repeat(value.length)}</Text>
         <Text inverse> </Text>
       </Box>

@@ -15,7 +15,7 @@ import {
 import type { DCodeConfig } from '../config.js'
 import type { DeepMessage, ToolContext } from './types.js'
 import { getSubAgentTools, toOpenAITools, executeToolCall } from '../tools/index.js'
-import { DeepSeekClient } from '../deepseek/client.js'
+import { createLLMClient } from '../providers/factory.js'
 import { buildSystemPrompt } from './systemPrompt.js'
 import { accumulateUsage } from '../deepseek/pricing.js'
 import type { UsageTotals } from '../deepseek/pricing.js'
@@ -309,7 +309,7 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
     { role: 'user', content: opts.prompt, timestamp: Date.now() },
   ]
 
-  const client = new DeepSeekClient(config)
+  const client = createLLMClient(config)
   const toolCtx: ToolContext = {
     cwd: opts.parentCtx.cwd,
     config,
@@ -346,7 +346,7 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
       } else if (ev.type === 'done') {
         assistantMsg = ev.message
         if (ev.usage) {
-          usage = accumulateUsage(usage, opts.model, ev.usage)
+          usage = accumulateUsage(usage, opts.model, ev.usage, client.getProviderId())
         }
       }
     }
