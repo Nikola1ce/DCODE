@@ -52,6 +52,9 @@ export const CONFIG_DIR_NAME = '.dcode'
 // 配置文件名（存放 apiKey、默认模型、主题、权限白名单等）。
 export const CONFIG_FILE_NAME = 'config.json'
 
+// MCP Server 配置文件名（~/.dcode/mcp.json，格式与 Cursor mcp.json 兼容）。
+export const MCP_CONFIG_FILE_NAME = 'mcp.json'
+
 // 项目级记忆文件名：类似 Claude Code 的 CLAUDE.md，存放项目约定/上下文。
 export const MEMORY_FILE_NAME = 'DCODE.md'
 

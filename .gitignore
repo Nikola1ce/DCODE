@@ -4,3 +4,4 @@ release/out/
 *.log
 .DS_Store
 .dcode-local/
+docs

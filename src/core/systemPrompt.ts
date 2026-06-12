@@ -7,6 +7,7 @@
 import { PRODUCT_NAME, AUTHOR } from '../constants.js'
 import type { PermissionMode } from '../config.js'
 import { formatMemories, loadMemories } from '../memory.js'
+import { getMcpManager } from '../mcp/client.js'
 
 // 构建系统提示所需的运行期信息。
 export interface SystemPromptContext {
@@ -29,6 +30,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 不同权限模式给模型的行为约束说明。
   const modeNote = describePermissionMode(ctx.permissionMode)
+  const mcpNote = buildMcpSection()
 
   // 主体提示。使用清晰的分节，便于模型遵循。
   const base = `你是 ${PRODUCT_NAME}，一个运行在用户终端中的 AI 编程助手，由「${AUTHOR}」打造，底层使用 DeepSeek 模型。
@@ -48,7 +50,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 需要运行测试/构建/git 等操作时，用 run_command；并在 description 中说明用途。
 - 面对包含三步以上的复杂任务，先用 todo_write 列出计划并随进度更新状态。
 - 完成修改后，尽量通过运行测试或构建命令来自我验证。
-
+${mcpNote}
 # 代码规范
 - 遵循目标文件已有的代码风格、命名与缩进。
 - 不要添加无意义的注释；只在解释非显而易见的意图时注释。
@@ -75,6 +77,24 @@ ${modeNote}
 ${memories}`
   }
   return base
+}
+
+/**
+ * 若已连接 MCP Server，生成 MCP 工具使用说明。
+ * @returns MCP 说明段落或空字符串。
+ */
+function buildMcpSection(): string {
+  const mgr = getMcpManager()
+  if (!mgr) return ''
+  const ids = mgr.getConnectedServerIds()
+  if (ids.length === 0) return ''
+  return `
+# MCP 扩展工具
+- 已连接 MCP Server：${ids.join('、')}
+- 各 Server 提供的工具以 mcp__{server}__{tool} 命名，可直接调用。
+- 发现 Resources：先用 list_mcp_resources，再用 read_mcp_resource(server_id, uri)。
+- 发现 Prompts：先用 list_mcp_prompts，再用 get_mcp_prompt(server_id, name, arguments)。
+`
 }
 
 /**

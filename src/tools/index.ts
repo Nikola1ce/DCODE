@@ -15,12 +15,14 @@ import { editFileTool } from './editFile.js'
 import { globTool } from './glob.js'
 import { grepTool } from './grep.js'
 import { listDirTool } from './listDir.js'
+import { MCP_PROXY_TOOLS } from './mcpProxy.js'
 import { readFileTool } from './readFile.js'
+import { globalToolRegistry, registerMcpTools } from './registry.js'
 import { runCommandTool } from './runCommand.js'
 import { todoWriteTool } from './todo.js'
 import { writeFileTool } from './writeFile.js'
 
-// 全部内置工具（顺序影响在 /help 等处的展示顺序）。
+// 全部内置工具（顺序影响在 /help 等处的展示顺序；不含 MCP 动态工具）。
 export const ALL_TOOLS: ToolDefinition[] = [
   readFileTool,
   writeFileTool,
@@ -30,12 +32,13 @@ export const ALL_TOOLS: ToolDefinition[] = [
   grepTool,
   runCommandTool,
   todoWriteTool,
+  ...MCP_PROXY_TOOLS,
 ]
 
-// 工具名 -> 定义 的索引，便于 O(1) 查找。
-const TOOL_MAP = new Map<string, ToolDefinition>(
-  ALL_TOOLS.map((t) => [t.name, t]),
-)
+// 初始化全局注册表：内置 + MCP 代理工具（MCP 动态工具由 initMcp 注入）。
+globalToolRegistry.registerBuiltin(ALL_TOOLS)
+
+export { registerMcpTools }
 
 /**
  * 按名称获取工具定义。
@@ -43,7 +46,7 @@ const TOOL_MAP = new Map<string, ToolDefinition>(
  * @returns 工具定义或 undefined。
  */
 export function getTool(name: string): ToolDefinition | undefined {
-  return TOOL_MAP.get(name)
+  return globalToolRegistry.get(name)
 }
 
 /**
@@ -53,10 +56,7 @@ export function getTool(name: string): ToolDefinition | undefined {
  * @returns 过滤后的工具列表。
  */
 export function getAvailableTools(permissionMode: string): ToolDefinition[] {
-  if (permissionMode === 'plan') {
-    return ALL_TOOLS.filter((t) => t.readOnly)
-  }
-  return ALL_TOOLS
+  return globalToolRegistry.getAvailable(permissionMode)
 }
 
 /**
@@ -65,14 +65,7 @@ export function getAvailableTools(permissionMode: string): ToolDefinition[] {
  * @returns OpenAI tools schema 数组。
  */
 export function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
-  return tools.map((t) => ({
-    type: 'function',
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    },
-  }))
+  return globalToolRegistry.toOpenAISchema(tools)
 }
 
 // 执行单次工具调用的结果（含 UI 所需的元信息）。

@@ -8,9 +8,12 @@ import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isS
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
+import { getMcpManager, type MCPManager } from '../mcp/client.js'
+import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
 import { getProjectMemoryPath, hasProjectMemory } from '../memory.js'
 import { ALL_TOOLS } from '../tools/index.js'
+import { globalToolRegistry } from '../tools/registry.js'
 
 // 命令可触发的特殊 UI 交互流程类型。
 export type SpecialFlow = 'model' | 'login' | 'resume' | 'theme'
@@ -170,6 +173,33 @@ export const COMMANDS: SlashCommand[] = [
       }
       ctx.applyConfig({ reasoningEffort: target })
       return { message: `已切换推理强度为 ${target}。` }
+    },
+  },
+  {
+    name: 'mcp',
+    description: '查看或管理 MCP Server（list / resources / prompts / reload）',
+    run: async (ctx) => {
+      const mgr = getMcpManager()
+      if (!mgr) {
+        return { message: 'MCP 未初始化。' }
+      }
+      const sub = ctx.args.trim().toLowerCase()
+      if (sub === 'reload') {
+        await mgr.reload(ctx.agent.cwd)
+        return {
+          message: `${renderMcpStatus(mgr)}\n\n已重新加载 MCP 连接与工具注册表。`,
+        }
+      }
+      if (sub === 'list') {
+        return { message: renderMcpToolsList(mgr) }
+      }
+      if (sub === 'resources') {
+        return { message: renderMcpResourcesList(mgr) }
+      }
+      if (sub === 'prompts') {
+        return { message: renderMcpPromptsList(mgr) }
+      }
+      return { message: renderMcpStatus(mgr) }
     },
   },
   {
@@ -341,12 +371,16 @@ function renderHelp(): string {
  * @returns 关于信息。
  */
 function renderAbout(): string {
+  const mcpCount = globalToolRegistry.mcpCount
   return [
     `${PRODUCT_NAME}  v${VERSION}`,
     `适配 DeepSeek 模型的命令行 AI 编程助手`,
     `制作人：${AUTHOR}`,
     '',
-    `内置工具：${ALL_TOOLS.map((t) => t.name).join('、')}`,
+    `内置工具：${ALL_TOOLS.filter((t) => !t.name.startsWith('mcp__')).map((t) => t.name).join('、')}`,
+    mcpCount > 0
+      ? `MCP 动态工具：${mcpCount} 个（/mcp list 查看）`
+      : 'MCP：未连接 Server（配置 ~/.dcode/mcp.json 后 /mcp reload）',
   ].join('\n')
 }
 
@@ -402,6 +436,93 @@ function parseUserMode(input: string): PermissionMode | null {
     default:
       return null
   }
+}
+
+/**
+ * 渲染 /mcp 状态总览。
+ * @param mgr MCP 管理器。
+ * @returns 状态文本。
+ */
+function renderMcpStatus(mgr: MCPManager): string {
+  const statuses = mgr.getStatus()
+  const configPath = getGlobalMcpConfigPath()
+  if (statuses.length === 0) {
+    return [
+      'MCP 配置：' + configPath,
+      '（未配置任何 mcpServers，或全部 disabled）',
+      '',
+      '子命令：list | resources | prompts | reload',
+    ].join('\n')
+  }
+  const lines = statuses.map((s) => {
+    const state = s.connected ? `已连接 (${s.transport})` : `失败: ${s.error ?? '未知'}`
+    return (
+      `  ${s.id}: ${state}\n` +
+      `    tools=${s.toolCount} resources=${s.resourceCount} prompts=${s.promptCount}`
+    )
+  })
+  return [
+    'MCP Server 状态：',
+    ...lines,
+    '',
+    `动态工具已注册：${globalToolRegistry.mcpCount} 个`,
+    `配置文件：${configPath}`,
+    '子命令：/mcp list | resources | prompts | reload',
+  ].join('\n')
+}
+
+/**
+ * 渲染 MCP 工具列表。
+ * @param mgr MCP 管理器。
+ * @returns 工具列表文本。
+ */
+function renderMcpToolsList(mgr: MCPManager): string {
+  const groups = mgr.listToolsSummary()
+  if (groups.every((g) => g.tools.length === 0)) {
+    return '（无 MCP 工具或未连接 server）'
+  }
+  const lines: string[] = ['MCP 工具列表：']
+  for (const g of groups) {
+    lines.push(`\n[${g.serverId}]`)
+    for (const t of g.tools) {
+      lines.push(`  - ${t.name}${t.description ? ': ' + t.description : ''}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 渲染 MCP resources 列表。
+ * @param mgr MCP 管理器。
+ * @returns resources 文本。
+ */
+function renderMcpResourcesList(mgr: MCPManager): string {
+  const items = mgr.listAllResources()
+  if (items.length === 0) return '（无 MCP resources）'
+  return [
+    'MCP Resources：',
+    ...items.map(
+      (r) =>
+        `  [${r.serverId}] ${r.uri} (${r.name})${r.description ? ' — ' + r.description : ''}`,
+    ),
+  ].join('\n')
+}
+
+/**
+ * 渲染 MCP prompts 列表。
+ * @param mgr MCP 管理器。
+ * @returns prompts 文本。
+ */
+function renderMcpPromptsList(mgr: MCPManager): string {
+  const items = mgr.listAllPrompts()
+  if (items.length === 0) return '（无 MCP prompts）'
+  return [
+    'MCP Prompts：',
+    ...items.map((p) => {
+      const args = p.arguments?.map((a) => a.name).join(', ') ?? ''
+      return `  [${p.serverId}] ${p.name}${args ? ` (${args})` : ''}${p.description ? ' — ' + p.description : ''}`
+    }),
+  ].join('\n')
 }
 
 /**

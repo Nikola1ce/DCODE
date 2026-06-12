@@ -57,6 +57,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **项目记忆**：读取项目根目录的 `DCODE.md` 注入上下文；`/init` 可自动生成。
 - **上下文自动压缩**：对话过长时自动摘要历史，释放上下文空间。
 - **成本追踪**：实时统计 token 用量与预估费用（区分缓存命中/未命中价）。
+- **MCP 协议支持**：连接 MCP Server，动态注册 `mcp__*` 工具，并可通过代理工具访问 Resources / Prompts（配置 `~/.dcode/mcp.json`，格式与 Cursor 兼容）。
 - **精美终端 UI**：基于 Ink 的全屏交互界面，暗/亮主题可切换。
 
 ## 环境要求
@@ -331,6 +332,39 @@ source ~/.bashrc
 3. 复制以 `sk-` 开头的密钥（只显示一次，请妥善保存）
 4. 确保账户有余额或已开通按量计费
 
+## 配置 MCP Server
+
+DCODE 作为 **MCP Client**，可连接任意 MCP Server 并将工具动态注册到 Agent。配置文件：
+
+- 全局：`~/.dcode/mcp.json`
+- 项目（可选）：`.dcode/mcp.json`（同名 server 覆盖全局）
+
+格式与 Cursor 的 `mcp.json` 兼容，示例见 [docs/mcp.json.example](docs/mcp.json.example)：
+
+```json
+{
+  "mcpServers": {
+    "my-tool": {
+      "command": "node",
+      "args": ["path/to/mcp-server.js"],
+      "env": { "API_KEY": "..." }
+    },
+    "remote": {
+      "url": "http://localhost:3000/mcp",
+      "type": "http",
+      "headers": { "Authorization": "Bearer ..." }
+    }
+  }
+}
+```
+
+- **stdio**：`command` + `args`（本地进程）
+- **HTTP**：`url` + `type: "http"`（Streamable HTTP，推荐）
+- **SSE**：`url` + `type: "sse"`（兼容旧 Server）
+- **`trust: true`**：该 Server 的非只读 MCP 工具跳过授权弹窗（仍受 plan 模式约束）
+
+运行中可用 `/mcp` 查看连接状态，`/mcp reload` 热重载。模型还可使用内置代理工具：`list_mcp_resources`、`read_mcp_resource`、`list_mcp_prompts`、`get_mcp_prompt`。
+
 ## 新手教学
 
 ### 第一课：第一次对话
@@ -473,6 +507,7 @@ dcode --plan
 | `/theme` | 切换暗/亮主题 |
 | `/thinking` | 开关思维链展示 |
 | `/effort [high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API） |
+| `/mcp [list\|resources\|prompts\|reload]` | 查看/管理 MCP Server 连接 |
 | `/plan`、`/auto`、`/bypass` | 切换权限模式：规划（只读）/ 自动接受编辑 / 跳过所有确认 |
 | `/mode <plan\|auto\|bypass>` | 同上，例如 `/mode bypass` |
 | `/memory` | 显示已加载的记忆文件 |
@@ -571,6 +606,7 @@ src/
 ├── config.ts            # ~/.dcode 配置管理
 ├── memory.ts            # DCODE.md 记忆加载
 ├── headless.ts          # 无头模式执行器
+├── mcp/                 # MCP Client（连接 Server、动态工具）
 ├── deepseek/
 │   ├── client.ts        # DeepSeek 流式客户端（SSE + 工具调用合并 + 重试）
 │   └── pricing.ts       # 用量与成本计算

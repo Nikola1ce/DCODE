@@ -31,6 +31,7 @@ import {
   loadSessionMessages,
 } from './core/session.js'
 import { runHeadless } from './headless.js'
+import { initMcp, shutdownMcp } from './mcp/client.js'
 import { App } from './ui/App.js'
 import { messagesToItems } from './ui/messagesToItems.js'
 
@@ -221,6 +222,10 @@ async function main(): Promise<void> {
   // 确定工作目录。
   const cwd = opts.cwd ? resolveCwd(opts.cwd) : process.cwd()
 
+  // 初始化 MCP Client（连接 mcp.json 中的 server 并注册动态工具）。
+  await initMcp(cwd)
+  registerMcpShutdownHook()
+
   // 权限模式：命令行覆盖 > 默认。
   const permissionMode: PermissionMode = opts.permissionMode ?? 'default'
 
@@ -274,6 +279,7 @@ async function main(): Promise<void> {
     const code = await runHeadless(agent, prompt.trim(), {
       autoApprove: permissionMode !== 'plan',
     })
+    await shutdownMcp()
     process.exit(code)
   }
 
@@ -318,6 +324,24 @@ async function main(): Promise<void> {
     />,
   )
   await app.waitUntilExit()
+  await shutdownMcp()
+}
+
+/** 是否已注册 MCP 退出清理（避免重复绑定）。 */
+let mcpShutdownHookRegistered = false
+
+/**
+ * 注册进程退出时断开 MCP 连接（SIGINT/SIGTERM/exit）。
+ */
+function registerMcpShutdownHook(): void {
+  if (mcpShutdownHookRegistered) return
+  mcpShutdownHookRegistered = true
+  const cleanup = () => {
+    void shutdownMcp()
+  }
+  process.on('exit', cleanup)
+  process.on('SIGINT', cleanup)
+  process.on('SIGTERM', cleanup)
 }
 
 /**
@@ -374,7 +398,8 @@ function readStdin(): Promise<string> {
 }
 
 // 启动主流程；捕获顶层异常以友好退出。
-main().catch((err) => {
+main().catch(async (err) => {
   process.stderr.write(`\n[${PRODUCT_NAME}] 启动失败：${err?.message ?? String(err)}\n`)
+  await shutdownMcp()
   process.exit(1)
 })
