@@ -17,6 +17,11 @@ import {
   TAGLINE,
   BIN_NAMES,
   SUPPORTED_MODELS,
+  LEGACY_MODELS,
+  REASONING_EFFORTS,
+  isSupportedModelName,
+  isValidReasoningEffort,
+  type ReasoningEffort,
 } from './constants.js'
 import { loadConfig, ensureConfigDir, type PermissionMode } from './config.js'
 import { Agent } from './core/agent.js'
@@ -47,6 +52,8 @@ interface CliOptions {
   cwd?: string
   // 权限模式覆盖。
   permissionMode?: PermissionMode
+  // 推理强度覆盖（high / max）。
+  reasoningEffort?: ReasoningEffort
   // 位置参数拼成的 prompt（无头模式使用）。
   prompt: string
 }
@@ -114,6 +121,9 @@ function parseArgs(argv: string[]): CliOptions {
       case '--dangerously-skip-permissions':
         opts.permissionMode = 'bypass'
         break
+      case '--reasoning-effort':
+        opts.reasoningEffort = argv[++i] as ReasoningEffort
+        break
       default:
         // 未识别的非选项参数视为 prompt 的一部分。
         if (!a.startsWith('-')) positionals.push(a)
@@ -147,6 +157,7 @@ function printHelp(): void {
     '      --auto                  以自动接受编辑模式启动',
     '      --bypass                跳过所有权限确认（危险，同 --dangerously-skip-permissions）',
     '      --dangerously-skip-permissions  跳过所有权限确认（危险）',
+    '      --reasoning-effort <high|max>   推理强度（Thinking 模式下生效，Pro 复杂任务可用 max）',
     '  -v, --version               显示版本',
     '  -h, --help                  显示帮助',
     '',
@@ -160,6 +171,7 @@ function printHelp(): void {
     '  DEEPSEEK_API_KEY    DeepSeek API 密钥',
     '  DEEPSEEK_BASE_URL   API 端点（默认 https://api.deepseek.com）',
     '  DCODE_MODEL         默认模型',
+    '  DCODE_REASONING_EFFORT  推理强度 high | max',
   ]
   process.stdout.write(lines.join('\n') + '\n')
 }
@@ -186,13 +198,24 @@ async function main(): Promise<void> {
 
   // 命令行覆盖：模型。
   if (opts.model) {
-    if (!SUPPORTED_MODELS.includes(opts.model as any)) {
+    if (!isSupportedModelName(opts.model)) {
       process.stderr.write(
-        `不支持的模型：${opts.model}\n可用模型：${SUPPORTED_MODELS.join('、')}\n`,
+        `不支持的模型：${opts.model}\n可用模型：${SUPPORTED_MODELS.join('、')}（兼容别名：${LEGACY_MODELS.join('、')}）\n`,
       )
       process.exit(1)
     }
     config.model = opts.model
+  }
+
+  // 命令行覆盖：推理强度。
+  if (opts.reasoningEffort) {
+    if (!isValidReasoningEffort(opts.reasoningEffort)) {
+      process.stderr.write(
+        `无效的推理强度：${opts.reasoningEffort}\n可用：${REASONING_EFFORTS.join('、')}\n`,
+      )
+      process.exit(1)
+    }
+    config.reasoningEffort = opts.reasoningEffort
   }
 
   // 确定工作目录。
@@ -219,10 +242,10 @@ async function main(): Promise<void> {
 
   // —— 无头模式 —— //
   if (opts.print) {
-    // 无头模式不持久化新会话（除非是继续已有会话）。
+    // 无头模式也会持久化会话，便于后续 dcode -c 继续同一项目对话。
     const recorder = resumedSessionId
       ? new SessionRecorder(resumedSessionId)
-      : null
+      : SessionRecorder.create(cwd, config.model)
     const agent = new Agent({
       config,
       cwd,
@@ -247,9 +270,9 @@ async function main(): Promise<void> {
       process.exit(1)
     }
 
-    // 非交互场景默认自动批准操作；--plan/默认模式下工具本身受限。
+    // 非交互场景：plan 模式保持只读；其余模式自动批准（无 TUI 无法弹授权框）。
     const code = await runHeadless(agent, prompt.trim(), {
-      autoApprove: permissionMode !== 'default',
+      autoApprove: permissionMode !== 'plan',
     })
     process.exit(code)
   }
@@ -323,11 +346,30 @@ function readStdin(): Promise<string> {
       return
     }
     let data = ''
+    let settled = false
+    let receivedAny = false
+    /** 结束读取；重复调用会被忽略。 */
+    const finish = (value: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(idleTimer)
+      resolve(value)
+    }
     process.stdin.setEncoding('utf8')
-    process.stdin.on('data', (chunk) => (data += chunk))
-    process.stdin.on('end', () => resolve(data))
+    process.stdin.on('data', (chunk) => {
+      receivedAny = true
+      data += chunk
+      // 一旦收到管道数据，取消空闲超时，等待 end 收集完整输入。
+      clearTimeout(idleTimer)
+    })
+    process.stdin.on('end', () => finish(data))
     // 读取异常时返回已有数据。
-    process.stdin.on('error', () => resolve(data))
+    process.stdin.on('error', () => finish(data))
+    process.stdin.resume()
+    // 非 TTY 且未挂载管道时 stdin 可能永不触发 end；空闲超时视为无输入。
+    const idleTimer = setTimeout(() => {
+      if (!receivedAny) finish(data)
+    }, 150)
   })
 }
 

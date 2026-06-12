@@ -8,7 +8,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import ignore from 'ignore'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
-import { toDisplayPath } from './util.js'
+import { toDisplayPath, resolveWithinCwd } from './util.js'
 
 // glob 的入参结构。
 interface GlobInput {
@@ -43,11 +43,16 @@ export const globTool: ToolDefinition = {
    * @returns 工具结果。
    */
   run: async (input: GlobInput, ctx): Promise<ToolResult> => {
-    const cwd = input.path ? join(ctx.cwd, input.path) : ctx.cwd
+    let searchCwd: string
+    try {
+      searchCwd = input.path ? resolveWithinCwd(ctx.cwd, input.path) : ctx.cwd
+    } catch (e: any) {
+      return { llmContent: `错误：${e.message}`, isError: true }
+    }
 
     // 执行 glob 搜索（仅文件，忽略常见噪声目录）。
     const matches = await fg(input.pattern, {
-      cwd,
+      cwd: searchCwd,
       dot: false,
       onlyFiles: true,
       followSymbolicLinks: false,
@@ -56,7 +61,7 @@ export const globTool: ToolDefinition = {
     })
 
     // 应用 .gitignore（若存在）做二次过滤。
-    const filtered = applyGitignore(ctx.cwd, cwd, matches)
+    const filtered = applyGitignore(ctx.cwd, searchCwd, matches)
 
     if (filtered.length === 0) {
       return {
@@ -69,7 +74,7 @@ export const globTool: ToolDefinition = {
     const withMtime = filtered.map((rel) => {
       let mtime = 0
       try {
-        mtime = statSync(join(cwd, rel)).mtimeMs
+        mtime = statSync(join(searchCwd, rel)).mtimeMs
       } catch {
         // 忽略 stat 失败。
       }

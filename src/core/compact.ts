@@ -107,6 +107,7 @@ export async function compactMessages(
       tools: [],
       model,
       temperature: 0.2,
+      thinking: 'disabled',
     })) {
       if (ev.type === 'text') summary += ev.delta
       if (ev.type === 'done') summary = ev.message.content || summary

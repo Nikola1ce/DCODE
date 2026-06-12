@@ -7,6 +7,7 @@ import fg from 'fast-glob'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
+import { resolveWithinCwd } from './util.js'
 
 // grep 的入参结构。
 interface GrepInput {
@@ -58,12 +59,17 @@ export const grepTool: ToolDefinition = {
       return { llmContent: `错误：无效的正则表达式：${e.message}`, isError: true }
     }
 
-    const cwd = input.path ? join(ctx.cwd, input.path) : ctx.cwd
+    let searchRoot: string
+    try {
+      searchRoot = input.path ? resolveWithinCwd(ctx.cwd, input.path) : ctx.cwd
+    } catch (e: any) {
+      return { llmContent: `错误：${e.message}`, isError: true }
+    }
     const pattern = input.include ?? '**/*'
 
     // 收集候选文件列表。
     const files = await fg(pattern, {
-      cwd,
+      cwd: searchRoot,
       onlyFiles: true,
       dot: false,
       followSymbolicLinks: false,
@@ -80,7 +86,7 @@ export const grepTool: ToolDefinition = {
       if (results.length >= MAX_MATCHES) break
       scanned++
 
-      const abs = join(cwd, rel)
+      const abs = join(searchRoot, rel)
       try {
         // 跳过超大文件，避免读取二进制/巨型日志。
         if (statSync(abs).size > MAX_FILE_SIZE) continue

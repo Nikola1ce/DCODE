@@ -59,10 +59,20 @@ export const readFileTool: ToolDefinition = {
 
     // 处理可选的行范围切片。
     let startLine = 1
-    if (input.offset || input.limit) {
+    if (input.offset !== undefined || input.limit !== undefined) {
       const lines = content.split('\n')
+      const totalLines = lines.length
       const start = Math.max(0, (input.offset ?? 1) - 1)
-      const end = input.limit ? start + input.limit : lines.length
+      if (start >= totalLines) {
+        return {
+          llmContent: `错误：offset ${input.offset ?? 1} 超出文件范围（共 ${totalLines} 行）。`,
+          isError: true,
+        }
+      }
+      const end =
+        input.limit !== undefined
+          ? Math.min(start + input.limit, totalLines)
+          : lines.length
       content = lines.slice(start, end).join('\n')
       startLine = start + 1
     }

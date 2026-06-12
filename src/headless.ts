@@ -58,6 +58,10 @@ export async function runHeadless(
     })
     // 收尾换行，保证输出整洁。
     process.stdout.write('\n')
+    const sessionId = agent.getSessionId()
+    if (sessionId) {
+      process.stderr.write(`[会话已保存] ${sessionId}（可用 dcode -c 继续）\n`)
+    }
     return 0
   } catch (e: any) {
     process.stderr.write(`\n错误：${e?.message ?? String(e)}\n`)

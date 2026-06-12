@@ -11,6 +11,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions'
+import type { ReasoningEffort } from '../constants.js'
 import type { DCodeConfig } from '../config.js'
 import { resolveApiKey } from '../config.js'
 import type { DeepMessage, ToolCall } from '../core/types.js'
@@ -44,6 +45,10 @@ export interface StreamChatParams {
   temperature?: number
   // 取消信号：用户中断时中止请求。
   abortSignal?: AbortSignal
+  // 覆盖思维链模式；默认跟随 config.showThinking。
+  thinking?: 'enabled' | 'disabled'
+  // 覆盖推理强度；默认跟随 config.reasoningEffort，仅 thinking 启用时发送。
+  reasoningEffort?: ReasoningEffort
 }
 
 // 触发重试的最大次数。
@@ -52,8 +57,8 @@ const MAX_RETRIES = 3
 /**
  * 将内部 DeepMessage 转换为 DeepSeek/OpenAI 接受的消息体。
  * 关键点：
- *   - assistant 的 reasoning（思维链）不可回传，必须剔除；
- *   - assistant 若含 toolCalls，需转换为标准 tool_calls 结构，content 允许为空串；
+ *   - 无工具调用的 assistant 消息不回传 reasoning（API 会忽略）；
+ *   - 含 tool_calls 的 assistant 必须回传 reasoning_content，否则多轮工具调用会 400；
  *   - tool 角色消息需带 tool_call_id。
  * @param messages 内部消息数组。
  * @returns 适配 API 的消息数组。
@@ -62,9 +67,13 @@ function toApiMessages(messages: DeepMessage[]): ChatCompletionMessageParam[] {
   return messages.map((m): ChatCompletionMessageParam => {
     if (m.role === 'assistant') {
       // 组装 assistant 消息：若有工具调用则附上 tool_calls。
-      const msg: ChatCompletionMessageParam = {
+      const msg: ChatCompletionMessageParam & { reasoning_content?: string } = {
         role: 'assistant',
         content: m.content || '',
+      }
+      // 工具调用链路中，DeepSeek 要求把思维链一并回传，否则会 400。
+      if (m.toolCalls && m.toolCalls.length > 0 && m.reasoning) {
+        msg.reasoning_content = m.reasoning
       }
       if (m.toolCalls && m.toolCalls.length > 0) {
         ;(msg as any).tool_calls = m.toolCalls.map((tc) => ({
@@ -155,26 +164,36 @@ export class DeepSeekClient {
   async *streamChat(params: StreamChatParams): AsyncGenerator<StreamEvent> {
     const { messages, tools, model, temperature = 0.2, abortSignal } = params
     const apiMessages = toApiMessages(messages)
+    const thinkingType =
+      params.thinking ?? (this.config.showThinking ? 'enabled' : 'disabled')
+    const reasoningEffort =
+      params.reasoningEffort ?? this.config.reasoningEffort ?? 'high'
 
     // 重试循环：仅在“尚未产出任何增量”时重试，避免重复输出。
     let attempt = 0
     while (true) {
       try {
         // 创建流式请求；include_usage 让末尾 chunk 带回用量统计。
-        const stream = await this.client.chat.completions.create(
-          {
-            model,
-            messages: apiMessages,
-            // 仅在确有工具时传 tools，避免空数组导致部分网关报错。
-            ...(tools.length > 0
-              ? { tools, tool_choice: 'auto' as const }
-              : {}),
-            temperature,
-            stream: true,
-            stream_options: { include_usage: true },
-          },
+        // thinking 为 DeepSeek 扩展字段，OpenAI SDK 类型未收录，故用断言传入。
+        // thinking 关闭时不传 reasoning_effort，避免 API 校验报错。
+        const requestBody: Record<string, unknown> = {
+          model,
+          messages: apiMessages,
+          ...(tools.length > 0
+            ? { tools, tool_choice: 'auto' as const }
+            : {}),
+          temperature,
+          stream: true,
+          stream_options: { include_usage: true },
+          thinking: { type: thinkingType },
+        }
+        if (thinkingType === 'enabled') {
+          requestBody.reasoning_effort = reasoningEffort
+        }
+        const stream = (await this.client.chat.completions.create(
+          requestBody as any,
           { signal: abortSignal },
-        )
+        )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>
 
         // 累积状态：正文、思维链、按 index 聚合的工具调用。
         let textBuf = ''

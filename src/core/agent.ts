@@ -124,6 +124,14 @@ export class Agent {
   }
 
   /**
+   * 获取当前会话 id（无持久化记录器时返回 null）。
+   * @returns 会话 id 或 null。
+   */
+  getSessionId(): string | null {
+    return this.recorder?.id ?? null
+  }
+
+  /**
    * 应用一组配置补丁到 Agent。
    * 当 apiKey 或 baseURL 变化时，重建底层 DeepSeek 客户端使其立即生效；
    * 当 model 变化时，刷新系统提示。
@@ -282,6 +290,7 @@ export class Agent {
           tools: apiTools,
           model: this.config.model,
           abortSignal: handlers.abortSignal,
+          reasoningEffort: this.config.reasoningEffort,
         })) {
           if (ev.type === 'reasoning') handlers.onReasoning?.(ev.delta)
           else if (ev.type === 'text') handlers.onText?.(ev.delta)

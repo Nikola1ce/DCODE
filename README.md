@@ -41,7 +41,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 
 ## 特性
 
-- **DeepSeek V4 原生适配**：支持 `deepseek-v4-flash`（默认，快速且经济）与 `deepseek-v4-pro`（推理/编码更强），均支持工具调用与思维链 `reasoning_content` 展示；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容。
+- **DeepSeek V4 原生适配**：支持 `deepseek-v4-flash`（默认，快速且经济）与 `deepseek-v4-pro`（推理/编码更强），均支持工具调用与思维链 `reasoning_content` 展示；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**，请尽快改用 V4 模型名）。
 - **流式输出**：边生成边显示，支持随时按 `Esc` 中断。
 - **Function Calling 工具系统**：模型可自主调用以下工具完成任务
   - `read_file` 读取文件（带行号、可分段）
@@ -267,13 +267,25 @@ dcode
 
 ### 卸载
 
+**npm 全局安装：**
+
 ```bash
 npm uninstall -g dcode
 # 若曾使用 npm link，可额外执行：
 npm unlink -g dcode
 ```
 
-本地克隆目录可直接删除；用户配置与会话保存在 `~/.dcode/`，需手动删除才会清除。
+**Windows 便携包「安装到本机」：**
+
+双击 release 包内的 `从本机卸载.bat`，或执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
+```
+
+会移除 `%LOCALAPPDATA%\DCODE`、用户 PATH 中的 `bin` 目录及开始菜单快捷方式；**不会**删除 `~/.dcode/` 中的 API Key 与会话。
+
+本地克隆目录或便携 ZIP 解压文件夹可直接删除。
 
 ## 配置 API Key
 
@@ -382,7 +394,7 @@ dcode -p "列出当前目录下所有 .ts 文件，并统计行数"
 echo "检查 package.json 的依赖是否有已知安全问题" | dcode -p
 ```
 
-适合 CI、定时任务或快速一次性问答。
+适合 CI、定时任务或快速一次性问答。无头模式同样会写入 `~/.dcode/sessions/`，stderr 会输出 `[会话已保存] <id>`，可用 `dcode -c` 继续。
 
 ### 第六课：项目记忆 DCODE.md
 
@@ -392,7 +404,7 @@ echo "检查 package.json 的依赖是否有已知安全问题" | dcode -p
 # 项目说明
 - 技术栈：TypeScript + Ink
 - 构建：npm run build
-- 测试：npm test
+- 测试：npx tsc --noEmit
 - 注意：不要修改 dist/，由 build 生成
 ```
 
@@ -409,6 +421,9 @@ dcode --model deepseek-v4-pro
 
 # 无头模式：执行一次任务并打印结果（适合脚本/CI）
 dcode -p "用 Python 写一个快速排序并附带测试"
+
+# 用 V4 Pro + 最大推理强度（Thinking 模式下生效）
+dcode --model deepseek-v4-pro --reasoning-effort max -p "设计一个 LRU 缓存类"
 
 # 通过管道传入任务
 echo "审查 src/index.ts 的潜在 bug" | dcode -p
@@ -436,6 +451,7 @@ dcode --plan
 | `--auto` | 自动接受编辑模式（文件读写免确认） |
 | `--bypass` | 跳过所有权限确认（危险） |
 | `--dangerously-skip-permissions` | 同 `--bypass` |
+| `--reasoning-effort <high\|max>` | 推理强度（Thinking 模式下生效；Pro 复杂任务可用 `max`） |
 | `-v, --version` | 显示版本 |
 | `-h, --help` | 显示帮助 |
 
@@ -456,6 +472,7 @@ dcode --plan
 | `/resume` | 从历史会话中恢复 |
 | `/theme` | 切换暗/亮主题 |
 | `/thinking` | 开关思维链展示 |
+| `/effort [high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API） |
 | `/plan`、`/auto`、`/bypass` | 切换权限模式：规划（只读）/ 自动接受编辑 / 跳过所有确认 |
 | `/mode <plan\|auto\|bypass>` | 同上，例如 `/mode bypass` |
 | `/memory` | 显示已加载的记忆文件 |
@@ -542,7 +559,7 @@ cd DCODE
 npm install
 npm run dev     # 监听源码变更自动重建
 npm run build   # 单次构建
-npx tsc --noEmit  # 类型检查
+npm run typecheck  # 类型检查（等同 npx tsc --noEmit）
 ```
 
 源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。主要模块：

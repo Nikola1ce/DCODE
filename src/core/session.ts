@@ -13,7 +13,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, normalize } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from '../config.js'
 import type { DeepMessage } from './types.js'
@@ -219,8 +219,8 @@ export function listSessions(limit = 20): SessionSummary[] {
  */
 export function getLatestSessionId(cwd: string): string | null {
   const sessions = listSessions(100)
-  // 优先匹配同一工作目录的会话；都没有则返回最近的任意会话。
-  const sameCwd = sessions.find((s) => s.cwd === cwd)
-  if (sameCwd) return sameCwd.id
-  return sessions.length > 0 ? sessions[0].id : null
+  const normalizedCwd = normalize(cwd)
+  // 仅匹配同一工作目录的会话；无匹配时不应回退到其他项目的会话。
+  const sameCwd = sessions.find((s) => normalize(s.cwd) === normalizedCwd)
+  return sameCwd?.id ?? null
 }

@@ -15,6 +15,8 @@ import {
   ENV_API_KEY,
   ENV_BASE_URL,
   ENV_MODEL,
+  ENV_REASONING_EFFORT,
+  type ReasoningEffort,
 } from './constants.js'
 
 // UI 主题枚举：暗色 / 亮色。影响终端配色方案。
@@ -39,6 +41,8 @@ export interface DCodeConfig {
   theme: ThemeName
   // 是否默认展示推理模型的思维链（reasoning_content）。
   showThinking: boolean
+  // V4 Thinking 模式下的推理强度（high / max）；仅 thinking 启用时传给 API。
+  reasoningEffort: ReasoningEffort
   // 全局“总是允许”的权限规则集合，形如 "Bash(git status)"、"Write" 等。
   alwaysAllow: string[]
   // 累计用量统计（成本、token），用于 /cost 展示历史总览。
@@ -53,6 +57,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   model: DEFAULT_MODEL,
   theme: 'dark',
   showThinking: true,
+  reasoningEffort: 'high',
   alwaysAllow: [],
   totalCostUsd: 0,
   onboardingComplete: false,
@@ -109,6 +114,9 @@ export function loadConfig(): DCodeConfig {
   if (process.env[ENV_API_KEY]) merged.apiKey = process.env[ENV_API_KEY]
   if (process.env[ENV_BASE_URL]) merged.baseURL = process.env[ENV_BASE_URL] as string
   if (process.env[ENV_MODEL]) merged.model = process.env[ENV_MODEL] as string
+  if (process.env[ENV_REASONING_EFFORT]) {
+    merged.reasoningEffort = process.env[ENV_REASONING_EFFORT] as ReasoningEffort
+  }
 
   return merged
 }

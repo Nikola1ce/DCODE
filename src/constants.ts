@@ -34,6 +34,18 @@ export const SUPPORTED_MODELS = [DEFAULT_MODEL, PRO_MODEL] as const
 // 届时自动路由到 v4-flash。这里保留以兼容历史配置文件与历史会话，避免读取报错。
 export const LEGACY_MODELS = ['deepseek-chat', 'deepseek-reasoner'] as const
 
+/**
+ * 判断模型名是否可用（含 V4 主模型与旧版兼容别名）。
+ * @param model 用户或配置中的模型名。
+ * @returns 可用返回 true。
+ */
+export function isSupportedModelName(model: string): boolean {
+  return (
+    (SUPPORTED_MODELS as readonly string[]).includes(model) ||
+    (LEGACY_MODELS as readonly string[]).includes(model)
+  )
+}
+
 // 用户级配置目录名（位于操作系统用户主目录下，例如 ~/.dcode）。
 export const CONFIG_DIR_NAME = '.dcode'
 
@@ -59,3 +71,17 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 120000
 export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'
 export const ENV_MODEL = 'DCODE_MODEL'
+export const ENV_REASONING_EFFORT = 'DCODE_REASONING_EFFORT'
+
+// V4 Thinking 模式下的推理强度（仅 thinking 启用时生效）。
+export const REASONING_EFFORTS = ['high', 'max'] as const
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
+
+/**
+ * 判断 reasoning_effort 取值是否合法。
+ * @param value 用户或环境变量传入的字符串。
+ * @returns 合法返回 true。
+ */
+export function isValidReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORTS as readonly string[]).includes(value)
+}

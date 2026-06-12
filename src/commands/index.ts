@@ -4,7 +4,7 @@
 // 返回给上层 UI 处理，从而与 Agent、配置、界面解耦。
 // 制作人：Moriarty_Dox
 
-import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS } from '../constants.js'
+import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isSupportedModelName, isValidReasoningEffort } from '../constants.js'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
@@ -74,7 +74,7 @@ export const COMMANDS: SlashCommand[] = [
       // 无参数：打开模型选择器。
       if (!target) return { openFlow: 'model' }
       // 校验模型名是否受支持。
-      if (!SUPPORTED_MODELS.includes(target as any)) {
+      if (!isSupportedModelName(target)) {
         return {
           message: `不支持的模型：${target}\n可用模型：${SUPPORTED_MODELS.join('、')}`,
         }
@@ -147,6 +147,29 @@ export const COMMANDS: SlashCommand[] = [
       const next = !ctx.config.showThinking
       ctx.applyConfig({ showThinking: next })
       return { message: `思维链展示已${next ? '开启' : '关闭'}。` }
+    },
+  },
+  {
+    name: 'effort',
+    description: '查看或切换推理强度：high | max（Thinking 模式下生效，Pro 复杂任务推荐 max）',
+    aliases: ['reasoning-effort'],
+    run: (ctx) => {
+      const target = ctx.args.trim().toLowerCase()
+      if (!target) {
+        return {
+          message:
+            `当前推理强度：${ctx.config.reasoningEffort}\n` +
+            `可选：${REASONING_EFFORTS.join('、')}（例如 /effort max）\n` +
+            '说明：仅在 Thinking 模式启用时传给 API；/thinking 关闭时不发送 reasoning_effort。',
+        }
+      }
+      if (!isValidReasoningEffort(target)) {
+        return {
+          message: `无效的推理强度：${target}\n可用：${REASONING_EFFORTS.join('、')}`,
+        }
+      }
+      ctx.applyConfig({ reasoningEffort: target })
+      return { message: `已切换推理强度为 ${target}。` }
     },
   },
   {
@@ -358,6 +381,7 @@ function renderConfig(config: DCodeConfig): string {
     `  API Key：${masked}`,
     `  主题：${config.theme}`,
     `  思维链展示：${config.showThinking ? '开' : '关'}`,
+    `  推理强度：${config.reasoningEffort}（Thinking 模式下生效）`,
   ].join('\n')
 }
 

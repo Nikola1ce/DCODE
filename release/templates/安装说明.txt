@@ -28,6 +28,8 @@ DCODE 免命令安装包
   解压后在终端执行：chmod +x dcode.sh && ./dcode.sh
 
 【卸载】
-  删除解压文件夹；若曾运行「安装到本机.bat」，另删：
-  %LOCALAPPDATA%\DCODE
-  并从系统环境变量 PATH 中移除对应 bin 目录。
+  方式 A（推荐）：双击「从本机卸载.bat」（若曾运行「安装到本机.bat」）
+  方式 B：手动删除 %LOCALAPPDATA%\DCODE，并从用户 PATH 中移除对应 bin 目录，
+          并删除开始菜单中的 DCODE 快捷方式
+  说明：卸载不会删除 %USERPROFILE%\.dcode 中的 API Key 与会话历史
+  便携版：直接删除解压文件夹即可
