@@ -206,7 +206,7 @@ export class Agent {
   loadSkill(name: string): { ok: boolean; message: string } {
     const skill = loadSkillByName(name, this.cwd)
     if (!skill) {
-      return { ok: false, message: `未找到技能「${name}」。执行 /skill list 查看可用技能。` }
+          return { ok: false, message: `未找到技能「${name}」。执行 /skills 查看可用技能。` }
     }
     if (this.activeSkills.some((s) => s.name === skill.name)) {
       return { ok: true, message: `技能「${skill.name}」已在当前会话中加载。` }

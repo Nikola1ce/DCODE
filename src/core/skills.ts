@@ -306,7 +306,7 @@ export function renderSkillList(cwd: string, activeNames: string[] = []): string
       `全局目录：${getGlobalSkillsDir()}`,
       `项目目录：${getProjectSkillsDir(cwd)}`,
       '',
-      '用法：/skill <名称> 加载 | /skill create <名称> 从对话创建',
+      '用法：/skills 查看列表 | /skill <名称> 加载 | /skill create <名称> 从对话创建',
     ].join('\n')
   }
   const lines = ['可用技能：']
@@ -316,7 +316,7 @@ export function renderSkillList(cwd: string, activeNames: string[] = []): string
     lines.push(`  ${tag} ${s.name.padEnd(16)} ${s.description}${active}`)
   }
   lines.push('')
-  lines.push('用法：/skill <名称> 加载到当前会话 | /skill unload <名称> 卸载')
+  lines.push('用法：/skills 查看列表 | /skill <名称> 加载到当前会话 | /skill unload <名称> 卸载')
   lines.push('      /skill create <名称> 从当前对话摘要创建技能')
   lines.push(`目录：${getProjectSkillsDir(cwd)}（项目） / ${getGlobalSkillsDir()}（全局）`)
   return lines.join('\n')

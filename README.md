@@ -75,7 +75,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **事件驱动主循环**：`AgentRunner` 将模型流、工具执行、压缩、停止/错误拆成结构化事件，TUI 与无头模式通过兼容适配层消费
 - **后台 Shell**：长时构建/测试不阻塞主循环，界面有后台面板，`/shells` 查看
 - **Hooks**：`PreToolUse` / `PostToolUse` 等事件钩子，`/hooks` 查看与 reload
-- **Skills**：可复用 Markdown 技能包，`/skill list` 加载领域工作流
+- **Skills**：可复用 Markdown 技能包，`/skills` 查看列表，`/skill` 加载领域工作流
 - **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
 - **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
 
@@ -491,10 +491,11 @@ export SERPAPI_API_KEY="your-key"
 
 | 命令 | 说明 |
 | --- | --- |
-| `/skill list` | 列出可用技能 |
+| `/skills` | 列出可用技能（全局 + 项目，标注是否已加载） |
 | `/skill <名称>` | 加载技能到当前会话 |
-| `/skill unload` | 卸载已加载技能 |
+| `/skill unload <名称>` | 卸载已加载技能 |
 | `/skill create <名称>` | 从当前对话摘要创建新技能 |
+| `/skill list` | 同 `/skills`（兼容旧用法） |
 
 ## 文件检查点与回滚
 
@@ -560,7 +561,7 @@ export SERPAPI_API_KEY="your-key"
 | 查看后台构建任务 | `/shells` |
 | 改码后一键回滚 | `/undo` |
 | 生成 commit / PR | `/commit`、`/pr` |
-| 加载技能包 | `/skill list` |
+| 查看/加载技能包 | `/skills`、`/skill <名称>` |
 | 清空对话重来 | `/clear` |
 | 生成项目记忆 | `/init` |
 | 只读规划 | `/plan` |
@@ -685,7 +686,8 @@ dcode --plan
 | `/shells`（别名 `/bg`） | 查看后台 Shell 状态 |
 | `/subagents`（别名 `/agents`） | 查看子代理（Task 工具）状态 |
 | `/hooks [reload]` | 查看或重载 Hooks 钩子 |
-| `/skill`（别名 `/skills`） | 技能包：list / 加载 / unload / create |
+| `/skills` | 查看可用技能包列表 |
+| `/skill` | 技能包：加载 / unload / create |
 | `/checkpoints [clear]` | 查看或清空文件检查点 |
 | `/undo [N]` | 回退最近 N 个文件检查点（默认 1） |
 | `/commit` | 根据 staged 变更生成 commit 并提交 |

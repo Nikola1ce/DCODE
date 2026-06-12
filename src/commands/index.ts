@@ -381,17 +381,32 @@ export const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: 'skills',
+    description: '查看可用技能包列表',
+    run: (ctx) => ({
+      message: renderSkillList(ctx.agent.cwd, ctx.agent.getActiveSkillNames()),
+    }),
+  },
+  {
     name: 'skill',
-    description: '管理技能包：list / <名称> 加载 / unload / create',
-    aliases: ['skills'],
+    description: '管理技能包：<名称> 加载 / unload / create',
     run: (ctx) => {
       const raw = ctx.args.trim()
       const spaceIdx = raw.indexOf(' ')
       const sub = (spaceIdx === -1 ? raw : raw.slice(0, spaceIdx)).toLowerCase()
       const rest = spaceIdx === -1 ? '' : raw.slice(spaceIdx + 1).trim()
 
-      // 无参数或 list：列出可用技能。
-      if (!sub || sub === 'list') {
+      // 无参数：提示使用 /skills 查看列表。
+      if (!sub) {
+        return {
+          message:
+            '用法：/skills 查看可用技能列表\n' +
+            '      /skill <名称> 加载 | /skill unload <名称> 卸载 | /skill create <名称> 创建',
+        }
+      }
+
+      // list：与 /skills 相同（兼容旧用法）。
+      if (sub === 'list') {
         return {
           message: renderSkillList(ctx.agent.cwd, ctx.agent.getActiveSkillNames()),
         }

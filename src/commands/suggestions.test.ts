@@ -96,4 +96,16 @@ describe('getSlashSuggestions', () => {
     expect(items.some((i) => i.completion === '/proxy')).toBe(true)
     expect(items.some((i) => i.completion === '/provider openai')).toBe(false)
   })
+
+  it('/skill 前缀同时展示 /skill 与 /skills', () => {
+    const items = getSlashSuggestions('/skill')
+    expect(items.some((i) => i.completion === '/skill')).toBe(true)
+    expect(items.some((i) => i.completion === '/skills')).toBe(true)
+  })
+
+  it('/skills 完整匹配展示 skills 命令', () => {
+    const items = getSlashSuggestions('/skills')
+    expect(items.some((i) => i.completion === '/skills')).toBe(true)
+    expect(items.find((i) => i.completion === '/skills')?.description).toContain('技能')
+  })
 })
