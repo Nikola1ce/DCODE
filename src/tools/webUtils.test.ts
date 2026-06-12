@@ -37,8 +37,12 @@ describe('validateFetchUrl', () => {
     expect(validateFetchUrl('http://169.254.169.254/').ok).toBe(false)
   })
 
-  it('拒绝 IPv6 环回', () => {
-    expect(validateFetchUrl('http://[::1]/').ok).toBe(false)
+  it('拒绝十进制整型环回 IP', () => {
+    expect(validateFetchUrl('http://2130706433/').ok).toBe(false)
+  })
+
+  it('拒绝简写环回 IP', () => {
+    expect(validateFetchUrl('http://127.1/').ok).toBe(false)
   })
 })
 

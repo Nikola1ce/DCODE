@@ -274,6 +274,7 @@ export function undoCheckpoints(cwd: string, count: number): UndoResult {
   const remaining = records.slice(0, -n)
 
   const result: UndoResult = { restored: [], deleted: [], count: 0, errors: [] }
+  const failedRecords: typeof records = []
 
   for (const cp of toUndo) {
     const abs = resolveTargetAbs(cwd, cp.targetPath)
@@ -288,6 +289,7 @@ export function undoCheckpoints(cwd: string, count: number): UndoResult {
         const backupPath = getBackupPath(cwd, cp.id)
         if (!existsSync(backupPath)) {
           result.errors.push(`备份丢失：${cp.targetPath}（id=${cp.id}）`)
+          failedRecords.push(cp)
           continue
         }
         const content = readFileSync(backupPath)
@@ -300,10 +302,12 @@ export function undoCheckpoints(cwd: string, count: number): UndoResult {
       deleteBackupFile(cwd, cp.id)
     } catch (e: any) {
       result.errors.push(`${cp.targetPath}：${e.message}`)
+      failedRecords.push(cp)
     }
   }
 
-  saveManifest(cwd, remaining)
+  // 恢复失败的检查点保留在 manifest 中，便于用户再次 /undo。
+  saveManifest(cwd, [...remaining, ...failedRecords.reverse()])
   return result
 }
 

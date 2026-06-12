@@ -6,7 +6,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import {
   CONFIG_DIR_NAME,
   CONFIG_FILE_NAME,
@@ -158,7 +158,14 @@ function isValidProviderEnv(value: string): boolean {
 export function saveConfig(config: DCodeConfig): void {
   ensureConfigDir()
   // 以 2 空格缩进美化输出，便于用户手动查看/编辑。
-  writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf8')
+  const path = getConfigPath()
+  writeFileSync(path, JSON.stringify(config, null, 2), 'utf8')
+  // 限制配置文件权限，降低同机其它用户读取 API Key 的风险。
+  try {
+    chmodSync(path, 0o600)
+  } catch {
+    // Windows 等平台可能不支持 chmod，忽略。
+  }
 }
 
 /**

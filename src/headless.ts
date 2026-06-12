@@ -9,7 +9,7 @@ import type { PermissionDecision, PermissionRequest } from './core/types.js'
 
 // 无头执行选项。
 export interface HeadlessOptions {
-  // 是否自动批准所有权限请求（默认 true：非交互场景直接执行）。
+  // 是否自动批准所有权限请求（需 CLI 显式 -y/--yes 或 bypass 模式）。
   autoApprove: boolean
 }
 

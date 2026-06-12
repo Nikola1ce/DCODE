@@ -2,7 +2,7 @@
 // 覆盖备份、undo 恢复、undo 删除新建文件、清空与列表。
 // 制作人：Moriarty_Dox
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
@@ -81,5 +81,25 @@ describe('checkpoint', () => {
     setup()
     expect(getCheckpointsDir(tempCwd)).toContain('.dcode')
     expect(getCheckpointsDir(tempCwd)).toContain('checkpoints')
+  })
+
+  it('undo 失败时保留 manifest 条目以便再次回退', () => {
+    setup()
+    const file = join(tempCwd, 'd.txt')
+    writeFileSync(file, 'original', 'utf8')
+
+    saveCheckpointBeforeWrite(tempCwd, file, 'write_file')
+    writeFileSync(file, 'modified', 'utf8')
+
+    // 删除备份文件模拟备份丢失。
+    expect(listCheckpoints(tempCwd).length).toBe(1)
+    const dataDir = join(getCheckpointsDir(tempCwd), 'data')
+    for (const name of readdirSync(dataDir)) {
+      unlinkSync(join(dataDir, name))
+    }
+
+    const result = undoCheckpoints(tempCwd, 1)
+    expect(result.errors.length).toBeGreaterThan(0)
+    expect(getCheckpointCount(tempCwd)).toBe(1)
   })
 })

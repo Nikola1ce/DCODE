@@ -2,9 +2,15 @@
 // 验证各 Provider 独立保存 Key、切换 Provider 时使用对应 Key。
 // 制作人：Moriarty_Dox
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type DCodeConfig } from '../config.js'
-import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../constants.js'
+import {
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL,
+  ENV_API_KEY,
+  ENV_OPENAI_API_KEY,
+  ENV_ZHIPU_API_KEY,
+} from '../constants.js'
 import {
   buildProviderLoginPatch,
   getProviderLoginMeta,
@@ -29,6 +35,25 @@ function baseConfig(overrides: Partial<DCodeConfig> = {}): DCodeConfig {
 }
 
 describe('provider login / multi-key', () => {
+  const providerApiEnvKeys = [ENV_API_KEY, ENV_OPENAI_API_KEY, ENV_ZHIPU_API_KEY]
+  const envBackup = new Map<string, string | undefined>()
+
+  beforeEach(() => {
+    envBackup.clear()
+    for (const key of providerApiEnvKeys) {
+      envBackup.set(key, process.env[key])
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of providerApiEnvKeys) {
+      const value = envBackup.get(key)
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
   it('buildProviderLoginPatch 为 zhipu 写入 providers.zhipu.apiKey', () => {
     const patch = buildProviderLoginPatch(baseConfig(), 'zhipu', 'sk-zhipu-test')
     expect(patch.providers?.zhipu?.apiKey).toBe('sk-zhipu-test')

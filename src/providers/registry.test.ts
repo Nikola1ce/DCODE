@@ -4,7 +4,7 @@
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import type { DCodeConfig } from '../config.js'
-import { DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_ZHIPU_BASE_URL, DEFAULT_ZHIPU_MODEL, ENV_API_KEY, ENV_OPENAI_API_KEY, ENV_ZHIPU_API_KEY } from '../constants.js'
+import { DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_ZHIPU_BASE_URL, DEFAULT_ZHIPU_MODEL, ENV_API_KEY, ENV_BASE_URL, ENV_OPENAI_API_KEY, ENV_ZHIPU_API_KEY } from '../constants.js'
 import {
   buildProviderSwitchPatch,
   getActiveProviderId,
@@ -207,5 +207,13 @@ describe('providers/registry', () => {
     expect(opts.map((o) => o.value)).toContain('gpt-5.5')
     expect(opts.find((o) => o.value === 'gpt-4o-mini')?.hint).toContain('默认')
     expect(opts.find((o) => o.value === 'gpt-5.5')?.hint).toContain('前沿')
+  })
+
+  it('DEEPSEEK_BASE_URL 环境变量仅影响 deepseek Provider', () => {
+    process.env[ENV_BASE_URL] = 'https://custom-deepseek.example/v1'
+    expect(resolveProviderBaseURL(baseConfig({ provider: 'deepseek' }))).toBe(
+      'https://custom-deepseek.example/v1',
+    )
+    expect(resolveProviderBaseURL(baseConfig({ provider: 'zhipu' }))).toBe(DEFAULT_ZHIPU_BASE_URL)
   })
 })

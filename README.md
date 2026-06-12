@@ -42,6 +42,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - [使用](#使用)
 - [交互界面内的斜杠命令](#交互界面内的斜杠命令)
 - [权限模式说明](#权限模式说明)
+- [安全说明](#安全说明)
 - [后台命令工作流](#后台命令工作流)
 - [项目记忆（DCODE.md）](#项目记忆dcode)
 - [常见问题](#常见问题)
@@ -80,6 +81,12 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 ### 体验与安全
 
 - **权限门控**：写文件、执行命令、Web/MCP 等需授权；`plan` / `auto` / `bypass` 模式可切换
+- **网络安全**：`web_fetch` 禁止内网/localhost；DNS 解析复核、手动跟随重定向（防 SSRF）；拦截十进制/简写 IP
+- **项目信任**：项目级 `.dcode/mcp.json`、`.dcode/hooks.json` 仅在创建 **`.dcode/trust`**（或 `DCODE_TRUST_PROJECT=1`）后加载，降低打开陌生仓库时的供应链风险
+- **密钥与进程隔离**：`~/.dcode/config.json` 写入时尝试 `chmod 600`；Shell / Hooks 子进程剔除 API Key 等敏感环境变量
+- **路径与并发**：文件工具通过 `realpath` 校验工作区内路径；同路径 `read_file` / `write_file` / `edit_file` 串行执行；「总是允许」按具体文件路径生效
+- **上下文压缩**：自动压缩时保持 `assistant` + `tool` 消息组完整，避免 API 历史断裂
+- **检查点回滚**：`/undo` 恢复失败时保留 manifest 条目，可再次尝试
 - **精美终端 UI**：Ink 全屏 TUI，暗/亮主题，斜杠命令补全（`/` 底部展示 Provider 子选项）
 - **成本追踪**：token 用量与预估成本（区分缓存命中/未命中）
 
@@ -331,7 +338,7 @@ powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | [platform.deepseek.com](https://platform.deepseek.com) |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com](https://platform.openai.com/api-keys)；国内通常需配置 `/proxy` |
 
-运行中切换：`/provider zhipu`、`/provider deepseek`、`/provider openai`。切换后会自动改用该 Provider 的默认模型（若当前模型不属于目标供应商）。查看状态：`/config`、`/provider`。
+运行中切换：`/provider zhipu`、`/provider deepseek`、`/provider openai`。切换后会自动改用该 Provider 的默认模型（若当前模型不属于目标供应商）。`DEEPSEEK_BASE_URL` 环境变量**仅**在 Provider 为 `deepseek` 时覆盖端点。查看状态：`/config`、`/provider`。
 
 ### 配置 Key 的三种方式
 
@@ -353,6 +360,9 @@ export ZHIPU_API_KEY="你的智谱密钥"
 # 其它 Provider（可选）
 # $env:DEEPSEEK_API_KEY="sk-..."
 # $env:OPENAI_API_KEY="sk-..."
+
+# 信任当前项目的 MCP/Hooks 配置（可选，见「安全说明」）
+# $env:DCODE_TRUST_PROJECT="1"
 ```
 
 持久化（bash）：
@@ -405,8 +415,8 @@ DeepSeek 示例：
 
 DCODE 作为 **MCP Client**，可连接任意 MCP Server 并将工具动态注册到 Agent。配置文件：
 
-- 全局：`~/.dcode/mcp.json`
-- 项目（可选）：`.dcode/mcp.json`（同名 server 覆盖全局）
+- 全局：`~/.dcode/mcp.json`（始终加载）
+- 项目（可选）：`.dcode/mcp.json`（**需先信任项目**，见 [安全说明](#安全说明)）
 
 格式与 Cursor 的 `mcp.json` 兼容，示例见 [docs/mcp.json.example](docs/mcp.json.example)：
 
@@ -430,13 +440,13 @@ DCODE 作为 **MCP Client**，可连接任意 MCP Server 并将工具动态注�
 - **stdio**：`command` + `args`（本地进程）
 - **HTTP**：`url` + `type: "http"`（Streamable HTTP，推荐）
 - **SSE**：`url` + `type: "sse"`（兼容旧 Server）
-- **`trust: true`**：该 Server 的非只读 MCP 工具跳过授权弹窗（仍受 plan 模式约束）
+- **`trust: true`**：该 Server 的 MCP 工具跳过授权弹窗（仍受 plan 模式约束；**不信任** MCP 自报的 `readOnlyHint`）
 
 运行中可用 `/mcp` 查看连接状态，`/mcp reload` 热重载。模型还可使用内置代理工具：`list_mcp_resources`、`read_mcp_resource`、`list_mcp_prompts`、`get_mcp_prompt`。
 
 ## 配置 Web 搜索
 
-`web_fetch` 可直接使用（抓取公开 http/https 页面，执行前需用户授权）。`web_search` 需配置以下环境变量之一：
+`web_fetch` 可直接使用（抓取公开 http/https 页面，执行前需用户授权）。访问前会校验 URL、解析 DNS 并手动处理重定向，**禁止** localhost、内网 IP 及 DNS 重绑定至内网。`web_search` 需配置以下环境变量之一：
 
 | 变量 | 说明 |
 | --- | --- |
@@ -455,12 +465,12 @@ export SERPAPI_API_KEY="your-key"
 
 ## Hooks 钩子
 
-在工具执行前后插入自定义逻辑（lint、格式化、阻断危险操作等）。配置位置（项目覆盖全局）：
+在工具执行前后插入自定义逻辑（lint、格式化、阻断危险操作等）。配置位置：
 
-- `~/.dcode/hooks.json` 或 `<项目>/.dcode/hooks.json`
-- `~/.dcode/hooks/*.json` 或 `<项目>/.dcode/hooks/*.json`
+- 全局：`~/.dcode/hooks.json`、`~/.dcode/hooks/*.json`（始终加载）
+- 项目：`<项目>/.dcode/hooks.json`、`<项目>/.dcode/hooks/*.json`（**需先信任项目**，见 [安全说明](#安全说明)）
 
-支持事件类型包括 `PreToolUse`、`PostToolUse`、`Notification`、`OnSessionStart`、`OnSessionEnd` 等。Hook 可配置为 shell 命令；`PreToolUse` 可阻止工具执行或修改参数。
+支持事件类型包括 `PreToolUse`、`PostToolUse`、`Notification`、`OnSessionStart`、`OnSessionEnd` 等。Hook 可配置为 shell 命令；`PreToolUse` 可阻止工具执行或修改参数。Hook 子进程不会继承 API Key 等敏感环境变量。
 
 ```bash
 /hooks          # 查看当前已加载钩子
@@ -496,6 +506,8 @@ export SERPAPI_API_KEY="your-key"
 | `/undo` | 回退最近 **1** 个检查点 |
 | `/undo 3` | 回退最近 3 个检查点 |
 
+若某次回退因备份丢失等原因失败，对应条目会**保留在列表中**，可修正后再次 `/undo`。
+
 多步 AI 改码出错时，可快速回滚而无需手动 `git checkout`。
 
 ## Git 工作流
@@ -508,6 +520,7 @@ export SERPAPI_API_KEY="your-key"
 
 提交与 push 前均需用户确认。Agent 也可通过 `run_command` 调用 git，但推荐优先使用上述斜杠命令以获得更规范的摘要。
 
+## 新手教学
 
 ### 第一课：第一次对话
 
@@ -571,9 +584,14 @@ dcode -r
 ```bash
 dcode -p "列出当前目录下所有 .ts 文件，并统计行数"
 
+# 显式自动批准需授权操作（写文件、run_command、web_fetch 等）
+dcode -p -y "运行 npm test 并总结失败用例"
+
 # 管道传入
 echo "检查 package.json 的依赖是否有已知安全问题" | dcode -p
 ```
+
+> **注意**：无头模式**默认拒绝**需授权的操作（无 TUI 无法弹窗）。若任务会写文件或执行命令，请加上 **`-y` / `--yes`**，或使用 **`--bypass`**（危险）。`--plan` 仍为只读。
 
 适合 CI、定时任务或快速一次性问答。无头模式同样会写入 `~/.dcode/sessions/`，stderr 会输出 `[会话已保存] <id>`，可用 `dcode -c` 继续。
 
@@ -604,8 +622,11 @@ dcode --model deepseek-v4-pro
 # 无头模式：执行一次任务并打印结果（适合脚本/CI）
 dcode -p "用 Python 写一个快速排序并附带测试"
 
+# 无头 + 自动批准（任务含写文件/执行命令时使用）
+dcode -p -y "运行 npm test 并修复失败用例"
+
 # 用 V4 Pro + 最大推理强度（Thinking 模式下生效）
-dcode --model deepseek-v4-pro --reasoning-effort max -p "设计一个 LRU 缓存类"
+dcode --model deepseek-v4-pro --reasoning-effort max -p -y "设计一个 LRU 缓存类"
 
 # 通过管道传入任务
 echo "审查 src/index.ts 的潜在 bug" | dcode -p
@@ -625,13 +646,15 @@ dcode --plan
 | 选项 | 说明 |
 | --- | --- |
 | `-p, --print` | 无头模式：执行一轮任务并打印后退出 |
+| `-y, --yes` | 无头模式下自动批准权限请求（**默认拒绝**需授权操作） |
+| `--dangerously-auto-approve` | 同 `-y` |
 | `-c, --continue` | 继续当前目录最近一次会话 |
 | `-r, --resume [id]` | 恢复指定（或最近）历史会话 |
-| `-m, --model <模型>` | 指定模型（默认 `glm-4-flash`；智谱免费另有 `glm-4.7-flash`；DeepSeek 见 `/model`） |
+| `-m, --model <模型>` | 指定模型（按当前 Provider 校验；智谱如 `glm-4-flash`，DeepSeek 见 `/model`） |
 | `--cwd <目录>` | 指定工作目录 |
 | `--plan` | 规划模式（只读） |
 | `--auto` | 自动接受编辑模式（文件读写免确认） |
-| `--bypass` | 跳过所有权限确认（危险） |
+| `--bypass` | 跳过所有权限确认（危险；无头模式下等同自动批准） |
 | `--dangerously-skip-permissions` | 同 `--bypass` |
 | `--reasoning-effort <high\|max>` | 推理强度（Thinking 模式下生效；Pro 复杂任务可用 `max`） |
 | `-v, --version` | 显示版本 |
@@ -692,7 +715,23 @@ dcode --plan
 
 正常启动（未加上述参数）时，写文件与执行命令前会请求授权。
 
-## 后台命令工作流
+无头模式（`-p`）下无 TUI，**默认拒绝**需授权操作；加 `-y` 或 `--bypass` 才会自动执行。
+
+## 安全说明
+
+DCODE 在 Agent 能改代码、跑命令的前提下，默认采用偏保守的安全策略：
+
+| 机制 | 说明 |
+| --- | --- |
+| **项目信任** | 在项目根创建空文件 `.dcode/trust`，或设置 `DCODE_TRUST_PROJECT=1`，才加载项目级 MCP / Hooks 配置 |
+| **web_fetch** | 仅 http/https；禁止内网 IP；DNS 解析后复核；重定向每跳重新校验 |
+| **无头权限** | `-p` 默认拒绝写文件/执行命令/Web；需 `-y` 或 `--bypass` |
+| **MCP 授权** | 仅 Server 配置 `trust: true` 可跳过弹窗；不信任 MCP 的 `readOnlyHint` |
+| **路径访问** | 文件工具限制在工作目录内，并解析符号链接 |
+| **密钥存储** | API Key 存于 `~/.dcode/config.json`，保存时尝试限制为仅当前用户可读 |
+| **子进程环境** | `run_command` / Hooks 子进程不继承 `*_API_KEY` 等敏感变量 |
+
+在**你完全信任**的自有项目中，可按需创建 `.dcode/trust` 以启用项目级 MCP 与 Hooks。
 
 长时间命令（构建、测试套件、训练脚本等）若在前台执行会阻塞 Agent 主循环。DCODE 支持将命令放到**后台**运行，再通过专用工具轮询输出或终止进程。
 
@@ -800,6 +839,31 @@ npm run build
 - **智谱免费模型**（`glm-4-flash`、`glm-4.7-flash`）：预估成本为 **免费**  
 - 智谱按量计费模型、DeepSeek、OpenAI：按各自价目估算；状态栏显示「预估成本」
 
+### 无头模式提示「已拒绝需授权的操作」
+
+无头模式默认不弹授权框。若任务需要写文件或执行命令，请加上 **`-y`**：
+
+```bash
+dcode -p -y "你的任务描述"
+```
+
+或使用 `--plan` 做只读分析（不修改、不执行）。
+
+### 项目 MCP / Hooks 未生效
+
+项目级 `.dcode/mcp.json`、`.dcode/hooks.json` 需先**信任该项目**：
+
+```bash
+mkdir -p .dcode
+touch .dcode/trust    # Windows: type nul > .dcode\trust
+```
+
+或临时：`DCODE_TRUST_PROJECT=1 dcode`（PowerShell：`$env:DCODE_TRUST_PROJECT="1"`）。
+
+### `DEEPSEEK_BASE_URL` 与 Provider 切换
+
+环境变量 `DEEPSEEK_BASE_URL` **仅**在 Provider 为 `deepseek` 时生效；切换到智谱/OpenAI 后不会误指向 DeepSeek 端点。
+
 ## 开发
 
 ```bash
@@ -813,7 +877,7 @@ npm test        # 运行单元测试（Vitest）
 npm run test:watch  # 监听模式跑测试
 ```
 
-源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest，119+ 用例）。主要模块：
+源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest，130+ 用例）。主要模块：
 
 ```
 src/
@@ -832,14 +896,17 @@ src/
 │   ├── subAgent.ts      # 子代理（Task）调度
 │   ├── shellManager.ts  # 后台 Shell 生命周期
 │   ├── hooks.ts         # Hooks 钩子系统
+│   ├── projectTrust.ts  # 项目级 MCP/Hooks 信任标记
+│   ├── childEnv.ts      # 子进程环境变量净化
+│   ├── fileToolLock.ts  # 文件工具路径串行锁
 │   ├── skills.ts        # Skills 技能包
 │   ├── checkpoint.ts    # 文件检查点与 /undo
 │   ├── gitUtils.ts      # Git diff / commit / PR 辅助
 │   ├── systemPrompt.ts  # 系统提示构建
-│   ├── compact.ts       # 上下文压缩
+│   ├── compact.ts       # 上下文压缩（保持 tool 消息组完整）
 │   ├── session.ts       # 会话持久化（JSONL）
 │   └── types.ts         # 核心类型
-├── tools/               # 工具系统（文件/命令/Web/Task/MCP 等）
+├── tools/               # 工具系统（文件/命令/Web/Task/MCP 等；webUtils 含 SSRF 防护）
 ├── commands/            # 斜杠命令系统
 └── ui/                  # Ink TUI 组件
 ```
@@ -852,7 +919,7 @@ src/
 | --- | --- | --- |
 | **P0 核心** | ✅ 已完成 | MCP、子代理 Task、后台 Shell、Web Fetch/Search |
 | **P1 工程** | ✅ 已完成 | Hooks、Skills、文件检查点、Git `/commit` `/pr` |
-| **P2 体验** | 🔶 部分完成 | **多 Provider**（智谱/DeepSeek/OpenAI）、Provider 感知计费、流式去重 |
+| **P2 体验** | 🔶 部分完成 | **多 Provider**（智谱/DeepSeek/OpenAI）、Provider 感知计费、流式去重、**安全加固**（SSRF/项目信任/无头权限） |
 | **P2 待办** | ⏳ 规划中 | `.dcodeignore`、`/review`、IDE 扩展、图像多模态、自动更新等 |
 
 ## 开源协议

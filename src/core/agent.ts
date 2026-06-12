@@ -23,14 +23,8 @@ import { compactMessages, shouldCompact } from './compact.js'
 import type { SkillDefinition } from './skills.js'
 import { loadSkillByName } from './skills.js'
 import type { SessionRecorder } from './session.js'
-import type {
-  DeepMessage,
-  PermissionDecision,
-  PermissionRequest,
-  TodoItem,
-  ToolContext,
-  ToolResult,
-} from './types.js'
+import { extractFileLockKey, withFilePathLock } from './fileToolLock.js'
+import type { DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolContext, ToolResult } from './types.js'
 
 /**
  * 单轮对话的回调集合。
@@ -399,8 +393,11 @@ export class Agent {
       if (toolCalls.length === 0) return
 
       // 5) 并行执行本轮所有工具调用（支持 Task 子代理并行），结果按原顺序回填历史。
+      // 对同一文件路径的 read/write/edit 串行化，避免交错写入。
+      const filePathLocks = new Map<string, Promise<void>>()
       const executedResults = await Promise.all(
-        toolCalls.map(async (call) => {
+        toolCalls.map(async (call) =>
+          withFilePathLock(filePathLocks, extractFileLockKey(call), async () => {
           if (handlers.abortSignal.aborted) {
             return {
               call,
@@ -440,6 +437,7 @@ export class Agent {
           })
           return { call, executed }
         }),
+        ),
       )
 
       for (const { call, executed } of executedResults) {

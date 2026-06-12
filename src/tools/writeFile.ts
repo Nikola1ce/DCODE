@@ -53,7 +53,7 @@ export const writeFileTool: ToolDefinition = {
       toolName: 'write_file',
       title: `${exists ? '覆盖' : '创建'}文件 ${toDisplayPath(ctx.cwd, abs)}`,
       preview: buildDiffPreview(oldText, input.content),
-      ruleKey: 'write_file',
+      ruleKey: `write_file(${input.path})`,
     }
   },
   /**

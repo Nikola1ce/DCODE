@@ -5,15 +5,19 @@
 
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_MODEL,
   MAX_CONCURRENT_SUBAGENTS,
   MAX_SUBAGENT_ITERATIONS,
   SUBAGENT_TYPES,
   type SubAgentType,
-  isSupportedModelName,
 } from '../constants.js'
 import type { DCodeConfig } from '../config.js'
+import {
+  getActiveProviderId,
+  getProviderDefinition,
+  isModelAllowedForProvider,
+} from '../providers/registry.js'
 import type { DeepMessage, ToolContext } from './types.js'
+import { extractFileLockKey, withFilePathLock } from './fileToolLock.js'
 import { getSubAgentTools, toOpenAITools, executeToolCall } from '../tools/index.js'
 import { createLLMClient } from '../providers/factory.js'
 import { buildSystemPrompt } from './systemPrompt.js'
@@ -263,10 +267,9 @@ export const subAgentManager = new SubAgentManager()
  * @returns 合法模型名。
  */
 function resolveSubAgentModel(override: string | undefined, config: DCodeConfig): string {
-  if (override && isSupportedModelName(override)) return override
-  // 未指定时优先 flash 以节省成本。
-  if (isSupportedModelName(config.model)) return config.model
-  return DEFAULT_MODEL
+  if (override && isModelAllowedForProvider(override, config)) return override
+  if (isModelAllowedForProvider(config.model, config)) return config.model
+  return getProviderDefinition(getActiveProviderId(config)).defaultModel
 }
 
 /** 子代理主循环的内部参数。 */
@@ -363,13 +366,16 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
       return { text: finalText + costNote, isError: false }
     }
 
-    // 子代理内工具调用：并行执行以提速（只读/写工具由模型自行避免冲突）。
+    // 子代理内工具调用：并行执行；同一路径 read/write/edit 串行化以防竞态。
+    const filePathLocks = new Map<string, Promise<void>>()
     const results = await Promise.all(
-      toolCalls.map(async (call) => {
-        toolCtx.onProgress = (text) =>
-          opts.onProgress?.(`[工具 ${call.name}] ${text}`)
-        return executeToolCall(call, toolCtx)
-      }),
+      toolCalls.map(async (call) =>
+        withFilePathLock(filePathLocks, extractFileLockKey(call), async () => {
+          toolCtx.onProgress = (text) =>
+            opts.onProgress?.(`[工具 ${call.name}] ${text}`)
+          return executeToolCall(call, toolCtx)
+        }),
+      ),
     )
 
     for (const executed of results) {

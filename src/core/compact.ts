@@ -12,6 +12,52 @@ import type { DeepMessage } from './types.js'
 const KEEP_RECENT = 6
 
 /**
+ * 将对话历史拆分为不可再分的消息组（assistant+tool_calls 与其 tool 结果同组）。
+ * @param convo 不含 system 的消息列表。
+ * @returns 消息组数组。
+ */
+export function splitConversationGroups(convo: DeepMessage[]): DeepMessage[][] {
+  const groups: DeepMessage[][] = []
+  let i = 0
+  while (i < convo.length) {
+    const m = convo[i]
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const group: DeepMessage[] = [m]
+      i++
+      while (i < convo.length && convo[i].role === 'tool') {
+        group.push(convo[i])
+        i++
+      }
+      groups.push(group)
+    } else {
+      groups.push([m])
+      i++
+    }
+  }
+  return groups
+}
+
+/**
+ * 按消息条数从尾部选取保留组，保证不在 assistant/tool 组中间切分。
+ * @param groups 消息组。
+ * @param keepRecent 保留的最近消息条数上限。
+ * @returns [待摘要组, 保留组]。
+ */
+export function partitionGroupsForCompact(
+  groups: DeepMessage[][],
+  keepRecent: number,
+): [DeepMessage[][], DeepMessage[][]] {
+  const keptGroups: DeepMessage[][] = []
+  let keptCount = 0
+  for (let g = groups.length - 1; g >= 0 && keptCount < keepRecent; g--) {
+    keptGroups.unshift(groups[g])
+    keptCount += groups[g].length
+  }
+  const summarizeCount = groups.length - keptGroups.length
+  return [groups.slice(0, summarizeCount), keptGroups]
+}
+
+/**
  * 粗略估算一段文本的 token 数。
  * 中文按约 1.5 字符/token、英文按约 4 字符/token，混合场景取折中系数 3。
  * 仅用于触发阈值判断，不要求精确。
@@ -70,9 +116,13 @@ export async function compactMessages(
   // 历史太短没必要压缩。
   if (convo.length <= KEEP_RECENT + 2) return messages
 
-  // 划分“待摘要的旧消息”与“原样保留的最近消息”。
-  const toSummarize = convo.slice(0, convo.length - KEEP_RECENT)
-  const recent = convo.slice(convo.length - KEEP_RECENT)
+  // 按完整消息组划分，避免 assistant+tool_calls 与 tool 结果被拆到不同段。
+  const groups = splitConversationGroups(convo)
+  const [summarizeGroups, keptGroups] = partitionGroupsForCompact(groups, KEEP_RECENT)
+  if (summarizeGroups.length === 0) return messages
+
+  const toSummarize = summarizeGroups.flat()
+  const recent = keptGroups.flat()
 
   // 将待摘要消息拼成纯文本喂给模型。
   const transcript = toSummarize

@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from '../config.js'
+import { isProjectConfigTrusted } from '../core/projectTrust.js'
 import { MCP_CONFIG_FILE_NAME } from '../constants.js'
 import type { McpConfigFile, McpServerConfig } from './types.js'
 
@@ -62,7 +63,10 @@ export function isValidMcpServerConfig(id: string, cfg: McpServerConfig): boolea
  */
 export function loadMcpConfig(cwd: string): McpConfigFile {
   const globalCfg = readMcpFile(getGlobalMcpConfigPath())
-  const projectCfg = readMcpFile(getProjectMcpConfigPath(cwd))
+  // 项目级 MCP 配置可能 spawn 任意命令，仅在用户显式信任该项目时合并。
+  const projectCfg = isProjectConfigTrusted(cwd)
+    ? readMcpFile(getProjectMcpConfigPath(cwd))
+    : { mcpServers: {} }
   return {
     mcpServers: { ...globalCfg.mcpServers, ...projectCfg.mcpServers },
   }

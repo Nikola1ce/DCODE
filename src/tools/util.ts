@@ -4,7 +4,8 @@
 // 防止越权访问工作目录之外的系统文件。
 // 制作人：Moriarty_Dox
 
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /**
  * 将用户/模型提供的路径解析为绝对路径，并校验其位于工作目录内部。
@@ -15,16 +16,31 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
  * @throws 当目标路径越出工作目录时抛出错误。
  */
 export function resolveWithinCwd(cwd: string, inputPath: string): string {
-  // 统一解析为绝对路径。
-  const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(cwd, inputPath)
-  // 计算相对 cwd 的路径；若以 ".." 开头说明越出了工作目录。
-  const rel = relative(cwd, abs)
+  // 解析真实 cwd，防止 cwd 本身为指向外部的符号链接。
+  const realCwd = realpathSync(cwd)
+  const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(realCwd, inputPath)
+
+  // 对已存在路径做 realpath，阻断通过符号链接逃逸工作区。
+  let resolved = abs
+  if (existsSync(abs)) {
+    resolved = realpathSync(abs)
+  } else {
+    // 新文件：解析最近存在的父目录，再拼接剩余相对段。
+    let parent = dirname(abs)
+    while (!existsSync(parent) && parent !== dirname(parent)) {
+      parent = dirname(parent)
+    }
+    const realParent = existsSync(parent) ? realpathSync(parent) : realCwd
+    resolved = join(realParent, relative(parent, abs))
+  }
+
+  const rel = relative(realCwd, resolved)
   if (rel.startsWith('..') || (isAbsolute(rel) && rel !== '')) {
     throw new Error(
       `路径越界：出于安全考虑，只能访问当前工作目录内的文件（${inputPath}）。`,
     )
   }
-  return abs
+  return resolved
 }
 
 /**

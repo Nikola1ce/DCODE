@@ -168,9 +168,13 @@ export function resolveProviderApiKey(config: DCodeConfig): string | undefined {
  * @returns API 基础地址。
  */
 export function resolveProviderBaseURL(config: DCodeConfig): string {
-  if (process.env[ENV_BASE_URL]) return process.env[ENV_BASE_URL]
-
   const id = getActiveProviderId(config)
+
+  // DEEPSEEK_BASE_URL 仅作用于 deepseek Provider，避免切换智谱/OpenAI 后仍指向 DeepSeek。
+  if (process.env[ENV_BASE_URL] && id === 'deepseek') {
+    return process.env[ENV_BASE_URL]
+  }
+
   const def = getProviderDefinition(id)
   const override = getProviderOverrides(config, id).baseURL
   if (override) return override

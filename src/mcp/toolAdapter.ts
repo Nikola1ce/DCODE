@@ -65,11 +65,12 @@ export function mcpToolToDefinition(
   callTool: McpToolCallFn,
 ): { definition: ToolDefinition; meta: McpToolMeta } {
   const registeredName = formatMcpToolName(serverId, tool.name)
-  const readOnly = tool.annotations?.readOnlyHint === true
+  // readOnlyHint 仅用于 UI/plan 模式提示，不可作为跳过用户授权的依据。
+  const readOnlyHint = tool.annotations?.readOnlyHint === true
   const meta: McpToolMeta = {
     serverId,
     originalName: tool.name,
-    readOnly,
+    readOnly: readOnlyHint,
     trust,
   }
 
@@ -77,14 +78,15 @@ export function mcpToolToDefinition(
     name: registeredName,
     description:
       `[MCP:${serverId}] ${tool.description ?? tool.title ?? tool.name}`,
-    readOnly,
+    readOnly: readOnlyHint,
     parameters: (tool.inputSchema as Record<string, unknown>) ?? {
       type: 'object',
       properties: {},
     },
     renderCall: () => `MCP ${serverId}/${tool.name}`,
     checkPermission: (_input, _ctx) => {
-      if (readOnly || trust) return null
+      // 仅 server 配置 trust:true 时跳过授权；不信任 MCP 自报的 readOnlyHint。
+      if (trust) return null
       return {
         toolName: registeredName,
         title: `MCP 工具 ${serverId}/${tool.name}`,

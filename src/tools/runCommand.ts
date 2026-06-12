@@ -27,6 +27,8 @@ interface RunCommandInput {
 
 // 命令输出回传给模型的最大字符数。
 const MAX_OUTPUT_CHARS = 30000
+// 子进程运行期间内存中允许累积的最大输出字符数（超出后丢弃后续增量）。
+const MAX_IN_MEMORY_OUTPUT_CHARS = MAX_OUTPUT_CHARS * 4
 
 // 一组明显危险的命令模式，命中时在授权标题中加红色警示词。
 const DANGEROUS_PATTERNS = [
@@ -139,12 +141,18 @@ async function runForegroundCommand(
 
     child.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()
-      output += text
+      if (output.length < MAX_IN_MEMORY_OUTPUT_CHARS) {
+        const room = MAX_IN_MEMORY_OUTPUT_CHARS - output.length
+        output += text.slice(0, room)
+      }
       ctx.onProgress?.(text)
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()
-      output += text
+      if (output.length < MAX_IN_MEMORY_OUTPUT_CHARS) {
+        const room = MAX_IN_MEMORY_OUTPUT_CHARS - output.length
+        output += text.slice(0, room)
+      }
       ctx.onProgress?.(text)
     })
 

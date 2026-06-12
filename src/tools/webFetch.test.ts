@@ -27,6 +27,19 @@ describe('webFetchTool', () => {
     expect(result.llmContent).toContain('禁止')
   })
 
+  it('拒绝重定向到内网', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.redirect('http://127.0.0.1/secret', 302),
+      ),
+    )
+
+    const result = await webFetchTool.run({ url: 'https://example.com/redirect' }, mockCtx as any)
+    expect(result.isError).toBe(true)
+    expect(result.llmContent).toMatch(/禁止|内网|127/)
+  })
+
   it('成功抓取 HTML 并提取正文', async () => {
     vi.stubGlobal(
       'fetch',
@@ -72,6 +85,39 @@ describe('webSearchTool', () => {
     process.env.SERPAPI_API_KEY = 'serp-key'
     process.env.BING_SEARCH_API_KEY = 'bing-key'
     expect(resolveSearchApiKey().provider).toBe('serpapi')
+  })
+
+  it('使用 SerpAPI GET 参数格式化搜索结果', async () => {
+    process.env.SERPAPI_API_KEY = 'test-serp-key'
+    delete process.env.BING_SEARCH_API_KEY
+
+    let seenUrl = ''
+    let seenInit: RequestInit | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        seenUrl = input instanceof URL ? input.toString() : String(input)
+        seenInit = init
+        return Response.json({
+          organic_results: [
+            { title: 'Serp Result', link: 'https://serp.test', snippet: 'Serp Snippet' },
+          ],
+        })
+      }),
+    )
+
+    const result = await webSearchTool.run(
+      { search_term: 'dcode cli', num_results: 2 },
+      mockCtx as any,
+    )
+    expect(result.isError).toBeFalsy()
+    expect(result.llmContent).toContain('Serp Result')
+    expect(seenUrl).toContain('https://serpapi.com/search.json?')
+    expect(seenUrl).toContain('engine=google')
+    expect(seenUrl).toContain('q=dcode+cli')
+    expect(seenUrl).toContain('num=2')
+    expect(seenUrl).toContain('api_key=test-serp-key')
+    expect(seenInit?.method).toBeUndefined()
   })
 
   it('使用 Bing API 格式化搜索结果', async () => {

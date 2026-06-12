@@ -41,6 +41,8 @@ describe('HookManager', () => {
     })
     const dcodeDir = join(tempCwd, '.dcode')
     mkdirSync(dcodeDir, { recursive: true })
+    // 项目级 Hooks 需显式信任标记才会加载。
+    writeFileSync(join(dcodeDir, 'trust'), '', 'utf8')
     writeFileSync(
       join(dcodeDir, 'hooks.json'),
       JSON.stringify({ hooks: resolvedHooks }),

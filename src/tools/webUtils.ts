@@ -1,7 +1,9 @@
 // Web 工具公共逻辑。
-// URL 安全校验（禁止 localhost/内网）、HTML 正文提取等，供 web_fetch / web_search 复用。
+// URL 安全校验（禁止 localhost/内网、DNS 解析复核、重定向链校验）、HTML 正文提取等。
+// 供 web_fetch / web_search 复用。
 // 制作人：Moriarty_Dox
 
+import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 
 /** URL 校验结果。 */
@@ -9,8 +11,11 @@ export type UrlValidationResult =
   | { ok: true; url: URL }
   | { ok: false; reason: string }
 
+/** 单次 fetch 允许的最大重定向次数。 */
+const MAX_FETCH_REDIRECTS = 5
+
 /**
- * 校验 web_fetch 目标 URL 是否允许访问。
+ * 校验 web_fetch 目标 URL 是否允许访问（同步，不含 DNS 解析）。
  * 仅允许 http/https；禁止 localhost、内网 IP、链路本地与 metadata 地址。
  * @param urlString 用户或模型提供的 URL 字符串。
  * @returns 校验结果。
@@ -37,12 +42,121 @@ export function validateFetchUrl(urlString: string): UrlValidationResult {
     return { ok: false, reason: `禁止访问本地或内网地址：${host}` }
   }
 
+  const resolvedIp = resolveHostToIpv4(host)
+  if (resolvedIp) {
+    if (isPrivateOrBlockedIp(resolvedIp)) {
+      return { ok: false, reason: `禁止访问内网或保留 IP：${host}` }
+    }
+    return { ok: true, url }
+  }
+
   const ipVer = isIP(host)
   if (ipVer && isPrivateOrBlockedIp(host)) {
     return { ok: false, reason: `禁止访问内网或保留 IP：${host}` }
   }
 
   return { ok: true, url }
+}
+
+/**
+ * 异步校验 URL：在同步校验基础上解析 DNS，拒绝解析到内网的域名（防 DNS 重绑定）。
+ * @param urlString URL 字符串。
+ * @returns 校验结果。
+ */
+export async function validateFetchUrlResolved(
+  urlString: string,
+): Promise<UrlValidationResult> {
+  const basic = validateFetchUrl(urlString)
+  if (!basic.ok) return basic
+
+  const host = normalizeHostname(basic.url.hostname)
+  if (isIP(host)) return basic
+
+  try {
+    const results = await lookup(host, { all: true })
+    if (results.length === 0) {
+      return { ok: false, reason: `无法解析域名：${host}` }
+    }
+    for (const { address } of results) {
+      if (isPrivateOrBlockedIp(address)) {
+        return {
+          ok: false,
+          reason: `域名 ${host} 解析到内网地址 ${address}，禁止访问。`,
+        }
+      }
+    }
+  } catch {
+    return { ok: false, reason: `无法解析域名：${host}` }
+  }
+
+  return basic
+}
+
+/**
+ * 安全 fetch：手动跟随重定向，每次跳转前重新做 URL + DNS 校验，防 SSRF。
+ * @param urlString 初始 URL。
+ * @param init fetch 选项（redirect 会被覆盖为 manual）。
+ * @returns 最终 Response。
+ */
+export async function safeFetch(
+  urlString: string,
+  init: RequestInit,
+): Promise<Response> {
+  let current = urlString
+
+  for (let hop = 0; hop <= MAX_FETCH_REDIRECTS; hop++) {
+    const validated = await validateFetchUrlResolved(current)
+    if (!validated.ok) {
+      throw new Error(validated.reason)
+    }
+
+    const res = await fetch(validated.url.toString(), {
+      ...init,
+      redirect: 'manual',
+    })
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location')
+      if (!location) {
+        throw new Error(`HTTP ${res.status} 重定向缺少 Location 头。`)
+      }
+      current = new URL(location, validated.url).toString()
+      continue
+    }
+
+    return res
+  }
+
+  throw new Error(`重定向次数超过 ${MAX_FETCH_REDIRECTS} 次，已中止。`)
+}
+
+/**
+ * 将非标准 IPv4 字面量（十进制、简写点分）解析为标准 IPv4；非 IP 返回 null。
+ * @param host hostname 片段。
+ * @returns 标准 IPv4 或 null。
+ */
+function resolveHostToIpv4(host: string): string | null {
+  if (isIP(host) === 4) return host
+
+  // 纯十进制整型（如 2130706433 → 127.0.0.1）
+  if (/^\d+$/.test(host)) {
+    const n = Number(host)
+    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
+      return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`
+    }
+    return null
+  }
+
+  // 简写点分（如 127.1 → 127.0.0.1）
+  if (/^\d+(\.\d+)+$/.test(host)) {
+    const parts = host.split('.').map(Number)
+    if (parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) return null
+    while (parts.length < 4) parts.push(0)
+    if (parts.length > 4) return null
+    return parts.join('.')
+  }
+
+  return null
 }
 
 /**

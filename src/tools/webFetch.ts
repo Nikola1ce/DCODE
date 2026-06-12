@@ -12,6 +12,7 @@ import {
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import {
   extractBodyText,
+  safeFetch,
   truncateWebContent,
   validateFetchUrl,
 } from './webUtils.js'
@@ -73,13 +74,12 @@ export const webFetchTool: ToolDefinition = {
     const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS)
 
     try {
-      const res = await fetch(validated.url.toString(), {
+      const res = await safeFetch(validated.url.toString(), {
         signal: controller.signal,
         headers: {
           'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
           Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
         },
-        redirect: 'follow',
       })
 
       if (!res.ok) {

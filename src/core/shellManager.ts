@@ -11,6 +11,7 @@ import {
   MAX_BACKGROUND_SHELL_RUNTIME_MS,
   MAX_SHELL_OUTPUT_CHARS,
 } from '../constants.js'
+import { createSafeChildEnv } from './childEnv.js'
 import { truncate } from '../tools/util.js'
 
 /** 后台 Shell 运行状态。 */
@@ -139,7 +140,12 @@ export class ShellManager {
     if (child.pid) record.pid = child.pid
 
     const appendOutput = (text: string) => {
-      record.output += text
+      // 累积输出设硬上限，防止长时间任务导致 Node 进程 OOM。
+      const maxStored = MAX_SHELL_OUTPUT_CHARS * 4
+      if (record.output.length < maxStored) {
+        const room = maxStored - record.output.length
+        record.output += text.slice(0, room)
+      }
       opts.onOutput?.(text)
     }
 
@@ -300,7 +306,7 @@ export function spawnShellProcess(command: string, cwd: string): ChildProcess {
 
   return spawn(shell, args, {
     cwd,
-    env: process.env,
+    env: createSafeChildEnv(),
     windowsHide: true,
   })
 }

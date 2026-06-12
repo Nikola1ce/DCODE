@@ -64,7 +64,7 @@ export const editFileTool: ToolDefinition = {
       toolName: 'edit_file',
       title: `编辑文件 ${toDisplayPath(ctx.cwd, abs)}`,
       preview,
-      ruleKey: 'edit_file',
+      ruleKey: `edit_file(${input.path})`,
     }
   },
   /**

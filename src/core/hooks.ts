@@ -9,6 +9,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from '../config.js'
 import { CONFIG_DIR_NAME, HOOKS_CONFIG_FILE_NAME } from '../constants.js'
+import { createSafeChildEnv } from './childEnv.js'
+import { isProjectConfigTrusted } from './projectTrust.js'
 import type { ToolResult } from './types.js'
 
 /** 支持的钩子事件类型。 */
@@ -174,8 +176,11 @@ export class HookManager {
 
     const sources: Array<{ path: string; label: string }> = [
       { path: getGlobalHooksConfigPath(), label: 'global' },
-      { path: getProjectHooksConfigPath(cwd), label: 'project' },
     ]
+    // 项目级 Hooks 可执行任意 shell 命令，仅在用户显式信任该项目时加载。
+    if (isProjectConfigTrusted(cwd)) {
+      sources.push({ path: getProjectHooksConfigPath(cwd), label: 'project' })
+    }
 
     for (const { path, label } of sources) {
       const cfg = readHooksFile(path)
@@ -183,9 +188,10 @@ export class HookManager {
       this.mergeHooks(cfg.hooks ?? [], `${label}:${path}`)
     }
 
-    // 扫描 hooks/ 目录下的额外 .json 文件。
-    for (const dir of [getGlobalHooksDir(), getProjectHooksDir(cwd)]) {
-      this.scanHooksDirectory(dir)
+    // 扫描 hooks/ 目录下的额外 .json 文件（全局始终；项目需信任）。
+    this.scanHooksDirectory(getGlobalHooksDir())
+    if (isProjectConfigTrusted(cwd)) {
+      this.scanHooksDirectory(getProjectHooksDir(cwd))
     }
   }
 
@@ -452,7 +458,7 @@ export class HookManager {
         : undefined
 
     const env = {
-      ...process.env,
+      ...createSafeChildEnv(),
       DCODE_HOOK_EVENT: payload.event,
       DCODE_HOOK_CWD: payload.cwd,
       ...(renderedPrompt ? { DCODE_HOOK_PROMPT: renderedPrompt } : {}),

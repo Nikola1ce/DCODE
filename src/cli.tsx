@@ -19,12 +19,16 @@ import {
   SUPPORTED_MODELS,
   LEGACY_MODELS,
   REASONING_EFFORTS,
-  isSupportedModelName,
   isValidReasoningEffort,
   type ReasoningEffort,
 } from './constants.js'
 import { loadConfig, ensureConfigDir, type PermissionMode } from './config.js'
-import { getActiveProviderId, getProviderDefinition } from './providers/registry.js'
+import {
+  getActiveProviderId,
+  getProviderDefinition,
+  getSuggestedModelsForProvider,
+  isModelAllowedForProvider,
+} from './providers/registry.js'
 import { Agent } from './core/agent.js'
 import {
   SessionRecorder,
@@ -57,6 +61,8 @@ interface CliOptions {
   cwd?: string
   // 权限模式覆盖。
   permissionMode?: PermissionMode
+  // 无头模式：显式自动批准所有权限请求（默认拒绝，需 -y/--yes）。
+  autoApprove?: boolean
   // 推理强度覆盖（high / max）。
   reasoningEffort?: ReasoningEffort
   // 位置参数拼成的 prompt（无头模式使用）。
@@ -109,10 +115,14 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '-m':
       case '--model':
-        opts.model = argv[++i]
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
+          opts.model = argv[++i]
+        }
         break
       case '--cwd':
-        opts.cwd = argv[++i]
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
+          opts.cwd = argv[++i]
+        }
         break
       case '--plan':
         opts.permissionMode = 'plan'
@@ -127,7 +137,14 @@ function parseArgs(argv: string[]): CliOptions {
         opts.permissionMode = 'bypass'
         break
       case '--reasoning-effort':
-        opts.reasoningEffort = argv[++i] as ReasoningEffort
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
+          opts.reasoningEffort = argv[++i] as ReasoningEffort
+        }
+        break
+      case '-y':
+      case '--yes':
+      case '--dangerously-auto-approve':
+        opts.autoApprove = true
         break
       default:
         // 未识别的非选项参数视为 prompt 的一部分。
@@ -154,6 +171,7 @@ function printHelp(): void {
     '',
     '选项：',
     '  -p, --print                 无头模式：执行一轮任务并打印结果后退出',
+    '  -y, --yes                   无头模式下自动批准权限请求（默认拒绝需授权操作）',
     '  -c, --continue              继续当前目录最近一次会话',
     '  -r, --resume [会话id]       恢复指定（或最近）历史会话',
     '  -m, --model <模型>          指定模型（' + SUPPORTED_MODELS.join(' / ') + '）',
@@ -204,9 +222,10 @@ async function main(): Promise<void> {
 
   // 命令行覆盖：模型。
   if (opts.model) {
-    if (!isSupportedModelName(opts.model)) {
+    if (!isModelAllowedForProvider(opts.model, config)) {
+      const suggested = getSuggestedModelsForProvider(config).join('、')
       process.stderr.write(
-        `不支持的模型：${opts.model}\n可用模型：${SUPPORTED_MODELS.join('、')}（兼容别名：${LEGACY_MODELS.join('、')}）\n`,
+        `不支持的模型：${opts.model}\n当前 Provider（${getActiveProviderId(config)}）可用：${suggested}\n`,
       )
       process.exit(1)
     }
@@ -287,9 +306,9 @@ async function main(): Promise<void> {
       process.exit(1)
     }
 
-    // 非交互场景：plan 模式保持只读；其余模式自动批准（无 TUI 无法弹授权框）。
+    // 无头模式：plan 保持只读；bypass 跳过确认；其余模式默认拒绝，需 -y/--yes 才自动批准。
     const code = await runHeadless(agent, prompt.trim(), {
-      autoApprove: permissionMode !== 'plan',
+      autoApprove: !!opts.autoApprove || permissionMode === 'bypass',
     })
     await shutdownHooks(cwd, agent.getSessionId())
     await shutdownMcp()

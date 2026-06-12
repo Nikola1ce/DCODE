@@ -5,12 +5,13 @@
 
 import {
   SUBAGENT_TYPE_NAMES,
+  SUBAGENT_TYPES,
   isValidSubAgentType,
-  isSupportedModelName,
   type SubAgentType,
 } from '../constants.js'
+import { isModelAllowedForProvider } from '../providers/registry.js'
 import { subAgentManager } from '../core/subAgent.js'
-import type { ToolDefinition, ToolResult } from '../core/types.js'
+import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 
 /** Task 工具入参。 */
 interface TaskInput {
@@ -80,6 +81,23 @@ export const taskTool: ToolDefinition = {
     return `子代理: ${input.description} (${type})`
   },
   /**
+   * 启动具 shell/写能力的子代理前需用户确认（只读 explore 除外）。
+   * @param input 入参。
+   * @param ctx 运行上下文。
+   */
+  checkPermission: (input: TaskInput, ctx): PermissionRequest | null => {
+    if (input.resume?.trim()) return null
+    if (ctx.permissionMode === 'bypass' || ctx.permissionMode === 'acceptEdits') return null
+    const type = input.subagent_type ?? 'generalPurpose'
+    if (input.readonly || SUBAGENT_TYPES[type]?.readonlyDefault) return null
+    return {
+      toolName: 'task',
+      title: `启动子代理：${input.description}`,
+      preview: input.prompt?.slice(0, 300),
+      ruleKey: `task(${type})`,
+    }
+  },
+  /**
    * 执行 Task：resume 查询或启动新子代理。
    * @param input 入参。
    * @param ctx 父级工具上下文。
@@ -110,7 +128,7 @@ export const taskTool: ToolDefinition = {
       }
     }
 
-    if (input.model && !isSupportedModelName(input.model)) {
+    if (input.model && !isModelAllowedForProvider(input.model, ctx.config)) {
       return {
         llmContent: `错误：不支持的模型 "${input.model}"`,
         isError: true,
