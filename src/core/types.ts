@@ -5,6 +5,7 @@
 // 制作人：Moriarty_Dox
 
 import type { DCodeConfig, PermissionMode } from '../config.js'
+import type { DeepSeekUsage } from '../deepseek/pricing.js'
 
 // 消息角色：与 OpenAI Chat Completions 对齐，便于直接转换为 API 请求体。
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
@@ -41,6 +42,11 @@ export interface DeepMessage {
   isError?: boolean
   // 时间戳（毫秒），用于会话回放与排序。
   timestamp?: number
+  // 内部元信息：用于区分压缩摘要、合成错误等非用户/模型原生消息。
+  metadata?: {
+    kind?: 'summary' | 'synthetic_error'
+    source?: 'model' | 'tool' | 'system'
+  }
 }
 
 /**
@@ -100,6 +106,82 @@ export interface ToolContext {
   sessionId?: string | null
 }
 
+// 工具副作用与调度策略。缺省时由 readOnly 推断为 none / unknown。
+export interface ToolSafetyPolicy {
+  sideEffect: 'none' | 'fs_write' | 'shell' | 'network' | 'subagent' | 'state'
+  concurrencyKey?: string
+  parallelSafe?: boolean
+}
+
+// 上下文预算策略。当前只使用 tokenThreshold，预留给 repo map / context pack。
+export interface ContextPolicy {
+  tokenThreshold?: number
+}
+
+// Agent 单次 run 的简要追踪信息。
+export interface AgentRunTrace {
+  runId: string
+  turnId: string
+  startedAt: number
+  endedAt?: number
+  iterations: number
+  finishReason?: string
+  usage?: DeepSeekUsage
+  costUsd?: number
+  error?: string
+}
+
+// AgentRunner 对外产出的结构化事件。UI/headless 可继续使用 TurnHandlers；
+// 新消费者可直接订阅 onEvent / SessionRecorder event 行。
+export type AgentRunEvent =
+  | { type: 'run_start'; runId: string; turnId: string; timestamp: number }
+  | { type: 'turn_start'; runId: string; turnId: string; timestamp: number; userInput: string }
+  | { type: 'compact_start'; runId: string; turnId: string; iteration: number; timestamp: number; messageCount: number }
+  | { type: 'compact_end'; runId: string; turnId: string; iteration: number; timestamp: number; beforeCount: number; afterCount: number }
+  | { type: 'llm_start'; runId: string; turnId: string; iteration: number; timestamp: number; model: string; toolCount: number }
+  | { type: 'reasoning_delta'; runId: string; turnId: string; iteration: number; timestamp: number; delta: string }
+  | { type: 'text_delta'; runId: string; turnId: string; iteration: number; timestamp: number; delta: string }
+  | {
+      type: 'llm_done'
+      runId: string
+      turnId: string
+      iteration: number
+      timestamp: number
+      message: DeepMessage
+      finishReason: string
+      usage?: DeepSeekUsage
+      costUsd?: number
+      durationMs: number
+    }
+  | { type: 'assistant_message'; runId: string; turnId: string; iteration: number; timestamp: number; message: DeepMessage }
+  | { type: 'tool_batch_start'; runId: string; turnId: string; iteration: number; timestamp: number; count: number }
+  | {
+      type: 'tool_start'
+      runId: string
+      turnId: string
+      iteration: number
+      timestamp: number
+      id: string
+      name: string
+      summary: string
+    }
+  | { type: 'tool_progress'; runId: string; turnId: string; iteration: number; timestamp: number; id: string; text: string }
+  | {
+      type: 'tool_end'
+      runId: string
+      turnId: string
+      iteration: number
+      timestamp: number
+      id: string
+      name: string
+      result: ToolResult
+      durationMs: number
+    }
+  | { type: 'tool_message'; runId: string; turnId: string; iteration: number; timestamp: number; message: DeepMessage }
+  | { type: 'iteration_end'; runId: string; turnId: string; iteration: number; timestamp: number; toolCount: number }
+  | { type: 'run_end'; runId: string; turnId: string; timestamp: number; iterations: number; reason: 'final' | 'max_iterations' | 'aborted' }
+  | { type: 'run_error'; runId: string; turnId: string; iteration?: number; timestamp: number; error: string }
+
 // 单条待办事项状态。
 export type TodoStatus = 'pending' | 'in_progress' | 'completed'
 
@@ -125,6 +207,8 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>
   // 是否为只读工具（只读工具在 plan 模式下仍可执行）。
   readOnly: boolean
+  // 调度/审计用安全策略；不影响工具 schema，对旧工具定义兼容。
+  safety?: ToolSafetyPolicy
   /**
    * 判断本次调用是否需要用户授权。
    * @param input 解析后的入参对象。

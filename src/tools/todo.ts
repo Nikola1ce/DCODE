@@ -20,6 +20,7 @@ export const todoWriteTool: ToolDefinition = {
     '建议同一时刻仅保留一个 in_progress 任务；完成一项后及时标记 completed。' +
     '适合三步以上的复杂任务；简单任务无需使用。',
   readOnly: true,
+  safety: { sideEffect: 'state', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

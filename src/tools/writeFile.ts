@@ -25,6 +25,7 @@ export const writeFileTool: ToolDefinition = {
     '将内容写入文件（创建新文件或整体覆盖已有文件）。会自动创建缺失的父目录。' +
     '若只是局部修改已有文件，优先使用 edit_file 以减少出错。',
   readOnly: false,
+  safety: { sideEffect: 'fs_write', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

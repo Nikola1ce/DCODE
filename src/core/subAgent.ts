@@ -17,13 +17,13 @@ import {
   isModelAllowedForProvider,
 } from '../providers/registry.js'
 import type { DeepMessage, ToolContext } from './types.js'
-import { extractFileLockKey, withFilePathLock } from './fileToolLock.js'
-import { getSubAgentTools, toOpenAITools, executeToolCall } from '../tools/index.js'
+import { getSubAgentTools } from '../tools/index.js'
 import { createLLMClient } from '../providers/factory.js'
 import { buildSystemPrompt } from './systemPrompt.js'
 import { accumulateUsage } from '../deepseek/pricing.js'
 import type { UsageTotals } from '../deepseek/pricing.js'
 import { emptyUsageTotals } from '../deepseek/pricing.js'
+import { AgentRunner } from './agentRunner.js'
 
 /** 子代理运行状态。 */
 export type SubAgentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -309,91 +309,74 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
 
   const messages: DeepMessage[] = [
     { role: 'system', content: systemContent },
-    { role: 'user', content: opts.prompt, timestamp: Date.now() },
   ]
 
   const client = createLLMClient(config)
-  const toolCtx: ToolContext = {
-    cwd: opts.parentCtx.cwd,
+  let usage: UsageTotals = emptyUsageTotals()
+  let liveAssistantText = ''
+  let finalText = ''
+  let maxIterationsHit = false
+
+  const runner = new AgentRunner({
+    client,
     config,
+    cwd: opts.parentCtx.cwd,
     permissionMode,
+    model: opts.model,
+    userInput: opts.prompt,
     abortSignal: opts.abortSignal,
     requestPermission: opts.parentCtx.requestPermission,
-    todos: [],
+    getMessages: () => messages,
+    setMessages: (next) => {
+      messages.splice(0, messages.length, ...next)
+    },
+    appendMessage: (message) => {
+      messages.push(message)
+    },
+    getTodos: () => [],
     setTodos: () => {},
-    onProgress: opts.onProgress,
-  }
+    getAvailableTools: () => getSubAgentTools(permissionMode),
+    maxIterations: MAX_SUBAGENT_ITERATIONS,
+  })
 
-  let lastAssistantText = ''
-  let usage: UsageTotals = emptyUsageTotals()
-
-  for (let iter = 0; iter < MAX_SUBAGENT_ITERATIONS; iter++) {
-    if (opts.abortSignal.aborted) {
-      return { text: '子代理已被取消。', isError: true }
-    }
-
-    const availableTools = getSubAgentTools(permissionMode)
-    const apiTools = toOpenAITools(availableTools)
-
-    let assistantMsg: DeepMessage | null = null
-    for await (const ev of client.streamChat({
-      messages,
-      tools: apiTools,
-      model: opts.model,
-      abortSignal: opts.abortSignal,
-      reasoningEffort: config.reasoningEffort,
-    })) {
-      if (ev.type === 'text') {
-        lastAssistantText += ev.delta
-        opts.onProgress?.(ev.delta)
-      } else if (ev.type === 'done') {
-        assistantMsg = ev.message
-        if (ev.usage) {
-          usage = accumulateUsage(usage, opts.model, ev.usage, client.getProviderId())
-        }
+  for await (const event of runner.run()) {
+    if (event.type === 'text_delta') {
+      liveAssistantText += event.delta
+      opts.onProgress?.(event.delta)
+    } else if (event.type === 'llm_done' && event.usage) {
+      usage = accumulateUsage(usage, opts.model, event.usage, client.getProviderId())
+    } else if (event.type === 'assistant_message') {
+      const toolCalls = event.message.toolCalls ?? []
+      if (toolCalls.length === 0) {
+        finalText = event.message.content || liveAssistantText
       }
-    }
-
-    if (!assistantMsg) {
-      return { text: '子代理未收到模型响应。', isError: true }
-    }
-
-    messages.push(assistantMsg)
-    const toolCalls = assistantMsg.toolCalls ?? []
-    if (toolCalls.length === 0) {
-      const finalText = assistantMsg.content || lastAssistantText
-      const costNote = usage.costUsd > 0 ? `\n\n[子代理用量：${usage.inputTokens}+${usage.outputTokens} tokens，约 $${usage.costUsd.toFixed(4)}]` : ''
-      return { text: finalText + costNote, isError: false }
-    }
-
-    // 子代理内工具调用：并行执行；同一路径 read/write/edit 串行化以防竞态。
-    const filePathLocks = new Map<string, Promise<void>>()
-    const results = await Promise.all(
-      toolCalls.map(async (call) =>
-        withFilePathLock(filePathLocks, extractFileLockKey(call), async () => {
-          toolCtx.onProgress = (text) =>
-            opts.onProgress?.(`[工具 ${call.name}] ${text}`)
-          return executeToolCall(call, toolCtx)
-        }),
-      ),
-    )
-
-    for (const executed of results) {
-      messages.push({
-        role: 'tool',
-        content: executed.result.llmContent,
-        toolCallId: executed.toolCallId,
-        toolName: executed.toolName,
-        isError: executed.result.isError,
-        timestamp: Date.now(),
-      })
+      liveAssistantText = ''
+    } else if (event.type === 'tool_start') {
+      opts.onProgress?.(`\n[工具 ${event.name}] ${event.summary}\n`)
+    } else if (event.type === 'tool_progress') {
+      opts.onProgress?.(`[工具] ${event.text}`)
+    } else if (event.type === 'tool_end') {
+      const status = event.result.isError ? '失败' : '完成'
+      opts.onProgress?.(`\n[工具 ${event.name} ${status}]\n`)
+    } else if (event.type === 'run_end') {
+      maxIterationsHit = event.reason === 'max_iterations'
     }
   }
 
-  return {
-    text: `[子代理达到最大迭代次数（${MAX_SUBAGENT_ITERATIONS}），已停止。部分结果：]\n${lastAssistantText}`,
-    isError: true,
+  if (opts.abortSignal.aborted) {
+    return { text: '子代理已被取消。', isError: true }
   }
+
+  const costNote = usage.costUsd > 0
+    ? `\n\n[子代理用量：${usage.inputTokens}+${usage.outputTokens} tokens，约 $${usage.costUsd.toFixed(4)}]`
+    : ''
+  if (maxIterationsHit) {
+    return {
+      text: `[子代理达到最大迭代次数（${MAX_SUBAGENT_ITERATIONS}），已停止。部分结果：]\n${finalText || liveAssistantText}${costNote}`,
+      isError: true,
+    }
+  }
+  return { text: (finalText || liveAssistantText || '子代理未收到模型响应。') + costNote, isError: !finalText }
 }
 
 /**

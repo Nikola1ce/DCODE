@@ -50,6 +50,7 @@ export const runCommandTool: ToolDefinition = {
     '长耗时任务（构建、训练）请设 background=true，获得 shell_id 后用 bash_output 轮询、kill_shell 终止。' +
     '注意：不要用它来读写文件（请用 read_file/write_file/edit_file）。',
   readOnly: false,
+  safety: { sideEffect: 'shell', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

@@ -6,25 +6,18 @@
 // 同时负责：上下文超限时自动压缩、用量与成本累计、会话持久化、用户中断处理。
 // 制作人：Moriarty_Dox
 
-import { MAX_AGENT_ITERATIONS } from '../constants.js'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { createLLMClient } from '../providers/factory.js'
 import type { LLMClient, ProviderId } from '../providers/types.js'
 import type { DeepSeekUsage, UsageTotals } from '../deepseek/pricing.js'
-import { accumulateUsage, calcCost, emptyUsageTotals } from '../deepseek/pricing.js'
-import {
-  executeToolCall,
-  getAvailableTools,
-  toOpenAITools,
-  type ExecutedToolResult,
-} from '../tools/index.js'
+import { accumulateUsage, emptyUsageTotals } from '../deepseek/pricing.js'
 import { buildSystemPrompt } from './systemPrompt.js'
-import { compactMessages, shouldCompact } from './compact.js'
+import { compactMessages } from './compact.js'
 import type { SkillDefinition } from './skills.js'
 import { loadSkillByName } from './skills.js'
 import type { SessionRecorder } from './session.js'
-import { extractFileLockKey, withFilePathLock } from './fileToolLock.js'
-import type { DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolContext, ToolResult } from './types.js'
+import { AgentRunner } from './agentRunner.js'
+import type { AgentRunEvent, DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolResult } from './types.js'
 
 /**
  * 单轮对话的回调集合。
@@ -47,6 +40,8 @@ export interface TurnHandlers {
   onUsage?: (usage: DeepSeekUsage, costUsd: number) => void
   // 即将进行上下文压缩。
   onCompacting?: () => void
+  // 结构化运行事件（新增，可选；旧 UI/headless 不实现也不受影响）。
+  onEvent?: (event: AgentRunEvent) => void
   // 请求用户授权（必填）。
   requestPermission: (req: PermissionRequest) => Promise<PermissionDecision>
   // 取消信号（必填）。
@@ -306,158 +301,72 @@ export class Agent {
    * @param handlers 回调集合。
    */
   async runTurn(userInput: string, handlers: TurnHandlers): Promise<void> {
-    // 1) 若历史过长，先压缩，避免超出上下文限制。
-    if (shouldCompact(this.messages)) {
-      handlers.onCompacting?.()
-      this.messages = await compactMessages(
-        this.client,
-        this.messages,
-        this.config.model,
-      )
-    }
-
-    // 2) 追加用户消息并持久化。
-    const userMsg: DeepMessage = {
-      role: 'user',
-      content: userInput,
-      timestamp: Date.now(),
-    }
-    this.messages.push(userMsg)
-    this.recorder?.append(userMsg)
-
-    // 3) 构造工具运行上下文（在多次迭代间复用同一份，共享 todos）。
-    const toolCtx: ToolContext = {
-      cwd: this.cwd,
+    const runner = new AgentRunner({
+      client: this.client,
       config: this.config,
+      cwd: this.cwd,
       permissionMode: this.permissionMode,
+      model: this.config.model,
+      userInput,
       abortSignal: handlers.abortSignal,
       requestPermission: handlers.requestPermission,
-      todos: this.todos,
+      getMessages: () => this.messages,
+      setMessages: (messages) => {
+        this.messages = messages
+      },
+      appendMessage: (message) => {
+        this.messages.push(message)
+        this.recorder?.append(message)
+      },
+      getTodos: () => this.todos,
       setTodos: (todos) => {
         this.todos = todos
       },
       sessionId: this.recorder?.id ?? null,
-      onProgress: undefined, // 每次工具调用前单独绑定，见下方。
+    })
+
+    for await (const event of runner.run()) {
+      this.recorder?.appendEvent(event)
+      handlers.onEvent?.(event)
+      this.handleRunEventForCompatibility(event, handlers)
     }
+  }
 
-    // 4) 主循环：流式生成 → 执行工具 → 回填 → 再生成。
-    for (let iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
-      // 用户已中断则停止。
-      if (handlers.abortSignal.aborted) return
-
-      // 根据权限模式决定可用工具，并转换为 API schema。
-      const availableTools = getAvailableTools(this.permissionMode)
-      const apiTools = toOpenAITools(availableTools)
-
-      // 流式请求模型。
-      let assistantMsg: DeepMessage | null = null
-      try {
-        for await (const ev of this.client.streamChat({
-          messages: this.messages,
-          tools: apiTools,
-          model: this.config.model,
-          abortSignal: handlers.abortSignal,
-          reasoningEffort: this.config.reasoningEffort,
-        })) {
-          if (ev.type === 'reasoning') handlers.onReasoning?.(ev.delta)
-          else if (ev.type === 'text') handlers.onText?.(ev.delta)
-          else if (ev.type === 'done') {
-            assistantMsg = ev.message
-            // 累计用量与成本。
-            if (ev.usage) {
-              const providerId = this.client.getProviderId()
-              this.usage = accumulateUsage(
-                this.usage,
-                this.config.model,
-                ev.usage,
-                providerId,
-              )
-              handlers.onUsage?.(ev.usage, calcCost(this.config.model, ev.usage, providerId))
-            }
-          }
-        }
-      } catch (e: any) {
-        // 流式请求失败：作为一条系统级错误消息记录并停止本轮。
-        throw e
-      }
-
-      if (!assistantMsg) return
-
-      // 记录 assistant 消息。
-      this.messages.push(assistantMsg)
-      this.recorder?.append(assistantMsg)
-      handlers.onAssistantDone?.(assistantMsg)
-
-      // 没有工具调用 → 本轮结束。
-      const toolCalls = assistantMsg.toolCalls ?? []
-      if (toolCalls.length === 0) return
-
-      // 5) 并行执行本轮所有工具调用（支持 Task 子代理并行），结果按原顺序回填历史。
-      // 对同一文件路径的 read/write/edit 串行化，避免交错写入。
-      const filePathLocks = new Map<string, Promise<void>>()
-      const executedResults = await Promise.all(
-        toolCalls.map(async (call) =>
-          withFilePathLock(filePathLocks, extractFileLockKey(call), async () => {
-          if (handlers.abortSignal.aborted) {
-            return {
-              call,
-              executed: {
-                toolCallId: call.id,
-                toolName: call.name,
-                result: {
-                  llmContent: '操作已取消。',
-                  isError: true,
-                },
-              } as ExecutedToolResult,
-            }
-          }
-
-          const tool = availableTools.find((t) => t.name === call.name)
-          let summary = call.name
-          try {
-            const parsed = call.argsJson ? JSON.parse(call.argsJson) : {}
-            summary = tool?.renderCall?.(parsed) ?? call.name
-          } catch {
-            summary = call.name
-          }
-          handlers.onToolStart?.({ id: call.id, name: call.name, summary })
-
-          const localCtx: ToolContext = {
-            ...toolCtx,
-            permissionMode: this.permissionMode,
-            onProgress: (text) =>
-              handlers.onToolProgress?.({ id: call.id, text }),
-          }
-
-          const executed = await executeToolCall(call, localCtx)
-          handlers.onToolEnd?.({
-            id: call.id,
-            name: call.name,
-            result: executed.result,
-          })
-          return { call, executed }
-        }),
-        ),
+  private handleRunEventForCompatibility(
+    event: AgentRunEvent,
+    handlers: TurnHandlers,
+  ): void {
+    if (event.type === 'reasoning_delta') {
+      handlers.onReasoning?.(event.delta)
+    } else if (event.type === 'text_delta') {
+      handlers.onText?.(event.delta)
+    } else if (event.type === 'assistant_message') {
+      handlers.onAssistantDone?.(event.message)
+    } else if (event.type === 'tool_start') {
+      handlers.onToolStart?.({
+        id: event.id,
+        name: event.name,
+        summary: event.summary,
+      })
+    } else if (event.type === 'tool_progress') {
+      handlers.onToolProgress?.({ id: event.id, text: event.text })
+    } else if (event.type === 'tool_end') {
+      handlers.onToolEnd?.({
+        id: event.id,
+        name: event.name,
+        result: event.result,
+      })
+    } else if (event.type === 'llm_done' && event.usage) {
+      const providerId = this.client.getProviderId()
+      this.usage = accumulateUsage(
+        this.usage,
+        this.config.model,
+        event.usage,
+        providerId,
       )
-
-      for (const { call, executed } of executedResults) {
-        const toolMsg: DeepMessage = {
-          role: 'tool',
-          content: executed.result.llmContent,
-          toolCallId: call.id,
-          toolName: call.name,
-          isError: executed.result.isError,
-          timestamp: Date.now(),
-        }
-        this.messages.push(toolMsg)
-        this.recorder?.append(toolMsg)
-      }
-      // 工具结果已回填，进入下一轮让模型据此继续。
+      handlers.onUsage?.(event.usage, event.costUsd ?? 0)
+    } else if (event.type === 'compact_start') {
+      handlers.onCompacting?.()
     }
-
-    // 达到迭代上限仍未收敛：提示并结束，避免无限循环。
-    handlers.onText?.(
-      `\n\n[已达到单轮最大工具调用次数（${MAX_AGENT_ITERATIONS}），自动停止。如需继续请再次输入。]`,
-    )
   }
 }

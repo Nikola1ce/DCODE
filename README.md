@@ -56,9 +56,9 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 
 - **多 Provider 支持**：默认 **智谱 AI** + 免费模型 `glm-4-flash` / `glm-4.7-flash`（`/model` 中带 **★**）；另支持 DeepSeek、OpenAI；`/provider` 切换供应商，`/proxy` 配置代理；状态栏与 `/cost` 按 Provider **预估成本**（免费模型显示「免费」）。
 - **DeepSeek V4 原生适配**：`deepseek-v4-flash` / `deepseek-v4-pro`，工具调用与思维链 `reasoning_content`；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**）。
-- **流式输出**：边生成边显示，支持 `Esc` 中断；兼容各 Provider 的累积/重复 chunk 归一化，避免回答复读。
-- **上下文自动压缩**：对话过长时自动摘要；`/compact` 可手动触发。
-- **会话持久化**：`~/.dcode/sessions/`，`-c` 继续 / `-r` 恢复。
+- **流式输出**：边生成边显示，支持 `Esc` 中断；兼容各 Provider 的累计全文、局部段落重放、短列表前缀重放等 chunk 归一化，避免回答复读。
+- **上下文自动压缩**：每次模型调用前检查上下文预算；压缩摘要以 `system` summary metadata 注入，`/compact` 可手动触发。
+- **会话持久化**：`~/.dcode/sessions/`，`-c` 继续 / `-r` 恢复；JSONL 同时记录消息与 Agent 运行事件，恢复时修复中断的工具调用。
 - **项目记忆**：读取 `DCODE.md`；`/init` 可自动生成。
 
 ### 工具系统（Function Calling）
@@ -72,6 +72,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 
 - **MCP Client**：`~/.dcode/mcp.json` / `.dcode/mcp.json`，`/mcp` 管理连接
 - **子代理（Task）**：主 Agent 可并行派遣子任务，`/subagents` 查看状态
+- **事件驱动主循环**：`AgentRunner` 将模型流、工具执行、压缩、停止/错误拆成结构化事件，TUI 与无头模式通过兼容适配层消费
 - **后台 Shell**：长时构建/测试不阻塞主循环，界面有后台面板，`/shells` 查看
 - **Hooks**：`PreToolUse` / `PostToolUse` 等事件钩子，`/hooks` 查看与 reload
 - **Skills**：可复用 Markdown 技能包，`/skill list` 加载领域工作流
@@ -84,8 +85,8 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **网络安全**：`web_fetch` 禁止内网/localhost；DNS 解析复核、手动跟随重定向（防 SSRF）；拦截十进制/简写 IP
 - **项目信任**：项目级 `.dcode/mcp.json`、`.dcode/hooks.json` 仅在创建 **`.dcode/trust`**（或 `DCODE_TRUST_PROJECT=1`）后加载，降低打开陌生仓库时的供应链风险
 - **密钥与进程隔离**：`~/.dcode/config.json` 写入时尝试 `chmod 600`；Shell / Hooks 子进程剔除 API Key 等敏感环境变量
-- **路径与并发**：文件工具通过 `realpath` 校验工作区内路径；同路径 `read_file` / `write_file` / `edit_file` 串行执行；「总是允许」按具体文件路径生效
-- **上下文压缩**：自动压缩时保持 `assistant` + `tool` 消息组完整，避免 API 历史断裂
+- **路径与并发**：文件工具通过 `realpath` 校验工作区内路径；工具按 `ToolSafetyPolicy` 调度，只读/网络连续区间可并行，写文件、Shell、状态变更、子代理默认串行；「总是允许」按具体文件路径生效
+- **上下文压缩**：自动压缩时保持 `assistant` + `tool` 消息组完整，摘要标记为 system summary，避免 API 历史断裂
 - **检查点回滚**：`/undo` 恢复失败时保留 manifest 条目，可再次尝试
 - **精美终端 UI**：Ink 全屏 TUI，暗/亮主题，斜杠命令补全（`/` 底部展示 Provider 子选项）
 - **成本追踪**：token 用量与预估成本（区分缓存命中/未命中）

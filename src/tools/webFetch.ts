@@ -31,6 +31,7 @@ export const webFetchTool: ToolDefinition = {
     '禁止访问 localhost 与内网地址；超时 15 秒；单次最多返回约 50KB 文本。' +
     'plan 模式下不可用；执行前需用户授权。',
   readOnly: false,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {

@@ -4,7 +4,27 @@
 
 import { describe, expect, it } from 'vitest'
 import type { DeepMessage } from './types.js'
-import { partitionGroupsForCompact, splitConversationGroups } from './compact.js'
+import { compactMessages, partitionGroupsForCompact, splitConversationGroups } from './compact.js'
+import type { LLMClient, StreamChatParams, StreamEvent } from '../providers/types.js'
+
+class SummaryClient implements LLMClient {
+  hasApiKey(): boolean {
+    return true
+  }
+
+  getProviderId() {
+    return 'custom' as const
+  }
+
+  async *streamChat(_params: StreamChatParams): AsyncGenerator<StreamEvent> {
+    yield { type: 'text', delta: '摘要' }
+    yield {
+      type: 'done',
+      finishReason: 'stop',
+      message: { role: 'assistant', content: '摘要' },
+    }
+  }
+}
 
 describe('splitConversationGroups', () => {
   it('assistant+tool_calls 与后续 tool 消息同组', () => {
@@ -48,5 +68,30 @@ describe('partitionGroupsForCompact', () => {
         recent.some((m) => m.role === 'assistant' && m.toolCalls?.some((t) => t.id === 'c1')),
       ).toBe(true)
     }
+  })
+})
+
+describe('compactMessages', () => {
+  it('压缩摘要写为 system metadata，且旧摘要会被重新折叠', async () => {
+    const messages: DeepMessage[] = [
+      { role: 'system', content: 'sys' },
+      {
+        role: 'system',
+        content: 'old summary',
+        metadata: { kind: 'summary', source: 'system' },
+      },
+    ]
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `m${i}` })
+    }
+
+    const compacted = await compactMessages(new SummaryClient(), messages, 'test-model')
+    const summaries = compacted.filter((m) => m.metadata?.kind === 'summary')
+
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]).toMatchObject({
+      role: 'system',
+      metadata: { kind: 'summary', source: 'system' },
+    })
   })
 })

@@ -24,6 +24,7 @@ export const bashOutputTool: ToolDefinition = {
     '设 tail=true 可只获取自上次查询以来的增量输出，适合长构建日志轮询。' +
     '长任务（构建、训练）应后台启动并周期性查询，避免阻塞主 Agent。',
   readOnly: true,
+  safety: { sideEffect: 'none', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {

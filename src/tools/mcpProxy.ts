@@ -32,6 +32,7 @@ export const listMcpResourcesTool: ToolDefinition = {
     '列出所有已连接 MCP Server 提供的 resources（URI、名称、所属 server）。' +
     '在 read_mcp_resource 之前先用本工具发现可用 URI。',
   readOnly: true,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {
@@ -71,6 +72,7 @@ export const readMcpResourceTool: ToolDefinition = {
   name: 'read_mcp_resource',
   description: '通过 MCP 读取指定 server 上某个 resource URI 的内容。',
   readOnly: true,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {
@@ -110,6 +112,7 @@ export const listMcpPromptsTool: ToolDefinition = {
     '列出所有已连接 MCP Server 提供的 prompts（名称、参数、所属 server）。' +
     '在 get_mcp_prompt 之前先用本工具发现可用 prompt。',
   readOnly: true,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {
@@ -146,6 +149,7 @@ export const getMcpPromptTool: ToolDefinition = {
   description:
     '从指定 MCP Server 获取 prompt 模板内容（可传入 prompt 所需参数 arguments）。',
   readOnly: true,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {

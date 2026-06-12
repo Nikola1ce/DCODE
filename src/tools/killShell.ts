@@ -17,6 +17,7 @@ export const killShellTool: ToolDefinition = {
     '终止指定 shell_id 的后台 Shell 进程。仅对 status=running 的进程有效；' +
     '已结束的 Shell 无需 kill。终止前请确认该进程可以安全停止。',
   readOnly: false,
+  safety: { sideEffect: 'shell', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

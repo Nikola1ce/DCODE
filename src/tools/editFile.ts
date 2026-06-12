@@ -29,6 +29,7 @@ export const editFileTool: ToolDefinition = {
     '默认要求 old_string 在文件中唯一；如需替换所有匹配项，请设置 replace_all=true。' +
     '相比 write_file，此工具更适合局部修改，能显著降低误改风险。',
   readOnly: false,
+  safety: { sideEffect: 'fs_write', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

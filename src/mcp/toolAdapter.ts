@@ -79,6 +79,9 @@ export function mcpToolToDefinition(
     description:
       `[MCP:${serverId}] ${tool.description ?? tool.title ?? tool.name}`,
     readOnly: readOnlyHint,
+    safety: readOnlyHint
+      ? { sideEffect: 'network', parallelSafe: true }
+      : { sideEffect: 'state', parallelSafe: false },
     parameters: (tool.inputSchema as Record<string, unknown>) ?? {
       type: 'object',
       properties: {},

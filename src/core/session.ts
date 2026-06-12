@@ -16,7 +16,7 @@ import {
 import { join, normalize } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from '../config.js'
-import type { DeepMessage } from './types.js'
+import type { AgentRunEvent, DeepMessage } from './types.js'
 
 // 会话文件头部的元信息（写入 JSONL 第一行）。
 export interface SessionMeta {
@@ -38,6 +38,13 @@ interface MessageLine {
   type: 'message'
   // 消息内容。
   message: DeepMessage
+}
+
+// 会话文件中的 Agent 运行事件行。旧版读取逻辑会自然忽略该类型。
+interface EventLine {
+  type: 'event'
+  version: 1
+  event: AgentRunEvent
 }
 
 /**
@@ -118,6 +125,20 @@ export class SessionRecorder {
       // 写盘失败不应影响主流程。
     }
   }
+
+  /**
+   * 向会话文件追加一条结构化运行事件。
+   * @param event AgentRunner 产出的事件。
+   */
+  appendEvent(event: AgentRunEvent): void {
+    if (this.disabled) return
+    const line: EventLine = { type: 'event', version: 1, event }
+    try {
+      appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
+    } catch {
+      // 写盘失败不应影响主流程。
+    }
+  }
 }
 
 /**
@@ -139,7 +160,36 @@ export function loadSessionMessages(id: string): DeepMessage[] {
   } catch {
     // 解析失败返回已成功解析的部分。
   }
-  return messages
+  return repairInterruptedToolResults(messages)
+}
+
+export function repairInterruptedToolResults(messages: DeepMessage[]): DeepMessage[] {
+  const seenToolResults = new Set(
+    messages
+      .filter((m) => m.role === 'tool' && m.toolCallId)
+      .map((m) => m.toolCallId as string),
+  )
+  let changed = false
+  const out: DeepMessage[] = []
+  for (const m of messages) {
+    out.push(m)
+    if (m.role !== 'assistant' || !m.toolCalls?.length) continue
+    for (const call of m.toolCalls) {
+      if (seenToolResults.has(call.id)) continue
+      seenToolResults.add(call.id)
+      changed = true
+      out.push({
+        role: 'tool',
+        content: '上次工具执行中断，请检查当前工作区状态后再继续。',
+        toolCallId: call.id,
+        toolName: call.name,
+        isError: true,
+        timestamp: Date.now(),
+        metadata: { kind: 'synthetic_error', source: 'system' },
+      })
+    }
+  }
+  return changed ? out : messages
 }
 
 // 会话摘要信息（用于 /resume 列表展示）。

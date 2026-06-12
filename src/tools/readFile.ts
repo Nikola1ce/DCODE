@@ -24,6 +24,7 @@ export const readFileTool: ToolDefinition = {
     '读取工作目录内某个文本文件的内容，返回带行号的文本。适合在编辑前先查看文件。' +
     '可用 offset/limit 分段读取超大文件。无法读取目录（请用 list_dir）。',
   readOnly: true,
+  safety: { sideEffect: 'none', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {

@@ -40,6 +40,7 @@ export const taskTool: ToolDefinition = {
     'subagent_type：generalPurpose（通用）、explore（只读探索）、shell（命令执行）。' +
     '可指定 model 降级为 flash 节省成本；run_in_background=true 时后台运行并用 resume 查询结果。',
   readOnly: true,
+  safety: { sideEffect: 'subagent', parallelSafe: false },
   parameters: {
     type: 'object',
     properties: {

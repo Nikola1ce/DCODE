@@ -50,6 +50,7 @@ export const webSearchTool: ToolDefinition = {
     '需配置环境变量 SERPAPI_API_KEY（SerpAPI）或 BING_SEARCH_API_KEY（Bing Web Search v7）。' +
     'plan 模式下不可用；执行前需用户授权。',
   readOnly: false,
+  safety: { sideEffect: 'network', parallelSafe: true },
   parameters: {
     type: 'object',
     properties: {

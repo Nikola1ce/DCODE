@@ -109,9 +109,14 @@ export async function compactMessages(
   messages: DeepMessage[],
   model: string,
 ): Promise<DeepMessage[]> {
-  // 拆出 system 消息（始终保留在最前）。
-  const systemMsgs = messages.filter((m) => m.role === 'system')
-  const convo = messages.filter((m) => m.role !== 'system')
+  // 拆出真正的系统提示（始终保留在最前）。旧摘要会作为历史输入重新压缩，
+  // 避免多次 compact 后堆叠多条 summary system 消息。
+  const systemMsgs = messages.filter(
+    (m) => m.role === 'system' && m.metadata?.kind !== 'summary',
+  )
+  const convo = messages.filter(
+    (m) => !(m.role === 'system' && m.metadata?.kind !== 'summary'),
+  )
 
   // 历史太短没必要压缩。
   if (convo.length <= KEEP_RECENT + 2) return messages
@@ -133,6 +138,9 @@ export async function compactMessages(
       }
       if (m.role === 'tool') return `工具结果(${m.toolName})：${m.content}`
       if (m.role === 'user') return `用户：${m.content}`
+      if (m.role === 'system' && m.metadata?.kind === 'summary') {
+        return `先前摘要：${m.content}`
+      }
       return `助手：${m.content}`
     })
     .join('\n\n')
@@ -165,9 +173,10 @@ export async function compactMessages(
 
     // 组装压缩后的历史。
     const summaryMsg: DeepMessage = {
-      role: 'user',
+      role: 'system',
       content: `【以下是先前对话的压缩摘要，请据此延续工作】\n${summary}`,
       timestamp: Date.now(),
+      metadata: { kind: 'summary', source: 'system' },
     }
     return [...systemMsgs, summaryMsg, ...recent]
   } catch {
