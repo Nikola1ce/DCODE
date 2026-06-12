@@ -117,6 +117,18 @@ export const MAX_FILE_READ_CHARS = 100000
 // 命令执行（Shell/PowerShell）默认超时时间（毫秒）。
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120000
 
+// 后台 Shell 最大同时记录数（超出时 purge 最早已结束的记录）。
+export const MAX_BACKGROUND_SHELL_RECORDS = 30
+
+// 后台 Shell 最大运行时长（毫秒），超时自动 kill。
+export const MAX_BACKGROUND_SHELL_RUNTIME_MS = 30 * 60 * 1000
+
+// bash_output 单次返回的最大输出字符数。
+export const MAX_SHELL_OUTPUT_CHARS = 30000
+
+// bash_output 默认阻塞等待毫秒数（0 表示立即返回当前快照）。
+export const DEFAULT_BASH_OUTPUT_BLOCK_MS = 0
+
 // 环境变量名：允许通过环境变量覆盖 API Key / BaseURL / 模型。
 export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'

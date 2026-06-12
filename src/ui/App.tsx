@@ -28,6 +28,7 @@ import { LoginPrompt } from './LoginPrompt.js'
 import { Select } from './Select.js'
 import { StatusLine, Spinner } from './StatusLine.js'
 import { TodoPanel } from './TodoPanel.js'
+import { BackgroundShellPanel } from './BackgroundShellPanel.js'
 import { tailByVisualRows } from './textLayout.js'
 import { StreamCommitter, type StreamChunk } from './streamCommit.js'
 import type { DisplayItem } from './types.js'
@@ -445,6 +446,12 @@ export function App({ agent, config, initialItems, needLogin }: AppProps): React
           todos={todos}
           compact={busy}
           maxVisible={Math.max(3, Math.min(12, termRows - 9))}
+        />
+
+        {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务 */}
+        <BackgroundShellPanel
+          compact={busy}
+          maxVisible={Math.max(2, Math.min(5, termRows - 12))}
         />
 
         {/* 交互流程优先渲染（互斥） */}

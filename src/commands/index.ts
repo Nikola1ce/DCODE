@@ -9,6 +9,7 @@ import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
 import { renderSubAgentsStatus } from '../core/subAgent.js'
+import { renderShellsStatus } from '../core/shellManager.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -208,6 +209,12 @@ export const COMMANDS: SlashCommand[] = [
     description: '查看子代理（Task 工具）运行状态与历史',
     aliases: ['agents'],
     run: () => ({ message: renderSubAgentsStatus() }),
+  },
+  {
+    name: 'shells',
+    description: '查看后台 Shell（run_command background）运行状态',
+    aliases: ['bg'],
+    run: () => ({ message: renderShellsStatus() }),
   },
   {
     name: 'mode',

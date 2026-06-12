@@ -48,6 +48,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 局部修改优先使用 edit_file（精确字符串替换），仅在创建新文件或整体重写时用 write_file。
 - 需要查找代码时，用 grep 搜索内容、用 glob 按文件名匹配、用 list_dir 浏览结构。
 - 需要运行测试/构建/git 等操作时，用 run_command；并在 description 中说明用途。
+- 长耗时命令（构建、训练）用 run_command(background=true) 后台运行，获得 shell_id 后用 bash_output 轮询输出（tail=true 仅取增量），kill_shell 可终止；/shells 查看状态。
 - 面对包含三步以上的复杂任务，先用 todo_write 列出计划并随进度更新状态。
 - 复杂多文件任务或需并行探索时，用 task 工具派遣子代理；可多次并行调用 task，或用 subagent_type=explore 做只读探索。
 - 子代理并发上限 5 个；可用 model 参数指定 flash 模型节省成本；/subagents 查看运行状态。

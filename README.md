@@ -34,6 +34,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - [使用](#使用)
 - [交互界面内的斜杠命令](#交互界面内的斜杠命令)
 - [权限模式说明](#权限模式说明)
+- [后台命令工作流](#后台命令工作流)
 - [项目记忆（DCODE.md）](#项目记忆dcode)
 - [常见问题](#常见问题)
 - [开发](#开发)
@@ -50,7 +51,10 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
   - `list_dir` 列目录
   - `glob` 按文件名模式查找（遵循 `.gitignore`）
   - `grep` 按正则搜索内容
-  - `run_command` 执行命令（Windows 用 PowerShell，类 Unix 用 sh）
+  - `run_command` 执行命令（Windows 用 PowerShell，类 Unix 用 sh；支持 `background=true` 后台运行）
+  - `bash_output` 查询后台命令输出（支持 `tail` 增量模式）
+  - `kill_shell` 终止后台命令
+  - `task` 派遣子代理并行处理子任务
   - `todo_write` 维护任务清单（界面实时展示进度）
 - **权限门控**：写文件、执行命令前会请求授权，可选择“允许一次 / 总是允许 / 拒绝”；支持 `plan`（只读）、`auto`（自动接受编辑）、`bypass`（跳过所有确认）三种模式切换。
 - **会话持久化**：自动保存到 `~/.dcode/sessions/`，可用 `-c` 继续、`-r` 恢复。
@@ -508,6 +512,8 @@ dcode --plan
 | `/thinking` | 开关思维链展示 |
 | `/effort [high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API） |
 | `/mcp [list\|resources\|prompts\|reload]` | 查看/管理 MCP Server 连接 |
+| `/shells`（别名 `/bg`） | 查看后台 Shell（`run_command background`）状态 |
+| `/subagents`（别名 `/agents`） | 查看子代理（Task 工具）运行状态 |
 | `/plan`、`/auto`、`/bypass` | 切换权限模式：规划（只读）/ 自动接受编辑 / 跳过所有确认 |
 | `/mode <plan\|auto\|bypass>` | 同上，例如 `/mode bypass` |
 | `/memory` | 显示已加载的记忆文件 |
@@ -533,6 +539,58 @@ dcode --plan
 | `bypass` | 跳过所有确认：文件读写与命令执行均直接进行（请谨慎使用） |
 
 正常启动（未加上述参数）时，写文件与执行命令前会请求授权。
+
+## 后台命令工作流
+
+长时间命令（构建、测试套件、训练脚本等）若在前台执行会阻塞 Agent 主循环。DCODE 支持将命令放到**后台**运行，再通过专用工具轮询输出或终止进程。
+
+### 典型流程
+
+```
+1. run_command(background=true)  →  立即返回 shell_id
+2. bash_output(shell_id, tail=true)  →  轮询增量输出（可多次调用）
+3. kill_shell(shell_id)  →  需要时手动终止
+```
+
+界面底部会显示**后台 Shell 面板**（运行中任务折叠为一行摘要）；也可输入 `/shells` 查看列表。
+
+### 工具参数说明
+
+| 工具 | 关键参数 | 说明 |
+| --- | --- | --- |
+| `run_command` | `background: true` | 后台启动，返回 `shell_id`，不等待命令结束 |
+| `run_command` | `description` | 建议填写，便于授权弹窗与 `/shells` 展示 |
+| `bash_output` | `shell_id` | 必填，查询该后台进程的状态与输出 |
+| `bash_output` | `block_until_ms` | 可选，短暂阻塞等待（毫秒），默认 0 |
+| `bash_output` | `tail: true` | 可选，**仅返回自上次 tail 查询以来的新增输出**，适合长日志轮询 |
+| `kill_shell` | `shell_id` | 终止仍在运行的后台进程（需用户授权） |
+
+### 示例（Agent 视角）
+
+后台启动构建并轮询增量日志：
+
+```json
+{ "command": "npm run build", "description": "构建项目", "background": true }
+```
+
+```json
+{ "shell_id": "a1b2c3d4", "tail": true }
+```
+
+进程结束后 `bash_output` 会返回 `completed` 状态与最终退出码；若需提前停止：
+
+```json
+{ "shell_id": "a1b2c3d4" }
+```
+
+（`kill_shell` 调用）
+
+### 限制与提示
+
+- 后台 Shell 默认最长运行 **30 分钟**，超时自动终止。
+- 历史记录最多保留 **30 条**（已结束的会被自动 purge）。
+- `plan` 模式下仍禁止启动后台命令（与前台 `run_command` 相同）。
+- `tail=true` 的「上次查询」按 **shell_id** 独立计数；首次 tail 调用返回当前已有全部输出。
 
 ## 项目记忆（DCODE.md）
 
@@ -595,9 +653,11 @@ npm install
 npm run dev     # 监听源码变更自动重建
 npm run build   # 单次构建
 npm run typecheck  # 类型检查（等同 npx tsc --noEmit）
+npm test        # 运行单元测试（Vitest）
+npm run test:watch  # 监听模式跑测试
 ```
 
-源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。主要模块：
+源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest）。主要模块：
 
 ```
 src/
@@ -615,8 +675,11 @@ src/
 │   ├── systemPrompt.ts  # 系统提示构建
 │   ├── compact.ts       # 上下文压缩
 │   ├── session.ts       # 会话持久化（JSONL）
+│   ├── shellManager.ts  # 后台 Shell 生命周期管理
+│   ├── shellManager.test.ts  # shellManager 单元测试
+│   ├── subAgent.ts      # 子代理调度
 │   └── types.ts         # 核心类型
-├── tools/               # 工具系统（读/写/编辑/列目录/glob/grep/命令/todo）
+├── tools/               # 工具系统（读/写/编辑/列目录/glob/grep/命令/todo/task/MCP）
 ├── commands/            # 斜杠命令系统
 └── ui/                  # Ink TUI 组件
 ```

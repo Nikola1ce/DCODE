@@ -12,8 +12,10 @@ import type {
   ToolResult,
 } from '../core/types.js'
 import { editFileTool } from './editFile.js'
+import { bashOutputTool } from './bashOutput.js'
 import { globTool } from './glob.js'
 import { grepTool } from './grep.js'
+import { killShellTool } from './killShell.js'
 import { listDirTool } from './listDir.js'
 import { MCP_PROXY_TOOLS } from './mcpProxy.js'
 import { readFileTool } from './readFile.js'
@@ -35,6 +37,8 @@ export const ALL_TOOLS: ToolDefinition[] = [
   globTool,
   grepTool,
   runCommandTool,
+  bashOutputTool,
+  killShellTool,
   todoWriteTool,
   taskTool,
   ...MCP_PROXY_TOOLS,
