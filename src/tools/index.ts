@@ -23,6 +23,8 @@ import { globalToolRegistry, registerMcpTools } from './registry.js'
 import { runCommandTool } from './runCommand.js'
 import { taskTool } from './task.js'
 import { todoWriteTool } from './todo.js'
+import { webFetchTool } from './webFetch.js'
+import { webSearchTool } from './webSearch.js'
 import { writeFileTool } from './writeFile.js'
 
 // 子代理不可使用的工具名（防止递归 spawn）。
@@ -41,6 +43,8 @@ export const ALL_TOOLS: ToolDefinition[] = [
   killShellTool,
   todoWriteTool,
   taskTool,
+  webFetchTool,
+  webSearchTool,
   ...MCP_PROXY_TOOLS,
 ]
 

@@ -52,6 +52,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 面对包含三步以上的复杂任务，先用 todo_write 列出计划并随进度更新状态。
 - 复杂多文件任务或需并行探索时，用 task 工具派遣子代理；可多次并行调用 task，或用 subagent_type=explore 做只读探索。
 - 子代理并发上限 5 个；可用 model 参数指定 flash 模型节省成本；/subagents 查看运行状态。
+- 需要最新文档、API 或 issue 信息时，用 web_search 搜索；用 web_fetch 抓取公开 URL 正文（均需用户授权，plan 模式不可用）。
 - 完成修改后，尽量通过运行测试或构建命令来自我验证。
 ${mcpNote}
 # 代码规范

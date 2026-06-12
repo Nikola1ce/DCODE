@@ -129,6 +129,24 @@ export const MAX_SHELL_OUTPUT_CHARS = 30000
 // bash_output 默认阻塞等待毫秒数（0 表示立即返回当前快照）。
 export const DEFAULT_BASH_OUTPUT_BLOCK_MS = 0
 
+// web_fetch 单次返回的最大字符数（约 50KB）。
+export const MAX_WEB_FETCH_CHARS = 50_000
+
+// web_fetch 请求超时（毫秒）。
+export const WEB_FETCH_TIMEOUT_MS = 15_000
+
+// web_search 请求超时（毫秒）。
+export const WEB_SEARCH_TIMEOUT_MS = 15_000
+
+// Bing Web Search API v7 端点。
+export const BING_SEARCH_ENDPOINT = 'https://api.bing.microsoft.com/v7.0/search'
+
+// 环境变量：Bing Search API Key。
+export const ENV_BING_SEARCH_KEY = 'BING_SEARCH_API_KEY'
+
+// 环境变量：SerpAPI Key（优先于 Bing）。
+export const ENV_SERPAPI_KEY = 'SERPAPI_API_KEY'
+
 // 环境变量名：允许通过环境变量覆盖 API Key / BaseURL / 模型。
 export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'

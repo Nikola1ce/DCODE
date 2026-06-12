@@ -56,6 +56,8 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
   - `kill_shell` 终止后台命令
   - `task` 派遣子代理并行处理子任务
   - `todo_write` 维护任务清单（界面实时展示进度）
+  - `web_fetch` 抓取公开 URL 正文（禁止内网，需授权）
+  - `web_search` Web 搜索（需配置 Bing/SerpAPI Key，需授权）
 - **权限门控**：写文件、执行命令前会请求授权，可选择“允许一次 / 总是允许 / 拒绝”；支持 `plan`（只读）、`auto`（自动接受编辑）、`bypass`（跳过所有确认）三种模式切换。
 - **会话持久化**：自动保存到 `~/.dcode/sessions/`，可用 `-c` 继续、`-r` 恢复。
 - **项目记忆**：读取项目根目录的 `DCODE.md` 注入上下文；`/init` 可自动生成。
@@ -368,6 +370,25 @@ DCODE 作为 **MCP Client**，可连接任意 MCP Server 并将工具动态注�
 - **`trust: true`**：该 Server 的非只读 MCP 工具跳过授权弹窗（仍受 plan 模式约束）
 
 运行中可用 `/mcp` 查看连接状态，`/mcp reload` 热重载。模型还可使用内置代理工具：`list_mcp_resources`、`read_mcp_resource`、`list_mcp_prompts`、`get_mcp_prompt`。
+
+## 配置 Web 搜索
+
+`web_fetch` 可直接使用（抓取公开 http/https 页面，执行前需用户授权）。`web_search` 需配置以下环境变量之一：
+
+| 变量 | 说明 |
+| --- | --- |
+| `SERPAPI_API_KEY` | [SerpAPI](https://serpapi.com/) Key（优先使用，Google 引擎） |
+| `BING_SEARCH_API_KEY` | [Bing Web Search API v7](https://www.microsoft.com/en-us/bing/apis/bing-web-search-api) Key |
+
+```bash
+# PowerShell
+$env:SERPAPI_API_KEY="your-key"
+
+# bash
+export SERPAPI_API_KEY="your-key"
+```
+
+`web_fetch` 与 `web_search` 在 **plan 模式**下不可用；默认模式下执行前会弹出授权确认。
 
 ## 新手教学
 
