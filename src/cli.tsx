@@ -330,13 +330,14 @@ async function main(): Promise<void> {
   // 缺少 API Key 时，启动后自动打开登录流程。
   const needLogin = !agent.hasApiKey()
 
-  // 渲染 Ink 应用，并等待退出。
+  // 渲染 Ink 应用，并等待退出（启动更新检测在 App 内异步进行，不阻塞首屏）。
   const app = render(
     <App
       agent={agent}
       config={config}
       initialItems={initialItems}
       needLogin={needLogin}
+      checkUpdateOnStart
     />,
   )
   await app.waitUntilExit()

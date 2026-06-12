@@ -28,6 +28,11 @@ import {
   buildPrAgentPrompt,
   renderGitStatusReport,
 } from '../core/gitUtils.js'
+import {
+  checkForUpdate,
+  renderUpdateStatus,
+  runUpdate,
+} from '../core/updater.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -585,6 +590,30 @@ export const COMMANDS: SlashCommand[] = [
     name: 'config',
     description: '显示当前配置（隐藏密钥）',
     run: (ctx) => ({ message: renderConfig(ctx.config) }),
+  },
+  {
+    name: 'update',
+    description: '检测并更新 DCODE（git pull + npm install + build，或 npm update -g）',
+    aliases: ['upgrade'],
+    run: async (ctx) => {
+      const sub = ctx.args.trim().toLowerCase()
+      if (!sub || sub === 'check' || sub === 'status') {
+        const force = sub === 'check'
+        const check = await checkForUpdate({ forceRefresh: force })
+        return { message: renderUpdateStatus(check) }
+      }
+      if (sub === 'run' || sub === 'install' || sub === 'force') {
+        const result = await runUpdate({ force: sub === 'force' })
+        return { message: result.message }
+      }
+      return {
+        message:
+          '用法：/update | /update check | /update run | /update force\n' +
+          '  check — 强制检测 GitHub 最新版本\n' +
+          '  run   — 有新版本时执行更新\n' +
+          '  force — 忽略版本比较，重新执行更新步骤',
+      }
+    },
   },
   {
     name: 'exit',

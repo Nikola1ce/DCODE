@@ -4,7 +4,7 @@
 // 输入框与底部状态栏。是整套终端交互的中枢。
 // 制作人：Moriarty_Dox
 
-import React, { useCallback, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
 import type { DCodeConfig } from '../config.js'
 import { updateConfig } from '../config.js'
@@ -22,6 +22,7 @@ import {
   getProviderLoginMeta,
 } from '../providers/registry.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
+import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
 import { messagesToItems } from './messagesToItems.js'
 import { getTheme, ThemeContext } from './theme.js'
@@ -49,6 +50,8 @@ interface AppProps {
   initialItems?: DisplayItem[]
   // 是否在启动时因缺少 API Key 而直接进入登录流程。
   needLogin?: boolean
+  // 是否在启动后异步检测 GitHub 新版本并提示（不阻塞首屏渲染）。
+  checkUpdateOnStart?: boolean
 }
 
 // 当前打开的交互流程类型。
@@ -82,7 +85,7 @@ function buildResumeOptions(): { label: string; value: string; hint?: string }[]
  * @param props 入参。
  * @returns 界面 JSX。
  */
-export function App({ agent, config, initialItems, needLogin }: AppProps): React.ReactElement {
+export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart }: AppProps): React.ReactElement {
   const { exit } = useApp()
 
   // —— 配置与主题（UI 级，可热更新）——
@@ -153,6 +156,23 @@ export function App({ agent, config, initialItems, needLogin }: AppProps): React
     },
     [],
   )
+
+  // 启动后异步检测新版本（使用缓存，不阻塞 TUI 首屏）。
+  useEffect(() => {
+    if (!checkUpdateOnStart) return
+    let cancelled = false
+    void checkForUpdate({ timeoutMs: 5000 })
+      .then((check) => buildStartupUpdateNotice(check))
+      .then((notice) => {
+        if (!cancelled && notice) pushSystem('info', notice)
+      })
+      .catch(() => {
+        // 检测失败时静默忽略，避免干扰正常使用。
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [checkUpdateOnStart, pushSystem])
 
   /** 持久化并热更新配置。 */
   const applyConfig = useCallback((patch: Partial<DCodeConfig>) => {

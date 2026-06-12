@@ -150,6 +150,12 @@ export const ENV_BING_SEARCH_KEY = 'BING_SEARCH_API_KEY'
 // 环境变量：SerpAPI Key（优先于 Bing）。
 export const ENV_SERPAPI_KEY = 'SERPAPI_API_KEY'
 
+// GitHub 仓库标识（用于自动更新检测）。
+export const GITHUB_REPO = 'Nikola1ce/DCODE'
+
+// 环境变量：设为 1 时跳过启动时的更新检测提示。
+export const ENV_SKIP_UPDATE_CHECK = 'DCODE_SKIP_UPDATE_CHECK'
+
 // 环境变量名：允许通过环境变量覆盖 API Key / BaseURL / 模型。
 export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'
