@@ -49,6 +49,8 @@ export interface DCodeConfig {
   totalCostUsd: number
   // 是否已完成首次引导（用于决定是否展示新手提示）。
   onboardingComplete: boolean
+  // 是否启用 Hooks 钩子系统（false 时跳过 Pre/Post 与会话钩子）。
+  hooksEnabled: boolean
 }
 
 // 配置默认值：首次运行或字段缺失时回退到这里。
@@ -61,6 +63,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   alwaysAllow: [],
   totalCostUsd: 0,
   onboardingComplete: false,
+  hooksEnabled: true,
 }
 
 /**

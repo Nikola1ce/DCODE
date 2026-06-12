@@ -55,6 +55,9 @@ export const CONFIG_FILE_NAME = 'config.json'
 // MCP Server 配置文件名（~/.dcode/mcp.json，格式与 Cursor mcp.json 兼容）。
 export const MCP_CONFIG_FILE_NAME = 'mcp.json'
 
+// Hooks 配置文件名（~/.dcode/hooks.json 与项目 .dcode/hooks.json）。
+export const HOOKS_CONFIG_FILE_NAME = 'hooks.json'
+
 // 项目级记忆文件名：类似 Claude Code 的 CLAUDE.md，存放项目约定/上下文。
 export const MEMORY_FILE_NAME = 'DCODE.md'
 

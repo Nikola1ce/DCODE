@@ -96,6 +96,8 @@ export interface ToolContext {
   setTodos: (todos: TodoItem[]) => void
   // 流式进度回调：工具执行过程中可推送中间信息到 UI（如命令实时输出）。
   onProgress?: (text: string) => void
+  // 当前会话 id（Hooks 与会话持久化用，可选）。
+  sessionId?: string | null
 }
 
 // 单条待办事项状态。

@@ -12,6 +12,7 @@ import type {
   ToolResult,
 } from '../core/types.js'
 import { editFileTool } from './editFile.js'
+import { getHookManager } from '../core/hooks.js'
 import { bashOutputTool } from './bashOutput.js'
 import { globTool } from './glob.js'
 import { grepTool } from './grep.js'
@@ -139,6 +140,37 @@ export async function executeToolCall(
     }
   }
 
+  // PreToolUse 钩子：可阻止执行或修改入参。
+  const hookMgr = getHookManager()
+  if (hookMgr && ctx.config.hooksEnabled !== false) {
+    try {
+      const pre = await hookMgr.runPreToolUse(call.name, input, {
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionId,
+      })
+      if (pre.blocked) {
+        return {
+          toolCallId: call.id,
+          toolName: call.name,
+          result: {
+            llmContent: pre.reason ?? `钩子阻止了工具 ${call.name} 的执行。`,
+            isError: true,
+          },
+        }
+      }
+      input = pre.input
+    } catch (e: any) {
+      return {
+        toolCallId: call.id,
+        toolName: call.name,
+        result: {
+          llmContent: `PreToolUse 钩子执行失败：${e.message}`,
+          isError: true,
+        },
+      }
+    }
+  }
+
   // plan 模式下禁止写操作工具（双保险，即使被模型调用也拦截）。
   if (ctx.permissionMode === 'plan' && !tool.readOnly) {
     return {
@@ -176,9 +208,27 @@ export async function executeToolCall(
     }
   }
 
-  // 真正执行工具，捕获运行期异常。
+  // 真正执行工具，捕获运行期异常；PostToolUse 钩子可校验或改写结果。
   try {
-    const result = await tool.run(input, ctx)
+    let result = await tool.run(input, ctx)
+    if (hookMgr && ctx.config.hooksEnabled !== false) {
+      try {
+        const post = await hookMgr.runPostToolUse(call.name, input, result, {
+          cwd: ctx.cwd,
+          sessionId: ctx.sessionId,
+        })
+        result = post.result
+      } catch (e: any) {
+        return {
+          toolCallId: call.id,
+          toolName: call.name,
+          result: {
+            llmContent: `PostToolUse 钩子执行失败：${e.message}`,
+            isError: true,
+          },
+        }
+      }
+    }
     return { toolCallId: call.id, toolName: call.name, result }
   } catch (e: any) {
     return {

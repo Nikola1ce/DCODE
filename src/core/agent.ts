@@ -271,6 +271,7 @@ export class Agent {
       setTodos: (todos) => {
         this.todos = todos
       },
+      sessionId: this.recorder?.id ?? null,
       onProgress: undefined, // 每次工具调用前单独绑定，见下方。
     }
 

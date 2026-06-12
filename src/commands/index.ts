@@ -10,6 +10,7 @@ import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
 import { renderSubAgentsStatus } from '../core/subAgent.js'
 import { renderShellsStatus } from '../core/shellManager.js'
+import { getHookManager, renderHooksStatus } from '../core/hooks.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -215,6 +216,24 @@ export const COMMANDS: SlashCommand[] = [
     description: '查看后台 Shell（run_command background）运行状态',
     aliases: ['bg'],
     run: () => ({ message: renderShellsStatus() }),
+  },
+  {
+    name: 'hooks',
+    description: '查看或重载 Hooks 钩子（reload）',
+    run: async (ctx) => {
+      const mgr = getHookManager()
+      if (!mgr) {
+        return { message: 'Hooks 未初始化。' }
+      }
+      const sub = ctx.args.trim().toLowerCase()
+      if (sub === 'reload') {
+        mgr.reload(ctx.agent.cwd)
+        return {
+          message: `${renderHooksStatus(mgr)}\n\n已重新加载 Hooks 配置。`,
+        }
+      }
+      return { message: renderHooksStatus(mgr) }
+    },
   },
   {
     name: 'mode',
@@ -430,6 +449,7 @@ function renderConfig(config: DCodeConfig): string {
     `  主题：${config.theme}`,
     `  思维链展示：${config.showThinking ? '开' : '关'}`,
     `  推理强度：${config.reasoningEffort}（Thinking 模式下生效）`,
+    `  Hooks：${config.hooksEnabled !== false ? '启用' : '禁用'}`,
   ].join('\n')
 }
 

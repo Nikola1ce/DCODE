@@ -32,6 +32,7 @@ import {
 } from './core/session.js'
 import { runHeadless } from './headless.js'
 import { initMcp, shutdownMcp } from './mcp/client.js'
+import { initHooks, shutdownHooks, getHookManager } from './core/hooks.js'
 import { App } from './ui/App.js'
 import { messagesToItems } from './ui/messagesToItems.js'
 
@@ -226,6 +227,10 @@ async function main(): Promise<void> {
   await initMcp(cwd)
   registerMcpShutdownHook()
 
+  // 初始化 Hooks 系统（加载 ~/.dcode/hooks.json 与项目 .dcode/hooks.json）。
+  initHooks(cwd, config.hooksEnabled !== false)
+  registerHooksShutdownHook(cwd)
+
   // 权限模式：命令行覆盖 > 默认。
   const permissionMode: PermissionMode = opts.permissionMode ?? 'default'
 
@@ -258,6 +263,8 @@ async function main(): Promise<void> {
       initialMessages,
       permissionMode,
     })
+    hooksSessionIdProvider = () => agent.getSessionId()
+    await triggerSessionStartHooks(cwd, agent.getSessionId())
 
     // 缺少 API Key 直接报错退出。
     if (!agent.hasApiKey()) {
@@ -279,6 +286,7 @@ async function main(): Promise<void> {
     const code = await runHeadless(agent, prompt.trim(), {
       autoApprove: permissionMode !== 'plan',
     })
+    await shutdownHooks(cwd, agent.getSessionId())
     await shutdownMcp()
     process.exit(code)
   }
@@ -296,6 +304,8 @@ async function main(): Promise<void> {
     initialMessages,
     permissionMode,
   })
+  hooksSessionIdProvider = () => agent.getSessionId()
+  await triggerSessionStartHooks(cwd, agent.getSessionId())
 
   // 构建恢复会话时的回放展示项。
   const initialItems =
@@ -324,11 +334,18 @@ async function main(): Promise<void> {
     />,
   )
   await app.waitUntilExit()
+  await shutdownHooks(cwd, agent.getSessionId())
   await shutdownMcp()
 }
 
 /** 是否已注册 MCP 退出清理（避免重复绑定）。 */
 let mcpShutdownHookRegistered = false
+/** 是否已注册 Hooks 退出清理。 */
+let hooksShutdownHookRegistered = false
+/** Hooks 关闭时使用的 cwd（main 中设置）。 */
+let hooksShutdownCwd = ''
+/** Hooks 关闭时获取 sessionId 的回调（main 中设置）。 */
+let hooksSessionIdProvider: (() => string | null) | null = null
 
 /**
  * 注册进程退出时断开 MCP 连接（SIGINT/SIGTERM/exit）。
@@ -342,6 +359,37 @@ function registerMcpShutdownHook(): void {
   process.on('exit', cleanup)
   process.on('SIGINT', cleanup)
   process.on('SIGTERM', cleanup)
+}
+
+/**
+ * 注册进程退出时触发 OnSessionEnd 钩子。
+ * @param cwd 工作目录。
+ */
+function registerHooksShutdownHook(cwd: string): void {
+  if (hooksShutdownHookRegistered) return
+  hooksShutdownHookRegistered = true
+  hooksShutdownCwd = cwd
+  const cleanup = () => {
+    const sessionId = hooksSessionIdProvider?.() ?? null
+    void shutdownHooks(hooksShutdownCwd, sessionId)
+  }
+  process.on('exit', cleanup)
+  process.on('SIGINT', cleanup)
+  process.on('SIGTERM', cleanup)
+}
+
+/**
+ * 触发 OnSessionStart 钩子（Agent 创建后）。
+ * @param cwd 工作目录。
+ * @param sessionId 会话 id。
+ */
+async function triggerSessionStartHooks(
+  cwd: string,
+  sessionId: string | null,
+): Promise<void> {
+  const mgr = getHookManager()
+  if (!mgr) return
+  await mgr.runSessionStart({ cwd, sessionId })
 }
 
 /**
@@ -400,6 +448,9 @@ function readStdin(): Promise<string> {
 // 启动主流程；捕获顶层异常以友好退出。
 main().catch(async (err) => {
   process.stderr.write(`\n[${PRODUCT_NAME}] 启动失败：${err?.message ?? String(err)}\n`)
+  if (hooksShutdownCwd) {
+    await shutdownHooks(hooksShutdownCwd, hooksSessionIdProvider?.() ?? null)
+  }
   await shutdownMcp()
   process.exit(1)
 })
