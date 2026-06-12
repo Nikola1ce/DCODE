@@ -1,7 +1,7 @@
 {
   "name": "dcode",
   "version": "1.0.0",
-  "description": "DCODE — 适配 DeepSeek 模型的命令行 AI 编程助手（制作人：Moriarty_Dox）",
+  "description": "DCODE — 适配 DeepSeek 模型的DCode AI 助手（制作人：Moriarty_Dox）",
   "type": "module",
   "bin": {
     "dcode": "dist/cli.js"

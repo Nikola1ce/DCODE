@@ -16,7 +16,7 @@ export const VERSION = '1.0.0'
 export const AUTHOR = 'Moriarty_Dox'
 
 // 产品标语，展示在欢迎横幅下方。
-export const TAGLINE = '命令行 AI 编程助手'
+export const TAGLINE = 'DCode AI 助手'
 
 // DeepSeek 官方 OpenAI 兼容 API 基础地址。
 export const DEFAULT_BASE_URL = 'https://api.deepseek.com'

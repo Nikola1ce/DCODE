@@ -41,6 +41,21 @@ export type { StreamEvent, StreamChatParams } from '../providers/types.js'
 const MAX_RETRIES = 3
 
 /**
+ * 判断一次流式请求失败后是否允许自动重试。
+ *
+ * 一旦已经向上层 yield 过可见文本/思维链增量，就不能再静默重试：
+ * UI 的 Static 历史区已经落盘了前一轮输出，重试会从头再流一次，表现为概率性重复输出。
+ */
+export function shouldRetryStreamError(
+  err: any,
+  attempt: number,
+  emittedVisibleDelta: boolean,
+): boolean {
+  if (emittedVisibleDelta) return false
+  return isRetryable(err) && attempt < MAX_RETRIES
+}
+
+/**
  * 将内部 DeepMessage 转换为 OpenAI 兼容 API 接受的消息体。
  * 关键点：
  *   - 无工具调用的 assistant 消息不回传 reasoning（API 会忽略）；
@@ -153,6 +168,7 @@ export class OpenAICompatibleClient implements LLMClient {
 
     let attempt = 0
     while (true) {
+      let emittedVisibleDelta = false
       try {
         const requestBody: Record<string, unknown> = {
           model,
@@ -210,6 +226,7 @@ export class OpenAICompatibleClient implements LLMClient {
             )
             reasoningBuf = next
             if (reasoningDelta) {
+              emittedVisibleDelta = true
               yield { type: 'reasoning', delta: reasoningDelta }
             }
           }
@@ -224,6 +241,7 @@ export class OpenAICompatibleClient implements LLMClient {
             const { next, delta: textDelta } = applyStreamContentDelta(textBuf, textIncoming)
             textBuf = next
             if (textDelta) {
+              emittedVisibleDelta = true
               yield { type: 'text', delta: textDelta }
             }
           }
@@ -260,7 +278,7 @@ export class OpenAICompatibleClient implements LLMClient {
         if (abortSignal?.aborted) {
           throw new Error('已取消请求')
         }
-        if (isRetryable(err) && attempt < MAX_RETRIES) {
+        if (shouldRetryStreamError(err, attempt, emittedVisibleDelta)) {
           attempt++
           const backoffMs = 500 * 2 ** (attempt - 1)
           await sleep(backoffMs)

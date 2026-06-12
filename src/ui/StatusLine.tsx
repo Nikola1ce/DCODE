@@ -38,6 +38,8 @@ interface StatusLineProps {
   costUsd: number
   // 运行期的简短状态文案（如“正在思考”“执行工具”）。
   statusText?: string
+  // 是否播放状态栏 spinner；工具进度面板已有 spinner 时可关闭，避免双重高频重绘。
+  animate?: boolean
 }
 
 // 权限模式的简短中文标签。
@@ -59,13 +61,18 @@ export function StatusLine({
   permissionMode,
   costUsd,
   statusText,
+  animate = true,
 }: StatusLineProps): React.ReactElement {
   const theme = useTheme()
   return (
     <Box marginTop={busy ? 0 : 0}>
       {busy ? (
         <Box>
-          <Spinner />
+          {animate ? (
+            <Spinner />
+          ) : (
+            <Text color={theme.primary}>{SPINNER_FRAMES[0]}</Text>
+          )}
           <Text color={theme.dim}>
             {' '}
             {statusText ?? '处理中'}…　按 <Text color={theme.accent}>Esc</Text> 中断

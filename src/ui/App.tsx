@@ -38,7 +38,10 @@ import { TodoPanel } from './TodoPanel.js'
 import { BackgroundShellPanel } from './BackgroundShellPanel.js'
 import { tailByVisualRows } from './textLayout.js'
 import { StreamCommitter, type StreamChunk } from './streamCommit.js'
+import { appendToolProgress } from './toolProgress.js'
 import type { DisplayItem } from './types.js'
+
+const MAX_PENDING_TOOL_PROGRESS_CHARS = 2000
 
 // App 组件入参。
 interface AppProps {
@@ -118,6 +121,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     summary: string
     progress: string
   } | null>(null)
+  const toolProgressBufferRef = useRef('')
+  const toolProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // —— 运行状态 ——
   const [busy, setBusy] = useState(false)
@@ -228,6 +233,42 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     ])
   }, [])
 
+  const clearToolProgressTimer = useCallback(() => {
+    if (toolProgressTimerRef.current) {
+      clearTimeout(toolProgressTimerRef.current)
+      toolProgressTimerRef.current = null
+    }
+  }, [])
+
+  const flushToolProgress = useCallback(() => {
+    const pending = toolProgressBufferRef.current
+    toolProgressBufferRef.current = ''
+    clearToolProgressTimer()
+    if (!pending) return
+    setRunningTool((prev) =>
+      prev
+        ? { ...prev, progress: appendToolProgress(prev.progress, pending) }
+        : prev,
+    )
+  }, [clearToolProgressTimer])
+
+  const enqueueToolProgress = useCallback(
+    (text: string) => {
+      const next = toolProgressBufferRef.current + text
+      toolProgressBufferRef.current = next.slice(-MAX_PENDING_TOOL_PROGRESS_CHARS)
+      if (!toolProgressTimerRef.current) {
+        toolProgressTimerRef.current = setTimeout(flushToolProgress, 120)
+      }
+    },
+    [flushToolProgress],
+  )
+
+  useEffect(() => {
+    return () => {
+      clearToolProgressTimer()
+    }
+  }, [clearToolProgressTimer])
+
   /** 驱动 Agent 执行一轮对话。 */
   const runAgent = useCallback(
     async (prompt: string) => {
@@ -265,17 +306,17 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           onToolStart: (info) => {
             toolSummaryRef.current.set(info.id, info.summary)
             toolNameRef.current.set(info.id, info.name)
+            toolProgressBufferRef.current = ''
+            clearToolProgressTimer()
             setRunningTool({ summary: info.summary, progress: '' })
             setStatusText('执行工具')
           },
           onToolProgress: (info) => {
-            setRunningTool((prev) =>
-              prev
-                ? { ...prev, progress: (prev.progress + info.text).slice(-400) }
-                : prev,
-            )
+            enqueueToolProgress(info.text)
           },
           onToolEnd: (info) => {
+            toolProgressBufferRef.current = ''
+            clearToolProgressTimer()
             const summary = toolSummaryRef.current.get(info.id) ?? info.name
             // run_command 展示真实输出，其它工具展示简洁摘要。
             const resultText = info.result.isError
@@ -314,12 +355,22 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         setBusy(false)
         setStatusText('')
         abortRef.current = null
+        toolProgressBufferRef.current = ''
+        clearToolProgressTimer()
         setRunningTool(null)
         setLiveText('')
         setLiveReasoning('')
       }
     },
-    [agent, pushStreamChunks, pushSystem, requestPermission, showThinking],
+    [
+      agent,
+      clearToolProgressTimer,
+      enqueueToolProgress,
+      pushStreamChunks,
+      pushSystem,
+      requestPermission,
+      showThinking,
+    ],
   )
 
   /** 处理斜杠命令的执行结果。 */
@@ -563,6 +614,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             ) : null}
             <StatusLine
               busy={busy}
+              animate={runningTool === null}
               model={model}
               permissionMode={permissionMode}
               costUsd={cost}

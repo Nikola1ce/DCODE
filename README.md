@@ -1,6 +1,6 @@
 # DCODE
 
-> 多 Provider 命令行 AI 编程助手（默认智谱 AI 免费模型）
+> 多 Provider DCode AI 助手（默认智谱 AI 免费模型）
 >
 > 制作人：**Moriarty_Dox**
 

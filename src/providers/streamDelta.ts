@@ -137,7 +137,7 @@ function findSignificantSuffixPrefixOverlap(
   incoming: string,
 ): number {
   const max = Math.min(accumulated.length, incoming.length, 4000)
-  const min = Math.min(24, Math.max(8, Math.floor(incoming.length * 0.35)))
+  const min = Math.min(24, Math.max(4, Math.floor(incoming.length * 0.35)))
   if (max < min) return 0
 
   for (let len = max; len >= min; len--) {
