@@ -5,12 +5,18 @@
 // 制作人：Moriarty_Dox
 
 import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isSupportedModelName, isValidReasoningEffort } from '../constants.js'
+import { join } from 'node:path'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig } from '../config.js'
 import type { Agent } from '../core/agent.js'
 import { renderSubAgentsStatus } from '../core/subAgent.js'
 import { renderShellsStatus } from '../core/shellManager.js'
 import { getHookManager, renderHooksStatus } from '../core/hooks.js'
+import {
+  isValidSkillName,
+  renderSkillList,
+  getProjectSkillsDir,
+} from '../core/skills.js'
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
@@ -233,6 +239,72 @@ export const COMMANDS: SlashCommand[] = [
         }
       }
       return { message: renderHooksStatus(mgr) }
+    },
+  },
+  {
+    name: 'skill',
+    description: '管理技能包：list / <名称> 加载 / unload / create',
+    aliases: ['skills'],
+    run: (ctx) => {
+      const raw = ctx.args.trim()
+      const spaceIdx = raw.indexOf(' ')
+      const sub = (spaceIdx === -1 ? raw : raw.slice(0, spaceIdx)).toLowerCase()
+      const rest = spaceIdx === -1 ? '' : raw.slice(spaceIdx + 1).trim()
+
+      // 无参数或 list：列出可用技能。
+      if (!sub || sub === 'list') {
+        return {
+          message: renderSkillList(ctx.agent.cwd, ctx.agent.getActiveSkillNames()),
+        }
+      }
+
+      // active：仅显示已加载。
+      if (sub === 'active' || sub === 'loaded') {
+        const names = ctx.agent.getActiveSkillNames()
+        if (names.length === 0) {
+          return { message: '当前会话未加载任何技能。使用 /skill <名称> 加载。' }
+        }
+        const skills = ctx.agent.getActiveSkills()
+        const lines = skills.map((s) => `  • ${s.name} — ${s.description}`)
+        return { message: `已加载技能（${names.length}）：\n${lines.join('\n')}` }
+      }
+
+      // unload / off：卸载技能。
+      if (sub === 'unload' || sub === 'off' || sub === 'remove') {
+        if (!rest) {
+          return { message: '用法：/skill unload <名称>' }
+        }
+        const result = ctx.agent.unloadSkill(rest)
+        return { message: result.message }
+      }
+
+      // create：从当前对话摘要创建技能文件。
+      if (sub === 'create' || sub === 'new') {
+        if (!rest) {
+          return { message: '用法：/skill create <名称>\n名称仅允许字母、数字、_、-' }
+        }
+        if (!isValidSkillName(rest)) {
+          return {
+            message: `无效的技能名：${rest}\n仅允许字母、数字、下划线与连字符，最长 64 字符。`,
+          }
+        }
+        const outPath = joinSkillPath(ctx.agent.cwd, rest)
+        const prompt =
+          `请根据当前对话中的工作流与约定，创建技能文件 ${outPath}。\n` +
+          '格式要求：\n' +
+          '1) YAML frontmatter：name、description\n' +
+          '2) 正文为 Markdown，说明何时触发、步骤、约束与输出格式\n' +
+          '3) 使用 write_file 写入，内容简洁可复用，简体中文\n' +
+          `4) 技能名必须为 ${rest}`
+        return {
+          message: `开始创建技能「${rest}」→ ${outPath}`,
+          submitPrompt: prompt,
+        }
+      }
+
+      // 默认：按名称加载技能。
+      const result = ctx.agent.loadSkill(sub)
+      return { message: result.message }
     },
   },
   {
@@ -557,6 +629,16 @@ function renderMcpPromptsList(mgr: MCPManager): string {
       return `  [${p.serverId}] ${p.name}${args ? ` (${args})` : ''}${p.description ? ' — ' + p.description : ''}`
     }),
   ].join('\n')
+}
+
+/**
+ * 计算项目技能文件路径（供 /skill create 提示）。
+ * @param cwd 工作目录。
+ * @param name 技能名。
+ * @returns .md 绝对路径。
+ */
+function joinSkillPath(cwd: string, name: string): string {
+  return join(getProjectSkillsDir(cwd), `${name}.md`)
 }
 
 /**

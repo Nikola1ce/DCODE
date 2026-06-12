@@ -19,6 +19,8 @@ import {
 } from '../tools/index.js'
 import { buildSystemPrompt } from './systemPrompt.js'
 import { compactMessages, shouldCompact } from './compact.js'
+import type { SkillDefinition } from './skills.js'
+import { loadSkillByName } from './skills.js'
 import type { SessionRecorder } from './session.js'
 import type {
   DeepMessage,
@@ -76,6 +78,8 @@ export class Agent {
   usage: UsageTotals = emptyUsageTotals()
   // 当前工作目录。
   readonly cwd: string
+  // 当前会话已加载的技能（/skill 注入 system 提示）。
+  private activeSkills: SkillDefinition[] = []
 
   /**
    * 构造函数。
@@ -105,6 +109,7 @@ export class Agent {
             cwd: this.cwd,
             model: this.config.model,
             permissionMode: this.permissionMode,
+            activeSkills: this.activeSkills,
           }),
         },
       ]
@@ -176,6 +181,52 @@ export class Agent {
     return this.messages
   }
 
+  /** 返回当前会话已加载的技能名列表。 */
+  getActiveSkillNames(): string[] {
+    return this.activeSkills.map((s) => s.name)
+  }
+
+  /** 返回当前会话已加载的技能（只读副本）。 */
+  getActiveSkills(): SkillDefinition[] {
+    return [...this.activeSkills]
+  }
+
+  /**
+   * 加载技能到当前会话（注入 system 提示）。
+   * @param name 技能名。
+   * @returns 是否成功及提示信息。
+   */
+  loadSkill(name: string): { ok: boolean; message: string } {
+    const skill = loadSkillByName(name, this.cwd)
+    if (!skill) {
+      return { ok: false, message: `未找到技能「${name}」。执行 /skill list 查看可用技能。` }
+    }
+    if (this.activeSkills.some((s) => s.name === skill.name)) {
+      return { ok: true, message: `技能「${skill.name}」已在当前会话中加载。` }
+    }
+    this.activeSkills.push(skill)
+    this.refreshSystemPrompt()
+    return {
+      ok: true,
+      message: `已加载技能「${skill.name}」：${skill.description}`,
+    }
+  }
+
+  /**
+   * 从当前会话卸载技能。
+   * @param name 技能名。
+   * @returns 是否成功及提示信息。
+   */
+  unloadSkill(name: string): { ok: boolean; message: string } {
+    const before = this.activeSkills.length
+    this.activeSkills = this.activeSkills.filter((s) => s.name !== name)
+    if (this.activeSkills.length === before) {
+      return { ok: false, message: `当前会话未加载技能「${name}」。` }
+    }
+    this.refreshSystemPrompt()
+    return { ok: true, message: `已卸载技能「${name}」。` }
+  }
+
   /**
    * 用给定历史替换当前会话消息（保留/重建 system 提示）。
    * 供 /resume 恢复历史会话使用。
@@ -193,6 +244,7 @@ export class Agent {
           cwd: this.cwd,
           model: this.config.model,
           permissionMode: this.permissionMode,
+          activeSkills: this.activeSkills,
         }),
       }
       this.messages = [sys, ...messages]
@@ -215,6 +267,7 @@ export class Agent {
         cwd: this.cwd,
         model: this.config.model,
         permissionMode: this.permissionMode,
+        activeSkills: this.activeSkills,
       }),
     }
     if (this.messages[0]?.role === 'system') this.messages[0] = sys

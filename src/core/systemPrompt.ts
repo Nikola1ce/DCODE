@@ -8,6 +8,8 @@ import { PRODUCT_NAME, AUTHOR } from '../constants.js'
 import type { PermissionMode } from '../config.js'
 import { formatMemories, loadMemories } from '../memory.js'
 import { getMcpManager } from '../mcp/client.js'
+import type { SkillDefinition } from './skills.js'
+import { formatSkillsForPrompt } from './skills.js'
 
 // 构建系统提示所需的运行期信息。
 export interface SystemPromptContext {
@@ -17,6 +19,8 @@ export interface SystemPromptContext {
   model: string
   // 当前权限模式。
   permissionMode: PermissionMode
+  // 当前会话已加载的技能（/skill 注入）。
+  activeSkills?: SkillDefinition[]
 }
 
 /**
@@ -27,6 +31,7 @@ export interface SystemPromptContext {
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 加载并格式化项目/全局记忆。
   const memories = formatMemories(loadMemories(ctx.cwd))
+  const skillsBlock = formatSkillsForPrompt(ctx.activeSkills ?? [])
 
   // 不同权限模式给模型的行为约束说明。
   const modeNote = describePermissionMode(ctx.permissionMode)
@@ -71,16 +76,28 @@ ${modeNote}
 - 当前日期：${new Date().toISOString().slice(0, 10)}
 - 当前模型：${ctx.model}`
 
+  let prompt = base
+
+  // 已加载技能注入（/skill 命令激活）。
+  if (skillsBlock) {
+    prompt += `
+
+# 已加载的技能
+以下技能已注入当前会话，请在相关任务中严格遵循：
+
+${skillsBlock}`
+  }
+
   // 若存在记忆，追加到末尾。
   if (memories) {
-    return `${base}
+    return `${prompt}
 
 # 用户提供的长期记忆
 以下是用户在 DCODE.md 中记录的项目约定与偏好，请在工作时遵循：
 
 ${memories}`
   }
-  return base
+  return prompt
 }
 
 /**

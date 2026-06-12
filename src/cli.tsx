@@ -33,6 +33,7 @@ import {
 import { runHeadless } from './headless.js'
 import { initMcp, shutdownMcp } from './mcp/client.js'
 import { initHooks, shutdownHooks, getHookManager } from './core/hooks.js'
+import { ensureBuiltinSkills } from './core/skills.js'
 import { App } from './ui/App.js'
 import { messagesToItems } from './ui/messagesToItems.js'
 
@@ -196,6 +197,7 @@ async function main(): Promise<void> {
 
   // 确保配置目录存在并加载配置。
   ensureConfigDir()
+  ensureBuiltinSkills()
   const config = loadConfig()
 
   // 命令行覆盖：模型。
