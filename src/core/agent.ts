@@ -160,6 +160,13 @@ export class Agent {
         merged.providers[pid] = { ...this.config.providers?.[pid], ...overrides }
       }
     }
+    // 模型上下文长度选择按键深合并，保持与磁盘 updateConfig 一致，避免覆盖其它模型已存选择。
+    if (patch.modelContextOverrides) {
+      merged.modelContextOverrides = {
+        ...this.config.modelContextOverrides,
+        ...patch.modelContextOverrides,
+      }
+    }
     this.config = { ...this.config, ...merged }
     const needsClientRebuild =
       (merged.provider !== undefined && merged.provider !== prev.provider) ||

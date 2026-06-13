@@ -5,6 +5,7 @@
 // 制作人：Moriarty_Dox
 
 import { COMPACT_TOKEN_THRESHOLD } from '../constants.js'
+import { getCompactThreshold } from '../providers/contextWindow.js'
 import type { LLMClient } from '../providers/types.js'
 import type { DeepMessage } from './types.js'
 
@@ -87,11 +88,21 @@ export function estimateMessagesTokens(messages: DeepMessage[]): number {
 
 /**
  * 判断是否应触发自动压缩。
+ * 阈值取「当前生效模型最大上下文长度 × 90%」（见 getCompactThreshold），随模型切换动态变化；
+ * 仅当未提供 contextWindow（理论上不会发生）时回退到固定常量 COMPACT_TOKEN_THRESHOLD 兜底。
  * @param messages 消息历史。
- * @returns 超过阈值返回 true。
+ * @param contextWindow 当前生效的模型最大上下文长度（token）；省略则用固定兜底阈值。
+ * @returns 估算已用 token 超过阈值返回 true。
  */
-export function shouldCompact(messages: DeepMessage[]): boolean {
-  return estimateMessagesTokens(messages) > COMPACT_TOKEN_THRESHOLD
+export function shouldCompact(
+  messages: DeepMessage[],
+  contextWindow?: number,
+): boolean {
+  const threshold =
+    typeof contextWindow === 'number' && contextWindow > 0
+      ? getCompactThreshold(contextWindow)
+      : COMPACT_TOKEN_THRESHOLD
+  return estimateMessagesTokens(messages) > threshold
 }
 
 /**

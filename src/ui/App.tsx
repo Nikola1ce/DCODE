@@ -21,7 +21,10 @@ import {
   getProviderDefinition,
   getProviderLoginMeta,
 } from '../providers/registry.js'
-import { getModelContextWindow } from '../providers/contextWindow.js'
+import {
+  renderModelSwitchContextHint,
+  resolveContextWindow,
+} from '../providers/contextWindow.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
 import { estimateMessagesTokens } from '../core/compact.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
@@ -149,11 +152,19 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     estimateMessagesTokens(agent.getMessages()),
   )
   const [model, setModelState] = useState(agent.getModel())
-  // 当前模型的上下文窗口大小（token）：作为状态栏进度条的总量上限。
-  // 随模型/Provider 切换重算（model 变化即触发），而非固定用压缩阈值，避免上限失真。
+  // 上下文相关配置（Provider / 用户选定的最大上下文档位）的变更计数：
+  // 这些值存于 configRef（ref 不触发重渲染），故用一个递增计数作为 useMemo 依赖，确保切换后进度条上限随之刷新。
+  const [contextConfigVersion, setContextConfigVersion] = useState(0)
+  // 当前「生效」的上下文窗口大小（token）：作为状态栏进度条的总量上限，也是自动压缩阈值（×90%）的基准。
+  // 随模型 / Provider / 用户选定的最大上下文长度切换实时重算，而非固定值，避免上限失真。
   const contextLimit = useMemo(
-    () => getModelContextWindow(getActiveProviderId(configRef.current), model),
-    [model],
+    () =>
+      resolveContextWindow(
+        getActiveProviderId(configRef.current),
+        model,
+        configRef.current.modelContextOverrides,
+      ),
+    [model, contextConfigVersion],
   )
   const [permissionMode, setPermissionModeState] = useState(agent.permissionMode)
   const [todos, setTodos] = useState<TodoItem[]>(agent.getTodos())
@@ -222,6 +233,10 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     if (patch.theme) setThemeName(patch.theme)
     if (patch.showThinking !== undefined) setShowThinking(patch.showThinking)
     if (patch.model) setModelState(patch.model)
+    // Provider 或「模型最大上下文档位」变更会改变生效上下文窗口，递增计数以刷新进度条上限。
+    if (patch.provider !== undefined || patch.modelContextOverrides !== undefined) {
+      setContextConfigVersion((v) => v + 1)
+    }
   }, [agent])
 
   /** 请求用户授权：命中白名单自动放行，否则弹窗等待决策。 */
@@ -634,6 +649,13 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               applyConfig({ model: m })
               setFlow(null)
               pushSystem('success', `已切换模型为 ${m}`)
+              // 多档上下文模型：追加一行引导，提示可用 /model context 调整窗口与压缩阈值。
+              const hint = renderModelSwitchContextHint(
+                getActiveProviderId(configRef.current),
+                m,
+                configRef.current.modelContextOverrides,
+              )
+              if (hint) pushSystem('info', hint)
             }}
             onCancel={() => setFlow(null)}
           />

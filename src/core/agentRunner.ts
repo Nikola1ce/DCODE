@@ -12,6 +12,7 @@ import {
   toOpenAITools,
 } from '../tools/index.js'
 import { compactMessages, shouldCompact } from './compact.js'
+import { resolveContextWindow } from '../providers/contextWindow.js'
 import { executeToolBatch } from './toolScheduler.js'
 import { traceEvent, traceTextFields } from '../trace.js'
 import type {
@@ -263,7 +264,14 @@ export class AgentRunner {
 
   private async *compactIfNeeded(iteration: number): AsyncGenerator<AgentRunEvent> {
     const messages = this.opts.getMessages()
-    if (!shouldCompact(messages)) return
+    // 压缩阈值随「当前生效模型最大上下文长度 × 90%」动态变化：
+    // 解析当前 Provider + 模型 + 用户选定档位（modelContextOverrides）得到生效窗口，再据此判断是否压缩。
+    const contextWindow = resolveContextWindow(
+      this.opts.client.getProviderId(),
+      this.opts.model,
+      this.opts.config.modelContextOverrides,
+    )
+    if (!shouldCompact(messages, contextWindow)) return
     yield this.event('compact_start', {
       timestamp: Date.now(),
       iteration,

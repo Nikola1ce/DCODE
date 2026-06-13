@@ -209,6 +209,14 @@ describe('providers/registry', () => {
     expect(opts.find((o) => o.value === 'gpt-5.5')?.hint).toContain('前沿')
   })
 
+  it('getModelSelectOptions 多档模型 hint 追加「多档上下文」标记，单档模型不追加', () => {
+    const opts = getModelSelectOptions(baseConfig({ provider: 'zhipu', model: DEFAULT_ZHIPU_MODEL }))
+    // glm-4-long 支持多档上下文，hint 末尾应有标记。
+    expect(opts.find((o) => o.value === 'glm-4-long')?.hint).toContain('多档上下文')
+    // 单档的 glm-4-flash 不应被追加该标记。
+    expect(opts.find((o) => o.value === 'glm-4-flash')?.hint ?? '').not.toContain('多档上下文')
+  })
+
   it('DEEPSEEK_BASE_URL 环境变量仅影响 deepseek Provider', () => {
     process.env[ENV_BASE_URL] = 'https://custom-deepseek.example/v1'
     expect(resolveProviderBaseURL(baseConfig({ provider: 'deepseek' }))).toBe(

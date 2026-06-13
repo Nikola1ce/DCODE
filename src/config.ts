@@ -71,6 +71,11 @@ export interface DCodeConfig {
   providers?: Partial<Record<ProviderId, ProviderOverrides>>
   // 全局 HTTP(S) 代理（外国 Provider 如 OpenAI 访问 api.openai.com 时使用）。
   proxy?: string
+  // 用户为「支持多档上下文长度的模型」选定的最大上下文长度（token）。
+  // 键为 "providerId:小写模型名"（见 contextWindow.contextOverrideKey），值为选定窗口 token 数。
+  // 影响：状态栏进度条上限 + 自动压缩阈值（= 选定窗口 × 90%），随模型/选择实时变化。
+  // 未选择的模型不在此表中，按模型默认（最大）窗口计算。
+  modelContextOverrides?: Record<string, number>
 }
 
 // 配置默认值：首次运行或字段缺失时回退到这里。
@@ -198,6 +203,13 @@ export function updateConfig(patch: Partial<DCodeConfig>): DCodeConfig {
     for (const [id, overrides] of Object.entries(patch.providers)) {
       const pid = id as ProviderId
       next.providers[pid] = { ...current.providers?.[pid], ...overrides }
+    }
+  }
+  // 模型上下文长度选择按键深合并，避免为某个模型设档位时覆盖其它模型的已存选择。
+  if (patch.modelContextOverrides) {
+    next.modelContextOverrides = {
+      ...current.modelContextOverrides,
+      ...patch.modelContextOverrides,
     }
   }
   saveConfig(next)

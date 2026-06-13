@@ -129,7 +129,14 @@ export function isValidSubAgentType(value: string): value is SubAgentType {
 }
 
 // 触发上下文自动压缩的 token 阈值（估算值，超过则提示/执行压缩）。
+// 说明：自 v1.x 起，压缩阈值不再使用此固定值，而是「当前生效模型最大上下文长度 × COMPACT_THRESHOLD_RATIO」，
+// 随模型切换动态变化（见 providers/contextWindow.ts 的 getCompactThreshold）。
+// 此常量仅作为兜底：当无法解析模型上下文窗口时（理论上不会发生）回退使用。
 export const COMPACT_TOKEN_THRESHOLD = 60000
+
+// 自动压缩触发比率：当估算已用上下文 token 超过「模型最大上下文长度 × 该比率」时触发压缩。
+// 取 0.9 是为了在接近上限前留出约 10% 余量给「本轮新输出 + 摘要生成」，避免请求真正超限被 API 拒绝。
+export const COMPACT_THRESHOLD_RATIO = 0.9
 
 // 读取文件时单次返回的最大字符数，超过会被截断并提示使用偏移分页读取。
 export const MAX_FILE_READ_CHARS = 100000

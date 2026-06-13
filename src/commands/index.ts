@@ -78,6 +78,15 @@ import {
 } from '../providers/proxy.js'
 import type { ProviderId } from '../providers/types.js'
 import { isZhipuFreeModel, ZHIPU_FREE_MODEL_BADGE } from '../providers/zhipuModels.js'
+import {
+  contextOverrideKey,
+  formatContextWindowLabel,
+  getCompactThreshold,
+  getModelContextOptions,
+  parseContextWindowInput,
+  renderModelSwitchContextHint,
+  resolveContextWindow,
+} from '../providers/contextWindow.js'
 
 // 命令可触发的特殊 UI 交互流程类型。
 export type SpecialFlow = 'model' | 'login' | 'resume' | 'theme'
@@ -120,6 +129,112 @@ export interface SlashCommand {
   run: (ctx: SlashCommandContext) => SlashCommandResult | Promise<SlashCommandResult>
 }
 
+/**
+ * 处理 /model context 子命令：查看或设置「当前模型的最大上下文长度」。
+ * - 无参数：展示当前生效窗口、可选档位（多档模型）与对应的自动压缩阈值（窗口×90%）；
+ * - 带参数（如 128k / 200000）：在合法候选内切换档位并持久化；单档模型不可切换会给出提示。
+ * 设定会同时影响状态栏进度条上限与自动压缩触发点（随模型切换、随选择变化）。
+ * @param ctx 命令上下文。
+ * @param arg context 之后的剩余参数（已去空白）。
+ * @returns 命令结果（展示信息）。
+ */
+function handleModelContextCommand(
+  ctx: SlashCommandContext,
+  arg: string,
+): SlashCommandResult {
+  const providerId = getActiveProviderId(ctx.config)
+  const model = ctx.config.model
+  const options = getModelContextOptions(providerId, model)
+  const current = resolveContextWindow(
+    providerId,
+    model,
+    ctx.config.modelContextOverrides,
+  )
+
+  // 无参数：渲染当前状态 + 可选档位列表。
+  if (!arg) {
+    return { message: renderModelContextInfo(providerId, model, current, options) }
+  }
+
+  // 单档模型：没有可选项，直接说明该模型上下文长度固定。
+  if (options.length <= 1) {
+    return {
+      message:
+        `模型 ${model} 的最大上下文长度固定为 ${formatContextWindowLabel(current)}` +
+        `（${current.toLocaleString()} tokens），不支持切换。\n` +
+        `自动压缩阈值：${getCompactThreshold(current).toLocaleString()} tokens（窗口的 90%）。`,
+    }
+  }
+
+  // 解析目标档位（支持 128k / 1m / 纯数字）。
+  const parsed = parseContextWindowInput(arg)
+  if (parsed === undefined) {
+    return {
+      message:
+        `无法识别的上下文长度：「${arg}」。\n` +
+        `请使用如 128k、200k、1m 或纯数字（如 128000）。\n\n` +
+        renderModelContextInfo(providerId, model, current, options),
+    }
+  }
+
+  // 校验是否为该模型的合法候选档位。
+  if (!options.includes(parsed)) {
+    const labels = options.map((o) => formatContextWindowLabel(o)).join(' / ')
+    return {
+      message:
+        `${formatContextWindowLabel(parsed)} 不是模型 ${model} 的可选档位。\n` +
+        `可选：${labels}。`,
+    }
+  }
+
+  // 写入「provider:model → 选定窗口」并热更新；UI 与压缩阈值随之生效。
+  const key = contextOverrideKey(providerId, model)
+  ctx.applyConfig({ modelContextOverrides: { [key]: parsed } })
+  return {
+    message:
+      `已将模型 ${model} 的最大上下文长度设为 ${formatContextWindowLabel(parsed)}` +
+      `（${parsed.toLocaleString()} tokens）。\n` +
+      `自动压缩阈值随之变为 ${getCompactThreshold(parsed).toLocaleString()} tokens（窗口的 90%）。`,
+  }
+}
+
+/**
+ * 渲染 /model context 的当前状态信息（当前窗口、压缩阈值、可选档位）。
+ * @param providerId Provider 标识。
+ * @param model 模型名。
+ * @param current 当前生效窗口 token 数。
+ * @param options 可选档位列表（升序）。
+ * @returns 多行展示文本。
+ */
+function renderModelContextInfo(
+  providerId: ProviderId,
+  model: string,
+  current: number,
+  options: number[],
+): string {
+  const lines: string[] = []
+  lines.push(`模型 ${model}（${providerId}）上下文设置：`)
+  lines.push(
+    `  当前最大上下文长度：${formatContextWindowLabel(current)}（${current.toLocaleString()} tokens）`,
+  )
+  lines.push(
+    `  自动压缩阈值：${getCompactThreshold(current).toLocaleString()} tokens（窗口的 90%）`,
+  )
+  if (options.length > 1) {
+    const labels = options
+      .map((o) => {
+        const mark = o === current ? ' ✓当前' : ''
+        return `${formatContextWindowLabel(o)}${mark}`
+      })
+      .join(' / ')
+    lines.push(`  可选档位：${labels}`)
+    lines.push(`  切换示例：/model context ${formatContextWindowLabel(options[0]).toLowerCase()}`)
+  } else {
+    lines.push('  该模型上下文长度固定，无可切换档位。')
+  }
+  return lines.join('\n')
+}
+
 // 全部内置命令定义。
 export const COMMANDS: SlashCommand[] = [
   {
@@ -135,11 +250,17 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'model',
-    description: '查看或切换模型，例如 /model deepseek-v4-pro',
+    description:
+      '查看或切换模型，例如 /model deepseek-v4-pro；/model context 查看或设置最大上下文长度',
     run: (ctx) => {
       const target = ctx.args.trim()
       // 无参数：打开模型选择器。
       if (!target) return { openFlow: 'model' }
+      // 子命令：/model context [档位] —— 查看 / 设置当前模型的最大上下文长度（仅多档模型可切换）。
+      const ctxMatch = /^(context|ctx)\b(.*)$/i.exec(target)
+      if (ctxMatch) {
+        return handleModelContextCommand(ctx, ctxMatch[2].trim())
+      }
       const providerId = getActiveProviderId(ctx.config)
       // DeepSeek 仍校验内置模型列表；其它 Provider 允许 OpenAI 兼容模型名。
       if (!isModelAllowedForProvider(target, ctx.config)) {
@@ -156,7 +277,13 @@ export const COMMANDS: SlashCommand[] = [
       }
       ctx.agent.setModel(target)
       ctx.applyConfig({ model: target })
-      return { message: `已切换模型为 ${target}` }
+      // 若目标模型支持多档上下文长度，追加一行引导，提示可用 /model context 调整窗口与压缩阈值。
+      const hint = renderModelSwitchContextHint(
+        providerId,
+        target,
+        ctx.config.modelContextOverrides,
+      )
+      return { message: hint ? `已切换模型为 ${target}\n${hint}` : `已切换模型为 ${target}` }
     },
   },
   {
@@ -834,14 +961,38 @@ function getCommandArgSuggestions(
   if (cmdName === 'model') {
     const models = config ? getSuggestedModelsForProvider(config) : [...SUPPORTED_MODELS]
     const providerId = config ? getActiveProviderId(config) : 'deepseek'
-    return models.filter((m) => q === '' || m.toLowerCase().startsWith(q)).map((m) => {
-      const isFree = providerId === 'zhipu' && isZhipuFreeModel(m)
-      return {
-        name: isFree ? `★ ${m}` : m,
-        description: isFree ? ZHIPU_FREE_MODEL_BADGE : '切换模型',
-        completion: `/model ${m}`,
+    const suggestions: CommandSuggestion[] = models
+      .filter((m) => q === '' || m.toLowerCase().startsWith(q))
+      .map((m) => {
+        const isFree = providerId === 'zhipu' && isZhipuFreeModel(m)
+        return {
+          name: isFree ? `★ ${m}` : m,
+          description: isFree ? ZHIPU_FREE_MODEL_BADGE : '切换模型',
+          completion: `/model ${m}`,
+        }
+      })
+    // 追加 context 子命令提示；多档模型再补出各档位的快捷补全。
+    if ('context'.startsWith(q) || q === '') {
+      suggestions.push({
+        name: 'context',
+        description: '查看/设置最大上下文长度（影响压缩阈值）',
+        completion: '/model context',
+      })
+      if (config) {
+        const options = getModelContextOptions(providerId, config.model)
+        if (options.length > 1) {
+          for (const o of options) {
+            const label = formatContextWindowLabel(o)
+            suggestions.push({
+              name: `context ${label}`,
+              description: `将最大上下文长度设为 ${label}`,
+              completion: `/model context ${label.toLowerCase()}`,
+            })
+          }
+        }
       }
-    })
+    }
+    return suggestions
   }
 
   if (cmdName === 'review') {

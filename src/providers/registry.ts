@@ -26,6 +26,10 @@ import type { ProviderDefinition, ProviderId, ProviderOverrides } from './types.
 import { OPENAI_CHAT_MODELS, getOpenAIModelHint } from './openaiModels.js'
 import { ZHIPU_CHAT_MODELS, formatZhipuModelLabel, getZhipuModelHint } from './zhipuModels.js'
 import { renderProxyHint } from './proxy.js'
+import { modelHasContextChoices } from './contextWindow.js'
+
+// 多档上下文模型在选择器右侧 hint 追加的标记，提示用户切换后可用 /model context 调整窗口。
+const MULTI_CONTEXT_BADGE = '· 多档上下文'
 
 /** 当前可在 UI 中切换的 Provider 列表。 */
 export const PROVIDER_SWITCH_OPTIONS: Array<{ id: ProviderId; description: string }> = [
@@ -246,11 +250,17 @@ export function getModelSelectOptions(config: DCodeConfig): ModelSelectOption[] 
   const def = getProviderDefinition(id)
   const models = getSuggestedModelsForProvider(config)
 
+  // 为多档上下文模型在 hint 末尾追加「· 多档上下文」标记，提示切换后可 /model context 调整。
+  const withContextBadge = (model: string, hint?: string): string | undefined => {
+    if (!modelHasContextChoices(id, model)) return hint
+    return hint ? `${hint} ${MULTI_CONTEXT_BADGE}` : MULTI_CONTEXT_BADGE.replace(/^· /, '')
+  }
+
   if (id === 'deepseek') {
     return models.map((m) => ({
       label: m,
       value: m,
-      hint: m === PRO_MODEL ? '高级模型 · 推理/编码更强' : '默认 · 快速且经济',
+      hint: withContextBadge(m, m === PRO_MODEL ? '高级模型 · 推理/编码更强' : '默认 · 快速且经济'),
     }))
   }
 
@@ -258,14 +268,14 @@ export function getModelSelectOptions(config: DCodeConfig): ModelSelectOption[] 
     return models.map((m) => ({
       label: formatZhipuModelLabel(m),
       value: m,
-      hint: getZhipuModelHint(m, def.defaultModel),
+      hint: withContextBadge(m, getZhipuModelHint(m, def.defaultModel)),
     }))
   }
 
   return models.map((m) => ({
     label: m,
     value: m,
-    hint: getOpenAIModelHint(m, def.defaultModel),
+    hint: withContextBadge(m, getOpenAIModelHint(m, def.defaultModel)),
   }))
 }
 

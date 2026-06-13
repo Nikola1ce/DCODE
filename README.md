@@ -57,13 +57,15 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **多 Provider 支持**：默认 **智谱 AI** + 免费模型 `glm-4-flash` / `glm-4.7-flash`（`/model` 中带 **★**）；另支持 DeepSeek、OpenAI；`/provider` 切换供应商，`/proxy` 配置代理；状态栏与 `/cost` 按 Provider **预估成本**（免费模型显示「免费」）。
 - **DeepSeek V4 原生适配**：`deepseek-v4-flash` / `deepseek-v4-pro`，工具调用与思维链 `reasoning_content`；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**）。
 - **流式输出**：边生成边显示，支持 `Esc` 中断；兼容各 Provider 的累计全文、局部段落重放、短列表前缀重放等 chunk 归一化，避免回答复读。
-- **上下文自动压缩**：每次模型调用前检查上下文预算；压缩摘要以 `system` summary metadata 注入，`/compact` 可手动触发。
+- **上下文自动压缩（阈值随模型动态变化）**：压缩触发阈值 = **当前生效模型最大上下文长度 × 90%**，随模型/Provider 切换自动调整，不再用固定值；压缩摘要以 `system` summary metadata 注入，`/compact` 可手动触发。状态栏内置**上下文用量进度条**（已用/上限 + 百分比，临近上限变色提醒）。
+- **多档最大上下文长度选择**：对支持多档上限的模型（如智谱 `glm-4-long` 的 128K/200K/1M、本地后端等），`/model context [档位]` 可在候选档位间切换；选择会持久化并同时影响进度条上限与压缩阈值（其余模型为官方单一最大值）。
 - **会话持久化**：`~/.dcode/sessions/`，`-c` 继续 / `-r` 恢复；JSONL 同时记录消息与 Agent 运行事件，恢复时修复中断的工具调用。
 - **项目记忆**：读取 `DCODE.md`；`/init` 可自动生成。
 
 ### 工具系统（Function Calling）
 
-- **文件与代码**：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob`、`grep`
+- **文件与代码**：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob`、`grep`（`glob` / `grep` / `list_dir` 遵循 `.gitignore` 与 `.dcodeignore`）
+- **Notebook**：`notebook_read`、`notebook_edit`（解析 `.ipynb` 为「Markdown + 代码」混合视图，cell 级 replace/insert/delete，写前自动检查点）
 - **命令行**：`run_command`（支持 `background=true`）、`bash_output`（含 `tail` 增量）、`kill_shell`
 - **协作与联网**：`task` 子代理并行、`todo_write` 任务清单、`web_fetch`、`web_search`
 - **MCP 动态工具**：连接 MCP Server 后注册 `mcp__*` 工具，及 `list_mcp_resources` 等代理工具
@@ -78,6 +80,15 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **Skills**：可复用 Markdown 技能包，`/skills` 查看列表，`/skill` 加载领域工作流
 - **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
 - **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
+
+### 工程能力（P2 体验增强已落地）
+
+- **自定义忽略 `.dcodeignore`**：格式同 `.gitignore`，与默认噪声目录、`.gitignore` 合并（`.dcodeignore` 优先级最高、支持 `!` 反忽略），统一作用于 `glob` / `grep` / `list_dir`
+- **额外工作目录 `/add-dir`**：把 cwd 之外的目录加入工作上下文（项目级持久化到 `.dcode/workspace.json`），所有文件工具可安全访问；支持 `list` / `remove` / `clear`
+- **代码审查 `/review`**（别名 `/cr`）：审查工作区/已暂存/分支差异或指定文件，可叠加安全/性能/可读性/最佳实践聚焦维度，结果按 Critical / Warning / Suggestion 分级
+- **Extended Thinking 预算**：推理强度 `low/medium/high/max` 四级（`/effort`），可选 `--thinking-budget` / `/thinking-budget` token 预算；DeepSeek 仅认 high/max，low/medium 自动归并
+- **终端内 Diff 查看器**：权限弹窗的 diff 带新旧行号列、`@@` hunk 头与上下文折叠、增绿删红加粗高亮，大文件只展示变更块而非整文件截断
+- **自动更新 `/update`**：检测 GitHub 最新版本并执行 `git pull + npm install + build`（或 `npm update -g`）
 
 ### 体验与安全
 
@@ -658,7 +669,8 @@ dcode --plan
 | `--auto` | 自动接受编辑模式（文件读写免确认） |
 | `--bypass` | 跳过所有权限确认（危险；无头模式下等同自动批准） |
 | `--dangerously-skip-permissions` | 同 `--bypass` |
-| `--reasoning-effort <high\|max>` | 推理强度（Thinking 模式下生效；Pro 复杂任务可用 `max`） |
+| `--reasoning-effort <low\|medium\|high\|max>` | 推理强度（Thinking 模式下生效；DeepSeek 仅认 high/max，low/medium 自动归并） |
+| `--thinking-budget <整数>` | 思维链 token 预算（约束 `thinking.budget_tokens`，仅支持该参数的 Provider 生效） |
 | `-v, --version` | 显示版本 |
 | `-h, --help` | 显示帮助 |
 
@@ -671,6 +683,7 @@ dcode --plan
 | `/help` | 显示所有命令 |
 | `/about` | 关于（版本与制作人） |
 | `/model [名称]` | 查看或切换模型（智谱免费模型带 ★ 标记） |
+| `/model context [档位]` | 查看或设置当前模型的最大上下文长度（影响进度条上限与压缩阈值；仅多档模型可切换） |
 | `/provider [id]` | 查看或切换 LLM Provider（`zhipu` / `deepseek` / `openai`） |
 | `/proxy [地址\|clear]` | 查看或设置 HTTP(S) 代理（OpenAI 等国外 API 常用） |
 | `/cost` | 显示 token 用量与预估成本 |
@@ -681,7 +694,8 @@ dcode --plan
 | `/resume` | 从历史会话中恢复 |
 | `/theme` | 切换暗/亮主题 |
 | `/thinking` | 开关思维链展示 |
-| `/effort [high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API） |
+| `/effort [low\|medium\|high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API；DeepSeek 仅认 high/max） |
+| `/thinking-budget [N\|clear]`（别名 `/budget`） | 查看或设置思维链 token 预算 |
 | `/mcp [list\|resources\|prompts\|reload]` | 查看/管理 MCP Server 连接 |
 | `/shells`（别名 `/bg`） | 查看后台 Shell 状态 |
 | `/subagents`（别名 `/agents`） | 查看子代理（Task 工具）状态 |
@@ -692,10 +706,13 @@ dcode --plan
 | `/undo [N]` | 回退最近 N 个文件检查点（默认 1） |
 | `/commit` | 根据 staged 变更生成 commit 并提交 |
 | `/pr [create]` | 生成 PR 描述（可选 gh 创建） |
+| `/review [范围] [聚焦]`（别名 `/cr`） | 代码审查：工作区/staged/分支差异/指定文件，按严重度分级 |
+| `/add-dir [目录\|list\|remove\|clear]`（别名 `/adddir`） | 将额外目录加入工作上下文（项目级持久化） |
 | `/plan`、`/auto`、`/bypass` | 切换权限模式 |
 | `/mode <plan\|auto\|bypass>` | 同上 |
 | `/memory` | 显示已加载的记忆文件 |
 | `/config` | 显示当前配置（隐藏密钥） |
+| `/update [check\|run\|force]`（别名 `/upgrade`） | 检测并更新 DCODE |
 | `/exit` | 退出 |
 
 ### 快捷键
@@ -880,7 +897,7 @@ npm test        # 运行单元测试（Vitest）
 npm run test:watch  # 监听模式跑测试
 ```
 
-源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest，130+ 用例）。主要模块：
+源码采用 TypeScript + ESM，使用 esbuild 打包为单文件。单元测试位于 `src/**/*.test.ts`（Vitest，400+ 用例）。主要模块：
 
 ```
 src/
@@ -890,7 +907,7 @@ src/
 ├── memory.ts            # DCODE.md 记忆加载
 ├── headless.ts          # 无头模式执行器
 ├── mcp/                 # MCP Client（连接 Server、动态工具）
-├── providers/           # 多 Provider（zhipu / deepseek / openai）、代理、计费、流式归一化
+├── providers/           # 多 Provider（zhipu/deepseek/openai）、代理、计费、流式归一化、contextWindow（上下文窗口/多档/动态压缩阈值）
 ├── deepseek/
 │   ├── client.ts        # OpenAI 兼容流式客户端（SSE + 工具调用 + 重试）
 │   └── pricing.ts       # 用量与成本（委托 providers/pricing）
@@ -904,14 +921,17 @@ src/
 │   ├── fileToolLock.ts  # 文件工具路径串行锁
 │   ├── skills.ts        # Skills 技能包
 │   ├── checkpoint.ts    # 文件检查点与 /undo
-│   ├── gitUtils.ts      # Git diff / commit / PR 辅助
+│   ├── gitUtils.ts      # Git diff / commit / PR / review 辅助
+│   ├── ignore.ts        # .gitignore / .dcodeignore 统一忽略层
+│   ├── workspaceDirs.ts # /add-dir 额外工作目录（项目级持久化）
 │   ├── systemPrompt.ts  # 系统提示构建
 │   ├── compact.ts       # 上下文压缩（保持 tool 消息组完整）
+│   ├── agentRunner.ts   # 事件驱动主循环内核（含动态压缩阈值）
 │   ├── session.ts       # 会话持久化（JSONL）
 │   └── types.ts         # 核心类型
-├── tools/               # 工具系统（文件/命令/Web/Task/MCP 等；webUtils 含 SSRF 防护）
+├── tools/               # 工具系统（文件/命令/Web/Task/Notebook/MCP 等；webUtils 含 SSRF 防护）
 ├── commands/            # 斜杠命令系统
-└── ui/                  # Ink TUI 组件
+└── ui/                  # Ink TUI 组件（含状态栏上下文进度条）
 ```
 
 欢迎提交 Issue 与 Pull Request！
@@ -922,8 +942,10 @@ src/
 | --- | --- | --- |
 | **P0 核心** | ✅ 已完成 | MCP、子代理 Task、后台 Shell、Web Fetch/Search |
 | **P1 工程** | ✅ 已完成 | Hooks、Skills、文件检查点、Git `/commit` `/pr` |
-| **P2 体验** | 🔶 部分完成 | **多 Provider**（智谱/DeepSeek/OpenAI）、Provider 感知计费、流式去重、**安全加固**（SSRF/项目信任/无头权限） |
-| **P2 待办** | ⏳ 规划中 | `.dcodeignore`、`/review`、IDE 扩展、图像多模态、自动更新等 |
+| **P2 体验** | ✅ 已完成 | **多 Provider**（智谱/DeepSeek/OpenAI）+ Provider 感知计费、流式去重、**安全加固**（SSRF/项目信任/无头权限）、`.dcodeignore`、`/review`、`/add-dir`、Notebook 工具、终端 Diff 增强、Extended Thinking 预算、**上下文进度条 + 多档上下文长度选择（动态压缩阈值）**、自动更新 `/update` |
+| **P2 待办** | ⏳ 规划中 | IDE 扩展（VS Code）、图像多模态、DCODE 反向 MCP Server 模式 |
+
+> 详细实现说明与文件级变更见 [功能差距分析与优化计划](docs/优化计划_DCODE_vs_ClaudeCode.md)。
 
 ## 开源协议
 
