@@ -1,18 +1,17 @@
-// 权限确认弹窗组件。
-// 当工具需要授权时弹出，展示操作标题与预览（如 diff 或将执行的命令），
-// 让用户选择：允许一次 / 总是允许 / 拒绝。支持方向键、数字键与快捷键(y/a/n)。
+// 权限确认弹窗组件（仅交互选项部分）。
+// 说明：操作标题与预览（diff / 命令）由 App 在弹窗出现时一次性写入 Static 滚动历史
+//（见 types.ts 的 'permission' 项与 MessageView 的渲染），本组件只负责动态区的「选择项」。
+// 这样动态区保持低矮、可被完整擦除重绘，避免高预览反复重绘产生残影 / 重复绘制（Bug 2）。
+// 支持方向键、数字键与快捷键(y/a/n)。
 // 制作人：Moriarty_Dox
 
 import React, { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { useTheme } from './theme.js'
-import type { PermissionDecision, PermissionRequest } from '../core/types.js'
+import type { PermissionDecision } from '../core/types.js'
 
 // 组件入参。
 interface PermissionPromptProps {
-  // 权限请求详情。
-  request: PermissionRequest
-  // 用户决策回调。
   onDecision: (decision: PermissionDecision) => void
 }
 
@@ -23,20 +22,15 @@ const OPTIONS: { label: string; value: PermissionDecision; key: string }[] = [
   { label: '拒绝', value: 'deny', key: 'n' },
 ]
 
-// 预览最多展示的行数。
-const PREVIEW_LINES = 20
-
 /**
- * 权限确认弹窗。
+ * 权限确认选择器。
  * @param props 入参。
- * @returns 弹窗 JSX。
+ * @returns 选择项 JSX（不含标题与预览，二者已落入 Static 历史）。
  */
 export function PermissionPrompt({
-  request,
   onDecision,
 }: PermissionPromptProps): React.ReactElement {
   const theme = useTheme()
-  // 当前高亮的选项索引。
   const [index, setIndex] = useState(0)
 
   useInput((input, key) => {
@@ -73,68 +67,22 @@ export function PermissionPrompt({
     }
   })
 
-  // 截断预览，避免超长 diff/命令刷屏。
-  const previewLines = (request.preview ?? '').split('\n')
-  const shownPreview =
-    previewLines.length > PREVIEW_LINES
-      ? previewLines.slice(0, PREVIEW_LINES).join('\n') +
-        `\n… 省略 ${previewLines.length - PREVIEW_LINES} 行 …`
-      : request.preview ?? ''
-
+  // 仅渲染「选择项 + 操作提示」：高度固定且低矮（4 行），动态区可被完整擦除重绘，无残影。
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.warning}
-      paddingX={1}
-    >
-      {/* 标题：需要授权的操作 */}
+    <Box flexDirection="column">
       <Text color={theme.warning} bold>
-        需要授权：{request.title}
+        请选择授权（详情见上方）：
       </Text>
-
-      {/* 操作预览（如 diff 或命令） */}
-      {shownPreview ? (
-        <Box
-          flexDirection="column"
-          marginTop={1}
-          borderStyle="single"
-          borderColor={theme.dim}
-          paddingX={1}
-        >
-          {shownPreview.split('\n').map((line, i) => (
-            <Text
-              key={i}
-              color={
-                line.startsWith('+')
-                  ? theme.success
-                  : line.startsWith('-')
-                    ? theme.error
-                    : theme.dim
-              }
-            >
-              {line}
-            </Text>
-          ))}
-        </Box>
-      ) : null}
-
-      {/* 选项 */}
-      <Box flexDirection="column" marginTop={1}>
-        {OPTIONS.map((opt, i) => {
-          const selected = i === index
-          return (
-            <Text key={opt.value} color={selected ? theme.accent : theme.text}>
-              {selected ? '❯ ' : '  '}
-              {i + 1}. {opt.label}（{opt.key}）
-            </Text>
-          )
-        })}
-      </Box>
-
-      <Box marginTop={1}>
-        <Text color={theme.dim}>↑/↓ 选择 · 回车确认 · y 允许 · a 总是 · n 拒绝</Text>
-      </Box>
+      {OPTIONS.map((opt, i) => {
+        const selected = i === index
+        return (
+          <Text key={opt.value} color={selected ? theme.accent : theme.text}>
+            {selected ? '❯ ' : '  '}
+            {i + 1}. {opt.label}（{opt.key}）
+          </Text>
+        )
+      })}
+      <Text color={theme.dim}>↑/↓ 选择 · 回车确认 · y 允许 · a 总是 · n 拒绝</Text>
     </Box>
   )
 }

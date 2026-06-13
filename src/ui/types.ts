@@ -39,3 +39,7 @@ export type DisplayItem =
     }
   // 系统提示信息（命令输出、错误、状态变更等）。
   | { id: string; kind: 'system'; tone: SystemTone; text: string }
+  // 权限请求快照：弹窗出现时把「标题 + 预览」一次性落入 Static 历史，
+  // 像普通命令输出一样进入滚动区（完整、可上滑查看）。交互选项则留在动态区，
+  // 从而避免「动态区高于视口 + 反复重绘」导致的残影 / 重复绘制（Bug 2）。
+  | { id: string; kind: 'permission'; title: string; preview?: string }

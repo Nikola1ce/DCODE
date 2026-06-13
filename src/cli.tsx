@@ -201,6 +201,34 @@ function printHelp(): void {
 }
 
 /**
+ * 创建一个「不清屏」的 stdout 代理：除 rows 外全部透传给真实流，rows 恒为极大值。
+ *
+ * 背景：Ink 在 onRender 时，若「动态区高度 outputHeight >= stdout.rows」，会改用
+ * clearTerminal（清屏 + 重写全部 Static 历史）而非局部增量擦除。在小终端里，权限弹窗等
+ * 较高的动态区会持续命中该分支，表现为滚动条被强制拉回顶部、内容在顶/底之间闪烁（Bug 2）。
+ *
+ * 让 Ink 读到的 rows 恒为极大值后，该判断恒为 false，Ink 始终走增量渲染：动态区超过可视
+ * 高度时像普通命令输出一样自然向下滚动、保留在 scrollback，不再回弹清屏。
+ *
+ * 注意：仅 Ink 内部渲染读取此代理的 rows；App 业务逻辑（限高等）仍直接读 process.stdout.rows
+ * 获取真实终端行数，因此不受影响。columns / isTTY / write / on(resize) 等均原样透传。
+ *
+ * @param real 真实的 stdout 流（通常是 process.stdout）。
+ * @returns 行数被「放大」的 stdout 代理。
+ */
+function createNonClearingStdout(real: NodeJS.WriteStream): NodeJS.WriteStream {
+  return new Proxy(real, {
+    get(target, prop, receiver) {
+      // 仅伪装行数：让 Ink 永远认为终端「足够高」，从而不触发 clearTerminal 全屏重绘。
+      if (prop === 'rows') return Number.MAX_SAFE_INTEGER
+      const value = Reflect.get(target, prop, receiver)
+      // 方法需绑定回真实流，避免 Proxy 作为 this 导致内部状态访问异常。
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  }) as NodeJS.WriteStream
+}
+
+/**
  * CLI 主流程。
  */
 async function main(): Promise<void> {
@@ -359,6 +387,10 @@ async function main(): Promise<void> {
   const needLogin = !agent.hasApiKey()
 
   // 渲染 Ink 应用，并等待退出（启动更新检测在 App 内异步进行，不阻塞首屏）。
+  // 关键：用「不清屏」stdout 代理喂给 Ink。Ink 在「动态区高度 >= 终端行数」时会用
+  // clearTerminal 清屏并重写全部历史（表现为滚动条被强制回到顶部 / 闪烁，即 Bug 2）。
+  // 通过让 Ink 读到的 rows 恒为极大值，使该分支永不触发——动态区超过视口时改为像普通
+  // 输出一样自然滚动，不再回弹。App 自身的限高逻辑仍读真实 process.stdout.rows。
   const app = render(
     <App
       agent={agent}
@@ -367,6 +399,7 @@ async function main(): Promise<void> {
       needLogin={needLogin}
       checkUpdateOnStart
     />,
+    { stdout: createNonClearingStdout(process.stdout) },
   )
   await app.waitUntilExit()
   await shutdownHooks(cwd, agent.getSessionId())

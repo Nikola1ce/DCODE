@@ -108,9 +108,12 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   const [showThinking, setShowThinking] = useState(config.showThinking)
   const theme = useMemo(() => getTheme(themeName), [themeName])
   // 终端尺寸：用于限制实时区高度，避免流式内容超过可视高度触发滚动跳变/帧泄漏。
+  // 注意：传给 Ink 的 stdout 是「不清屏」代理（rows 被放大以禁用 clearTerminal），
+  // 故此处限高逻辑必须直接读真实 process.stdout 的行列数，而非 Ink 提供的代理。
   const { stdout } = useStdout()
-  const termRows = stdout?.rows ?? 24
-  const termCols = stdout?.columns ?? 80
+  const realStdout = process.stdout as unknown as { rows?: number; columns?: number }
+  const termRows = realStdout.rows ?? 24
+  const termCols = realStdout.columns ?? 80
   // 随主题同步终端窗口底色（亮色主题切换为浅灰底，避免黑字不可见）。
   useTerminalBackground(themeName, stdout)
 
@@ -210,6 +213,12 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           return
         }
         permissionResolverRef.current = resolve
+        // 把「标题 + 预览」一次性落入 Static 历史：完整展示、可上滑查看，且不参与动态区重绘，
+        // 从而避免高预览在动态区反复重绘时产生残影（Bug 2）。动态区只保留下方的选择项。
+        setItems((prev) => [
+          ...prev,
+          { id: nextId(), kind: 'permission', title: req.title, preview: req.preview },
+        ])
         setPermissionReq(req)
       })
     },
@@ -531,11 +540,17 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             )}
           </Static>
 
-          {/* 实时区：运行中的工具及其进度 */}
+          {/* 实时区：运行中的工具及其进度。
+              权限弹窗期间工具在等待授权，spinner 改为静态帧——避免 80ms 定时重绘叠加
+              较高动态区时产生滚动残影（此时动态区应保持静止，便于用户自由拖动滚动条）。 */}
           {runningTool ? (
             <Box flexDirection="column" marginBottom={1}>
               <Box>
-                <Spinner />
+                {permissionReq ? (
+                  <Text color={theme.primary}>⠿</Text>
+                ) : (
+                  <Spinner />
+                )}
                 <Text color={theme.tool}> {runningTool.summary}</Text>
               </Box>
               {runningTool.progress.trim() ? (
@@ -548,16 +563,14 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             </Box>
           ) : null}
 
-          {/* 任务清单面板：空闲时窗口化限高（预留输入框/状态栏/边框约 9 行）；
-              运行中折叠为单行摘要，把动态区高度让给流式正文，
-              避免与思维链/正文叠加后超出视口、再次触发视图卡住不跟随 */}
+          {/* 任务清单面板：空闲时窗口化限高，运行中折叠为单行摘要。 */}
           <TodoPanel
             todos={todos}
             compact={busy}
             maxVisible={Math.max(3, Math.min(12, termRows - 9))}
           />
 
-          {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务 */}
+          {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务。 */}
           <BackgroundShellPanel
             compact={busy}
             maxVisible={Math.max(2, Math.min(5, termRows - 12))}
@@ -567,7 +580,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         {/* 交互区域：权限弹窗优先（遮挡在主输出之上）；无弹窗时渲染输入框/状态栏。
             注意：此处不用 key，仅靠组件替换切换，不会触发主输出区重渲染。 */}
         {permissionReq ? (
-          <PermissionPrompt request={permissionReq} onDecision={handleDecision} />
+          <PermissionPrompt onDecision={handleDecision} />
         ) : flow === 'login' ? (
           <LoginPrompt
             {...getProviderLoginMeta(getActiveProviderId(configRef.current))}

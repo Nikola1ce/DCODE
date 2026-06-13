@@ -140,6 +140,47 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
         </Box>
       )
 
+    case 'permission':
+      // 权限请求快照：标题 + 预览（diff 着色），整体落入 Static 滚动历史。
+      // 决策选项不在此渲染（见 PermissionPrompt），以保持动态区低矮、避免残影。
+      return (
+        <Box
+          flexDirection="column"
+          marginBottom={1}
+          borderStyle="round"
+          borderColor={theme.warning}
+          paddingX={1}
+        >
+          <Text color={theme.warning} bold>
+            需要授权：{item.title}
+          </Text>
+          {item.preview ? (
+            <Box
+              flexDirection="column"
+              marginTop={1}
+              borderStyle="single"
+              borderColor={theme.dim}
+              paddingX={1}
+            >
+              {item.preview.split('\n').map((line, i) => (
+                <Text
+                  key={i}
+                  color={
+                    line.startsWith('+')
+                      ? theme.success
+                      : line.startsWith('-')
+                        ? theme.error
+                        : theme.dim
+                  }
+                >
+                  {line}
+                </Text>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+
     default:
       return <Text> </Text>
   }
