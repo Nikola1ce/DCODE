@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreview } from './diff.js'
+import { buildDiffPreviewView } from './diff.js'
 import {
   makeCell,
   NOTEBOOK_CELL_TYPES,
@@ -98,7 +98,8 @@ export const notebookEditTool: ToolDefinition = {
     try {
       const oldRaw = readFileSync(abs, 'utf8')
       const { newText } = applyNotebookEdit(oldRaw, input)
-      preview = buildDiffPreview(oldRaw, newText)
+      // 使用增强 diff 视图（带行号 + hunk 头 + 折叠），与 write_file/edit_file 的「终端 Diff 查看器」一致。
+      preview = buildDiffPreviewView(oldRaw, newText)
     } catch {
       preview = undefined
     }

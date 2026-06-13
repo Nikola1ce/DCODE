@@ -22,6 +22,8 @@ import {
   getProviderLoginMeta,
 } from '../providers/registry.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
+import { estimateMessagesTokens } from '../core/compact.js'
+import { COMPACT_TOKEN_THRESHOLD } from '../constants.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
 import { messagesToItems } from './messagesToItems.js'
@@ -142,6 +144,10 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   const [busy, setBusy] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [cost, setCost] = useState(agent.usage.costUsd)
+  // 当前会话已使用的上下文 token（估算值），用于状态栏上下文进度条；初始按现有历史估算。
+  const [contextTokens, setContextTokens] = useState(() =>
+    estimateMessagesTokens(agent.getMessages()),
+  )
   const [model, setModelState] = useState(agent.getModel())
   const [permissionMode, setPermissionModeState] = useState(agent.permissionMode)
   const [todos, setTodos] = useState<TodoItem[]>(agent.getTodos())
@@ -175,6 +181,14 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     },
     [],
   )
+
+  /**
+   * 重新估算当前会话上下文占用并刷新状态栏进度条。
+   * 在每轮对话结束、压缩、清空等会改变消息历史的时机调用，保证显示与实际一致。
+   */
+  const refreshContextTokens = useCallback(() => {
+    setContextTokens(estimateMessagesTokens(agent.getMessages()))
+  }, [agent])
 
   // 启动后异步检测新版本（使用缓存，不阻塞 TUI 首屏）。
   useEffect(() => {
@@ -398,6 +412,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               setTodos(agent.getTodos())
             } else if (ev.type === 'llm_done') {
               setCost(agent.usage.costUsd)
+              // 每次模型应答完成后，历史已追加新消息，同步刷新上下文占用进度条。
+              refreshContextTokens()
             } else if (ev.type === 'compact_start') {
               setStatusText('正在压缩上下文')
               pushSystem('info', '上下文较长，正在自动压缩以释放空间…')
@@ -426,6 +442,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         setRunningTool(null)
         setLiveText('')
         setLiveReasoning('')
+        // 本轮结束（含异常/中断/压缩后）统一以最新历史为准刷新上下文进度条。
+        refreshContextTokens()
       }
     },
     [
@@ -434,6 +452,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       enqueueToolProgress,
       pushStreamChunks,
       pushSystem,
+      refreshContextTokens,
       requestPermission,
       showThinking,
     ],
@@ -446,6 +465,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         // 清空历史但保留欢迎横幅。
         setItems([{ id: nextId(), kind: 'banner', model: agent.getModel(), cwd: agent.cwd }])
         setTodos([])
+        // 历史被清空（/clear），上下文进度条同步归位到仅剩 system 提示的占用。
+        refreshContextTokens()
       }
       if (result.message) {
         pushSystem('info', result.message)
@@ -460,12 +481,14 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       // 同步可能被命令修改的状态。
       setModelState(agent.getModel())
       setPermissionModeState(agent.permissionMode)
+      // /compact、/resume 等命令会改写消息历史，统一刷新上下文进度条。
+      refreshContextTokens()
       // /init 等命令可能要求代为提交一个 prompt。
       if (result.submitPrompt) {
         await runAgent(result.submitPrompt)
       }
     },
-    [agent, exit, pushSystem, runAgent],
+    [agent, exit, pushSystem, refreshContextTokens, runAgent],
   )
 
   /** 处理输入框提交（区分斜杠命令与普通对话）。 */
@@ -661,6 +684,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               model={model}
               permissionMode={permissionMode}
               costUsd={cost}
+              contextTokens={contextTokens}
+              contextLimit={COMPACT_TOKEN_THRESHOLD}
               statusText={statusText}
             />
           </Box>
