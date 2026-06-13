@@ -7,7 +7,7 @@
 // 设计上完全复用内核能力，扩展自身不实现任何 Agent 逻辑。
 // 制作人：Moriarty_Dox
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -21,6 +21,27 @@ import {
   type ServerMessage,
   type ServerReadyMessage,
 } from './protocol'
+
+/**
+ * 解析用于执行 cli.js 的 Node 可执行文件路径。
+ * VS Code / Cursor 扩展宿主运行在 Electron 内，此时 process.execPath 指向编辑器本体（如 Code.exe），
+ * 不能直接用来执行 JS 内核，否则会立即以 code=1 退出。
+ * @returns 可用的 node 可执行路径或命令名。
+ */
+function resolveNodeExecutable(): string {
+  if (process.versions.electron) {
+    try {
+      const cmd = process.platform === 'win32' ? 'where node' : 'which node'
+      const out = execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim()
+      const first = out.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim()
+      if (first) return first
+    } catch {
+      // PATH 中找不到 node 时回退到命令名（Windows 下 spawn 已启用 shell）。
+    }
+    return process.platform === 'win32' ? 'node.exe' : 'node'
+  }
+  return process.execPath
+}
 
 // 客户端启动所需选项。
 export interface DcodeClientOptions {
@@ -356,7 +377,7 @@ export class DcodeClient {
     if (explicit) {
       // 若指向一个 .js 文件，用 node 执行；否则当作可执行命令直接调用。
       if (explicit.endsWith('.js')) {
-        return { command: process.execPath, args: [explicit] }
+        return { command: resolveNodeExecutable(), args: [explicit] }
       }
       return { command: explicit, args: [] }
     }
@@ -364,13 +385,13 @@ export class DcodeClient {
     // 2) 随扩展打包的内核兜底：扩展目录下 dist/cli.js（发布时一并拷入）。
     const bundled = path.join(this.opts.extensionPath, 'dist', 'cli.js')
     if (existsSync(bundled)) {
-      return { command: process.execPath, args: [bundled] }
+      return { command: resolveNodeExecutable(), args: [bundled] }
     }
 
     // 3) 开发态兜底：扩展子项目相对主项目的 ../dist/cli.js。
     const devKernel = path.join(this.opts.extensionPath, '..', 'dist', 'cli.js')
     if (existsSync(devKernel)) {
-      return { command: process.execPath, args: [devKernel] }
+      return { command: resolveNodeExecutable(), args: [devKernel] }
     }
 
     // 4) 最后回退到全局命令 dcode（要求用户已 npm link / 全局安装）。

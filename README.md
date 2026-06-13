@@ -80,7 +80,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **Skills**：可复用 Markdown 技能包，`/skills` 查看列表，`/skill` 加载领域工作流
 - **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
 - **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
-- **VS Code 扩展**：侧边栏对话面板 + 选中代码右键「解释 / 修复 / 重构」+ 代码块一键「应用 / 预览 diff」到编辑器 + IDE 内权限授权；经 `dcode --ide-server`（NDJSON over stdio）完整复用 Agent 内核，可打包为自带内核的 `.vsix`（见 [`vscode-extension/`](vscode-extension/README.md)）
+- **VS Code 扩展（早期预览，尚未完全完成）**：侧边栏对话面板 + 选中代码右键「解释 / 修复 / 重构」+ 代码块一键「应用 / 预览 diff」到编辑器 + IDE 内权限授权；经 `dcode --ide-server`（NDJSON over stdio）完整复用 Agent 内核，可打包为自带内核的 `.vsix`（见 [`vscode-extension/`](vscode-extension/README.md)）。当前仍处开发阶段，部分功能与稳定性待完善，生产环境建议优先使用终端版 `dcode`。
 
 ### 工程能力（P2 体验增强已落地）
 
@@ -944,7 +944,7 @@ src/
 | **P0 核心** | ✅ 已完成 | MCP、子代理 Task、后台 Shell、Web Fetch/Search |
 | **P1 工程** | ✅ 已完成 | Hooks、Skills、文件检查点、Git `/commit` `/pr` |
 | **P2 体验** | ✅ 已完成 | **多 Provider**（智谱/DeepSeek/OpenAI）+ Provider 感知计费、流式去重、**安全加固**（SSRF/项目信任/无头权限）、`.dcodeignore`、`/review`、`/add-dir`、Notebook 工具、终端 Diff 增强、Extended Thinking 预算、**上下文进度条 + 多档上下文长度选择（动态压缩阈值）**、自动更新 `/update` |
-| **P2 待办** | ⏳ 规划中 | IDE 扩展（VS Code）、图像多模态、DCODE 反向 MCP Server 模式 |
+| **P2 待办** | ⏳ 规划中 / 进行中 | **VS Code 扩展（早期预览，尚未完全完成）**、图像多模态、DCODE 反向 MCP Server 模式 |
 
 > 详细实现说明与文件级变更见 [功能差距分析与优化计划](docs/优化计划_DCODE_vs_ClaudeCode.md)。
 
