@@ -4,9 +4,10 @@
 src/**
 node_modules/**
 esbuild.mjs
+prepackage.mjs
 tsconfig.json
 **/*.map
 **/*.ts
 .gitignore
 **/tsconfig.json
-# 保留：dist/extension.js、media/**、package.json、README.md、LICENSE
+# 保留：dist/extension.js、dist/cli.js（内核）、media/**、package.json、README.md、LICENSE

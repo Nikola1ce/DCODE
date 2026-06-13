@@ -58,6 +58,50 @@
     vscode.postMessage({ type: 'open_settings' })
   })
 
+  // 代码块操作按钮（复制 / 预览 diff / 应用）：用事件委托处理，兼容流式重渲染重建 DOM。
+  messagesEl.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.code-btn') : null
+    if (!btn) return
+    const block = btn.closest('.code-block')
+    if (!block) return
+    const code = decodeBase64(block.getAttribute('data-code') || '')
+    const languageId = block.getAttribute('data-lang') || ''
+    const act = btn.getAttribute('data-act')
+    if (act === 'copy') {
+      // 复制到剪贴板：优先用 navigator.clipboard，失败则回退让扩展宿主复制。
+      copyToClipboard(code, btn)
+    } else if (act === 'diff') {
+      vscode.postMessage({ type: 'preview_diff', code, languageId })
+    } else if (act === 'apply') {
+      vscode.postMessage({ type: 'apply_code', code, languageId })
+    }
+  })
+
+  /**
+   * 复制文本到剪贴板，并给按钮短暂的「已复制」反馈。
+   * @param {string} text 要复制的文本。
+   * @param {HTMLElement} btn 触发的按钮（用于反馈）。
+   */
+  function copyToClipboard(text, btn) {
+    const flash = () => {
+      const old = btn.textContent
+      btn.textContent = '已复制'
+      setTimeout(() => {
+        btn.textContent = old
+      }, 1200)
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash, () => {
+        vscode.postMessage({ type: 'copy_code', code: text })
+        flash()
+      })
+    } else {
+      // WebView 沙箱可能禁用 clipboard API，交给扩展宿主用 env.clipboard 复制。
+      vscode.postMessage({ type: 'copy_code', code: text })
+      flash()
+    }
+  }
+
   /**
    * 提交输入框内容，发起一轮对话。
    */
@@ -517,6 +561,33 @@
   // —— 极简安全 Markdown 渲染 —— //
 
   /**
+   * 将字符串编码为 base64（UTF-8 安全），用于把代码原文塞进 HTML data 属性。
+   * @param {string} s 原始字符串。
+   * @returns {string} base64 字符串。
+   */
+  function encodeBase64(s) {
+    // 先 encodeURIComponent → unescape 转成 Latin-1，再 btoa，规避 btoa 不支持非 ASCII 的问题。
+    try {
+      return btoa(unescape(encodeURIComponent(s)))
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 解码 base64（UTF-8 安全），与 encodeBase64 对应。
+   * @param {string} s base64 字符串。
+   * @returns {string} 原始字符串。
+   */
+  function decodeBase64(s) {
+    try {
+      return decodeURIComponent(escape(atob(s)))
+    } catch {
+      return ''
+    }
+  }
+
+  /**
    * HTML 转义（防 XSS）。
    * @param {string} s 原始字符串。
    * @returns {string} 转义后字符串。
@@ -541,10 +612,24 @@
     if (!text) return ''
     const codeBlocks = []
     // 1) 抽出 ``` 围栏代码块，用占位符替换，避免内部内容被后续规则误伤。
+    //    代码块包一层 .code-block 容器并附带操作工具条（复制 / 预览 diff / 应用到编辑器）；
+    //    原始代码以 base64 存入 data-code 属性，事件委托时解码使用（避免 HTML 转义往返失真）。
     let work = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
       const idx = codeBlocks.length
+      const raw = code.replace(/\n$/, '')
       const cls = lang ? ' class="language-' + escapeHtml(lang) + '"' : ''
-      codeBlocks.push('<pre><code' + cls + '>' + escapeHtml(code.replace(/\n$/, '')) + '</code></pre>')
+      const encoded = encodeBase64(raw)
+      const langAttr = lang ? ' data-lang="' + escapeHtml(lang) + '"' : ''
+      codeBlocks.push(
+        '<div class="code-block" data-code="' + encoded + '"' + langAttr + '>' +
+          '<div class="code-toolbar">' +
+          '<button class="code-btn" data-act="copy" title="复制代码">复制</button>' +
+          '<button class="code-btn" data-act="diff" title="与当前文件对比预览">预览 diff</button>' +
+          '<button class="code-btn" data-act="apply" title="应用到当前编辑器">应用</button>' +
+          '</div>' +
+          '<pre><code' + cls + '>' + escapeHtml(raw) + '</code></pre>' +
+          '</div>',
+      )
       return '\u0000CB' + idx + '\u0000'
     })
 

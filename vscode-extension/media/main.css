@@ -128,6 +128,45 @@ body {
   font-size: 0.85em;
 }
 
+/* 代码块容器：包裹工具条 + <pre>，hover 时显出工具条。 */
+.code-block {
+  position: relative;
+  margin: 6px 0;
+}
+
+.code-block pre {
+  margin: 0;
+}
+
+/* 代码块工具条：复制 / 预览 diff / 应用。默认半透明，hover 时高亮。 */
+.code-toolbar {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  padding: 2px 0;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+
+.code-block:hover .code-toolbar {
+  opacity: 1;
+}
+
+.code-btn {
+  cursor: pointer;
+  font-size: 0.78em;
+  padding: 1px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
+.code-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+  color: var(--vscode-button-foreground);
+}
+
 /* 代码块（Markdown 渲染产物）。 */
 .msg-body pre {
   background: var(--vscode-textCodeBlock-background);

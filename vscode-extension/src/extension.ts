@@ -6,6 +6,7 @@
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { DcodePanelProvider } from './panelProvider'
+import { initEditorApply } from './editorApply'
 
 // 模块级单例：面板提供者（持有后台内核）。在 activate 中创建，deactivate 中释放。
 let panelProvider: DcodePanelProvider | undefined
@@ -18,6 +19,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // 统一的日志输出通道（“输出”面板中可见，便于排查内核通信）。
   const output = vscode.window.createOutputChannel('DCODE')
   context.subscriptions.push(output)
+
+  // 初始化「代码应用 / diff 预览」模块（提供临时文件目录）。
+  initEditorApply(context)
 
   // 创建并注册侧边栏对话面板。
   panelProvider = new DcodePanelProvider(

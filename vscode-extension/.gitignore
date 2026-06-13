@@ -1,0 +1,7 @@
+# DCODE VS Code 扩展 —— 忽略构建产物与依赖。
+# 制作人：Moriarty_Dox
+node_modules/
+dist/
+*.vsix
+# 打包时从主项目拷入的副本，不纳入版本控制。
+LICENSE

@@ -10,6 +10,11 @@
 import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
 import { DcodeClient, resolveWorkspaceCwd } from './dcodeClient'
+import {
+  applyCodeToEditor,
+  copyToClipboard,
+  showDiffPreview,
+} from './editorApply'
 import type {
   IdePermissionMode,
   PermissionDecision,
@@ -198,6 +203,18 @@ export class DcodePanelProvider implements vscode.WebviewViewProvider {
           'workbench.action.openSettings',
           'dcode',
         )
+        break
+      case 'apply_code':
+        // 把对话代码块应用到当前编辑器（有选区替换选区，否则替换全文并确认）。
+        await applyCodeToEditor(String(msg.code ?? ''))
+        break
+      case 'preview_diff':
+        // 在并排 diff 中预览「当前文件 ↔ 应用后内容」。
+        await showDiffPreview(String(msg.code ?? ''), String(msg.languageId ?? ''))
+        break
+      case 'copy_code':
+        // WebView clipboard 不可用时的兜底复制。
+        await copyToClipboard(String(msg.code ?? ''))
         break
       default:
         break

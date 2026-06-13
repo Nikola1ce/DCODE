@@ -173,7 +173,8 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies -o dcode-vscode.vsix",
+    "prepackage": "node prepackage.mjs",
+    "package": "node prepackage.mjs && vsce package --no-dependencies -o dcode-vscode.vsix",
     "vscode:prepublish": "node esbuild.mjs --production"
   },
   "devDependencies": {
