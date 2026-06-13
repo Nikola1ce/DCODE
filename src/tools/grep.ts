@@ -6,6 +6,7 @@
 import fg from 'fast-glob'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { createIgnoreFilter } from '../core/ignore.js'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
 import { resolveWithinCwd } from './util.js'
 
@@ -67,13 +68,16 @@ export const grepTool: ToolDefinition = {
     }
     const pattern = input.include ?? '**/*'
 
-    // 收集候选文件列表。
+    // 统一忽略过滤器（基于工作根的 .gitignore + .dcodeignore + 默认噪声目录）。
+    const ignoreFilter = createIgnoreFilter(ctx.cwd)
+
+    // 收集候选文件列表（fast-glob 阶段先用默认噪声目录粗过滤）。
     const files = await fg(pattern, {
       cwd: searchRoot,
       onlyFiles: true,
       dot: false,
       followSymbolicLinks: false,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**'],
+      ignore: ignoreFilter.globIgnorePatterns(),
       absolute: false,
     })
 
@@ -84,9 +88,12 @@ export const grepTool: ToolDefinition = {
     for (const rel of files) {
       if (scanned >= MAX_FILES) break
       if (results.length >= MAX_MATCHES) break
-      scanned++
 
       const abs = join(searchRoot, rel)
+      // 精确过滤：套用 .gitignore/.dcodeignore（被忽略的文件不计入扫描配额）。
+      if (ignoreFilter.ignores(abs)) continue
+      scanned++
+
       try {
         // 跳过超大文件，避免读取二进制/巨型日志。
         if (statSync(abs).size > MAX_FILE_SIZE) continue

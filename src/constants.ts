@@ -61,6 +61,20 @@ export const HOOKS_CONFIG_FILE_NAME = 'hooks.json'
 // 额外工作目录配置文件名（项目 .dcode/workspace.json，存放 /add-dir 添加的目录）。
 export const WORKSPACE_DIRS_FILE_NAME = 'workspace.json'
 
+// 用户自定义忽略文件名：格式同 .gitignore，供 glob/grep/list_dir 统一套用。
+// 放在项目根（cwd）下；优先级高于 .gitignore，可用 ! 前缀对 .gitignore 规则做反忽略。
+export const DCODE_IGNORE_FILE_NAME = '.dcodeignore'
+
+// 文件检索工具（glob/grep/list_dir）默认始终忽略的噪声目录（即便未配置忽略文件也生效）。
+// 集中定义避免在多个工具里散落硬编码；这些是绝大多数项目都不希望检索的产物/元数据目录。
+export const DEFAULT_IGNORED_DIRS = [
+  'node_modules',
+  '.git',
+  'dist',
+  '.cache',
+  '.next',
+] as const
+
 // 项目级记忆文件名：类似 Claude Code 的 CLAUDE.md，存放项目约定/上下文。
 export const MEMORY_FILE_NAME = 'DCODE.md'
 
