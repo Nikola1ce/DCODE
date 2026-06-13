@@ -80,6 +80,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **Skills**：可复用 Markdown 技能包，`/skills` 查看列表，`/skill` 加载领域工作流
 - **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
 - **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
+- **VS Code 扩展**：侧边栏对话面板 + 选中代码右键「解释 / 修复 / 重构」+ IDE 内权限授权；经 `dcode --ide-server`（NDJSON over stdio）完整复用 Agent 内核（见 [`vscode-extension/`](vscode-extension/README.md)）
 
 ### 工程能力（P2 体验增强已落地）
 

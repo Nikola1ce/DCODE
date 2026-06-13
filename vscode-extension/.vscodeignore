@@ -1,0 +1,12 @@
+# 打包 .vsix 时排除的文件（仅保留运行所需产物）。
+# 制作人：Moriarty_Dox
+.vscode/**
+src/**
+node_modules/**
+esbuild.mjs
+tsconfig.json
+**/*.map
+**/*.ts
+.gitignore
+**/tsconfig.json
+# 保留：dist/extension.js、media/**、package.json、README.md、LICENSE

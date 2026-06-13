@@ -26,7 +26,12 @@ const CTX_32K = 32 * K
 const CTX_64K = 64 * K
 const CTX_128K = 128 * K
 const CTX_200K = 200 * K
+const CTX_256K = 256 * K
 const CTX_400K = 400 * K
+const CTX_512K = 512 * K
+// OpenAI GPT-5.5 / 5.4 系列官方 API 上下文为 1,050,000（922K 输入 + 128K 输出），
+// 与「整 1M」不同，单独登记为精确刻度，避免状态栏把上限显示成 1M 而与官方标注不符。
+const CTX_1_05M = 1050 * K
 const CTX_1M = 1000 * K
 
 // 未知模型时，按 Provider 给出的保守缺省上下文窗口（避免进度条上限过大或过小失真）。
@@ -41,22 +46,30 @@ const PROVIDER_DEFAULT_CONTEXT: Record<ProviderId, number> = {
 // 所有 Provider 通用的兜底上下文窗口（连 Provider 缺省都取不到时使用）。
 const FALLBACK_CONTEXT = CTX_64K
 
-// DeepSeek 各模型上下文窗口。DeepSeek V4 系列官方为 128K；旧版 chat/reasoner 同为 128K。
+// DeepSeek 各模型上下文窗口。
+// DeepSeek V4 系列（2026-04-24 发布）官方为 1M，且「1M 是所有官方服务的默认上下文长度」
+// （来源：DeepSeek API Docs / 官方 HuggingFace README，V4-Pro 与 V4-Flash 均为 1M）。
+// 旧别名 deepseek-chat / deepseek-reasoner 现路由到 V4-Flash（2026-07-24 UTC 后下线），同为 1M。
 const DEEPSEEK_CONTEXT: Record<string, number> = {
-  [DEFAULT_MODEL]: CTX_128K,
-  [PRO_MODEL]: CTX_128K,
-  'deepseek-chat': CTX_128K,
-  'deepseek-reasoner': CTX_128K,
+  [DEFAULT_MODEL]: CTX_1M,
+  [PRO_MODEL]: CTX_1M,
+  'deepseek-chat': CTX_1M,
+  'deepseek-reasoner': CTX_1M,
 }
 
-// OpenAI 各模型上下文窗口。gpt-5 系列与 o3 为 400K；gpt-4.1 系列为 1M；gpt-4o 系列为 128K。
+// OpenAI 各模型上下文窗口（数据来源：developers.openai.com/api/docs/models 与 OpenRouter，2026-06）。
+//   - 前沿 gpt-5.5 / 5.4 系列：官方 API 为 1.05M（1,050,000 = 922K 输入 + 128K 输出）；
+//     注意 Codex 客户端内对 5.5 限制为 400K，但本项目走 API 直连，按官方 API 口径 1.05M；
+//   - gpt-5.3-codex / 5.2 / 5.1 / 5 系列：400K（128K 输出）；
+//   - o3 / o3-pro：200K；
+//   - gpt-4.1 系列：1M；gpt-4o 系列：128K。
 const OPENAI_CONTEXT: Record<string, number> = {
-  'gpt-5.5': CTX_400K,
-  'gpt-5.5-pro': CTX_400K,
-  'gpt-5.4': CTX_400K,
-  'gpt-5.4-pro': CTX_400K,
-  'gpt-5.4-mini': CTX_400K,
-  'gpt-5.4-nano': CTX_400K,
+  'gpt-5.5': CTX_1_05M,
+  'gpt-5.5-pro': CTX_1_05M,
+  'gpt-5.4': CTX_1_05M,
+  'gpt-5.4-pro': CTX_1_05M,
+  'gpt-5.4-mini': CTX_1_05M,
+  'gpt-5.4-nano': CTX_1_05M,
   'gpt-5.3-codex': CTX_400K,
   'gpt-5.2': CTX_400K,
   'gpt-5.2-pro': CTX_400K,
@@ -75,7 +88,11 @@ const OPENAI_CONTEXT: Record<string, number> = {
   'gpt-4o-mini': CTX_128K,
 }
 
-// 智谱 GLM 各模型上下文窗口。GLM-5/4.7/4.6/4.5 系列为 200K；4-flash/4.5-air 系列为 128K；glm-4-long 为 1M。
+// 智谱 GLM 各模型上下文窗口（数据来源：docs.bigmodel.cn 模型概览，2026-06）。
+//   - GLM-5.1/5/5-turbo/4.7/4.7-flash/4.7-flashx/4.6/4.5/4.5-x 系列：200K；
+//   - glm-4-flash/4.5-air/4.5-airx/4-flashx-250414：128K；
+//   - glm-4-long：1M（官方超长输入型号）。
+// 注：官方并无「glm-5-air」型号（高性价比轻量档为 glm-4.5-air = 128K），故不登记，避免凭空给出错误窗口。
 const ZHIPU_CONTEXT: Record<string, number> = {
   'glm-5.1': CTX_200K,
   'glm-5': CTX_200K,
@@ -86,7 +103,6 @@ const ZHIPU_CONTEXT: Record<string, number> = {
   'glm-4.6': CTX_200K,
   'glm-4.5': CTX_200K,
   'glm-4.5-x': CTX_200K,
-  'glm-5-air': CTX_200K,
   'glm-4-flash': CTX_128K,
   'glm-4.5-air': CTX_128K,
   'glm-4.5-airx': CTX_128K,
@@ -98,7 +114,15 @@ const ZHIPU_CONTEXT: Record<string, number> = {
 // 仅对「允许用户选择上下文上限」的模型/后端登记多档候选；其余模型无需登记（候选=单一最大值）。
 // 约定：登记的数组应包含该模型的「最大档」（与上面的窗口表一致），其余为更小的可选档位。
 // 值会在 getModelContextOptions 中统一去重、升序、过滤掉超过最大档的项。
-const DEEPSEEK_OPTIONS: Record<string, number[]> = {}
+// DeepSeek V4 官方最大 1M；这里额外给出 128K/256K/512K 较小档，便于用户按需选择较小窗口
+// 以更早触发自动压缩、控制上下文成本（最大档 1M 为默认）。注意：Think Max 推理模式官方建议 ≥384K。
+const DEEPSEEK_V4_OPTIONS = [CTX_128K, CTX_256K, CTX_512K, CTX_1M]
+const DEEPSEEK_OPTIONS: Record<string, number[]> = {
+  [DEFAULT_MODEL]: DEEPSEEK_V4_OPTIONS,
+  [PRO_MODEL]: DEEPSEEK_V4_OPTIONS,
+  'deepseek-chat': DEEPSEEK_V4_OPTIONS,
+  'deepseek-reasoner': DEEPSEEK_V4_OPTIONS,
+}
 
 const OPENAI_OPTIONS: Record<string, number[]> = {}
 

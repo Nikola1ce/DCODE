@@ -19,21 +19,42 @@ import {
 } from './contextWindow.js'
 
 describe('providers/contextWindow', () => {
-  it('DeepSeek V4 主模型为 128K', () => {
-    expect(getModelContextWindow('deepseek', DEFAULT_MODEL)).toBe(128_000)
-    expect(getModelContextWindow('deepseek', PRO_MODEL)).toBe(128_000)
+  it('DeepSeek V4 主模型为 1M（官方默认上下文）', () => {
+    expect(getModelContextWindow('deepseek', DEFAULT_MODEL)).toBe(1_000_000)
+    expect(getModelContextWindow('deepseek', PRO_MODEL)).toBe(1_000_000)
+    // 旧别名路由到 V4-Flash，同为 1M。
+    expect(getModelContextWindow('deepseek', 'deepseek-chat')).toBe(1_000_000)
+    expect(getModelContextWindow('deepseek', 'deepseek-reasoner')).toBe(1_000_000)
   })
 
-  it('OpenAI gpt-5 系列为 400K、gpt-4.1 为 1M、gpt-4o-mini 为 128K', () => {
-    expect(getModelContextWindow('openai', 'gpt-5.5')).toBe(400_000)
+  it('OpenAI 前沿 gpt-5.5/5.4 为 1.05M、gpt-5.2/5.1/5 为 400K、gpt-4.1 为 1M、gpt-4o-mini 为 128K', () => {
+    // gpt-5.5 / 5.4 系列官方 API 上下文为 1,050,000（922K 输入 + 128K 输出）。
+    expect(getModelContextWindow('openai', 'gpt-5.5')).toBe(1_050_000)
+    expect(getModelContextWindow('openai', 'gpt-5.5-pro')).toBe(1_050_000)
+    expect(getModelContextWindow('openai', 'gpt-5.4')).toBe(1_050_000)
+    expect(getModelContextWindow('openai', 'gpt-5.4-mini')).toBe(1_050_000)
+    // gpt-5.3-codex / 5.2 / 5.1 / 5 系列仍为 400K。
+    expect(getModelContextWindow('openai', 'gpt-5.2')).toBe(400_000)
+    expect(getModelContextWindow('openai', 'gpt-5.1')).toBe(400_000)
+    expect(getModelContextWindow('openai', 'gpt-5')).toBe(400_000)
+    expect(getModelContextWindow('openai', 'gpt-5.3-codex')).toBe(400_000)
+    expect(getModelContextWindow('openai', 'o3')).toBe(200_000)
     expect(getModelContextWindow('openai', 'gpt-4.1')).toBe(1_000_000)
     expect(getModelContextWindow('openai', 'gpt-4o-mini')).toBe(128_000)
   })
 
-  it('智谱 GLM 旗舰为 200K、glm-4-flash 为 128K、glm-4-long 为 1M', () => {
+  it('智谱 GLM 旗舰为 200K、glm-4-flash/4.5-air 为 128K、glm-4-long 为 1M', () => {
+    expect(getModelContextWindow('zhipu', 'glm-5.1')).toBe(200_000)
+    expect(getModelContextWindow('zhipu', 'glm-4.7')).toBe(200_000)
     expect(getModelContextWindow('zhipu', 'glm-4.6')).toBe(200_000)
     expect(getModelContextWindow('zhipu', 'glm-4-flash')).toBe(128_000)
+    expect(getModelContextWindow('zhipu', 'glm-4.5-air')).toBe(128_000)
     expect(getModelContextWindow('zhipu', 'glm-4-long')).toBe(1_000_000)
+  })
+
+  it('官方不存在的 glm-5-air 不再特殊登记，回退到 Provider 缺省 128K', () => {
+    // 曾误登记为 200K；官方高性价比轻量档实为 glm-4.5-air(128K)，此处应回退缺省。
+    expect(getModelContextWindow('zhipu', 'glm-5-air')).toBe(128_000)
   })
 
   it('模型名大小写不敏感', () => {
@@ -63,10 +84,18 @@ describe('providers/contextWindow', () => {
 
 describe('getModelContextOptions（多档候选解析）', () => {
   it('单档模型仅返回唯一最大窗口', () => {
-    expect(getModelContextOptions('deepseek', DEFAULT_MODEL)).toEqual([128_000])
     expect(getModelContextOptions('openai', 'gpt-4o')).toEqual([128_000])
     // 旗舰智谱模型未登记多档，应只含官方最大值。
     expect(getModelContextOptions('zhipu', 'glm-4.6')).toEqual([200_000])
+  })
+
+  it('DeepSeek V4 返回 128K/256K/512K/1M 多档候选（最大 1M）', () => {
+    expect(getModelContextOptions('deepseek', DEFAULT_MODEL)).toEqual([
+      128_000, 256_000, 512_000, 1_000_000,
+    ])
+    expect(getModelContextOptions('deepseek', PRO_MODEL)).toEqual([
+      128_000, 256_000, 512_000, 1_000_000,
+    ])
   })
 
   it('智谱 glm-4-long 返回升序去重的多档候选', () => {
@@ -102,7 +131,8 @@ describe('modelHasContextChoices（是否值得展示档位选择）', () => {
   it('多档模型返回 true，单档模型返回 false', () => {
     expect(modelHasContextChoices('zhipu', 'glm-4-long')).toBe(true)
     expect(modelHasContextChoices('ollama', 'llama3.2')).toBe(true)
-    expect(modelHasContextChoices('deepseek', DEFAULT_MODEL)).toBe(false)
+    // DeepSeek V4 现为多档（128K~1M）。
+    expect(modelHasContextChoices('deepseek', DEFAULT_MODEL)).toBe(true)
     expect(modelHasContextChoices('openai', 'gpt-4o')).toBe(false)
   })
 })
@@ -110,7 +140,8 @@ describe('modelHasContextChoices（是否值得展示档位选择）', () => {
 describe('resolveContextWindow（解析当前生效窗口）', () => {
   it('无用户选择时返回模型默认（最大）窗口', () => {
     expect(resolveContextWindow('zhipu', 'glm-4-long')).toBe(1_000_000)
-    expect(resolveContextWindow('deepseek', DEFAULT_MODEL, {})).toBe(128_000)
+    // DeepSeek V4 默认（最大）为 1M。
+    expect(resolveContextWindow('deepseek', DEFAULT_MODEL, {})).toBe(1_000_000)
   })
 
   it('用户选择为合法候选时采用用户选择', () => {
@@ -129,8 +160,9 @@ describe('resolveContextWindow（解析当前生效窗口）', () => {
   })
 
   it('用户为单档模型设过档位也只会回退默认（单档模型不可切换）', () => {
-    const key = contextOverrideKey('deepseek', DEFAULT_MODEL)
-    expect(resolveContextWindow('deepseek', DEFAULT_MODEL, { [key]: 64_000 })).toBe(
+    // 用真正的单档模型 gpt-4o（固定 128K）验证：DeepSeek V4 现为多档，不再适合作单档样例。
+    const key = contextOverrideKey('openai', 'gpt-4o')
+    expect(resolveContextWindow('openai', 'gpt-4o', { [key]: 64_000 })).toBe(
       128_000,
     )
   })
@@ -172,6 +204,10 @@ describe('formatContextWindowLabel（档位标签格式化）', () => {
     expect(formatContextWindowLabel(128_000)).toBe('128K')
     expect(formatContextWindowLabel(200_000)).toBe('200K')
     expect(formatContextWindowLabel(1_000_000)).toBe('1M')
+  })
+
+  it('非整百万（如 GPT-5.5 的 1.05M）以一位小数显示', () => {
+    expect(formatContextWindowLabel(1_050_000)).toBe('1.1M')
   })
 
   it('< 1000 直接显示原值', () => {
@@ -225,8 +261,9 @@ describe('renderModelSwitchContextHint（切换后多档提示）', () => {
   })
 
   it('单档模型返回 undefined（不打扰用户）', () => {
-    expect(renderModelSwitchContextHint('deepseek', DEFAULT_MODEL)).toBeUndefined()
+    // 单档模型用 gpt-4o（128K）/ gpt-5（400K）验证；DeepSeek V4 现为多档，会返回提示，不在此列。
     expect(renderModelSwitchContextHint('openai', 'gpt-4o')).toBeUndefined()
+    expect(renderModelSwitchContextHint('openai', 'gpt-5')).toBeUndefined()
   })
 
   it('提示中的「当前窗口」反映用户已选档位', () => {

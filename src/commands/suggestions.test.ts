@@ -191,4 +191,61 @@ describe('getSlashSuggestions', () => {
     const items = getSlashSuggestions('/thinking-budget')
     expect(items.map((i) => i.completion)).toContain('/thinking-budget clear')
   })
+
+  it('/m 前缀即展示 /model context 子选项（无需输入完整 /model）', () => {
+    const items = getSlashSuggestions('/m', baseConfig({ provider: 'deepseek' }))
+    const completions = items.map((i) => i.completion)
+    // 仍展示以 m 开头的命令本身。
+    expect(completions).toContain('/model')
+    // 关键：context 子选项随 /model 一并出现。
+    expect(completions).toContain('/model context')
+  })
+
+  it('/mo、/mod、/model 前缀全程都含 /model context 子选项', () => {
+    for (const input of ['/mo', '/mod', '/mode', '/model']) {
+      const items = getSlashSuggestions(input, baseConfig({ provider: 'deepseek' }))
+      const completions = items.map((i) => i.completion)
+      expect(completions).toContain('/model context')
+    }
+  })
+
+  it('context 子选项紧跟在 /model 命令项之后', () => {
+    const items = getSlashSuggestions('/m', baseConfig({ provider: 'deepseek' }))
+    const completions = items.map((i) => i.completion)
+    const modelIdx = completions.indexOf('/model')
+    const ctxIdx = completions.indexOf('/model context')
+    expect(modelIdx).toBeGreaterThanOrEqual(0)
+    expect(ctxIdx).toBe(modelIdx + 1)
+  })
+
+  it('仅输入 / 时命令列表也包含 /model context 子选项', () => {
+    const items = getSlashSuggestions('/', baseConfig({ provider: 'deepseek' }))
+    expect(items.map((i) => i.completion)).toContain('/model context')
+  })
+
+  it('多档模型在 /m 前缀下展示各档位快捷补全', () => {
+    const items = getSlashSuggestions('/m', baseConfig({ provider: 'zhipu', model: 'glm-4-long' }))
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/model context')
+    // glm-4-long 支持 128K/200K/1M 多档。
+    expect(completions).toContain('/model context 128k')
+    expect(completions).toContain('/model context 200k')
+    expect(completions).toContain('/model context 1m')
+  })
+
+  it('单档模型在 /m 前缀下只展示 context 本身、不展示档位', () => {
+    // 用真正的单档模型 gpt-4o（固定 128K）验证：DeepSeek V4 现为多档（128K~1M），不再适合作单档样例。
+    const items = getSlashSuggestions('/m', baseConfig({ provider: 'openai', model: 'gpt-4o' }))
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/model context')
+    // 单档模型无具体档位快捷项。
+    expect(completions.some((c) => /\/model context \d/.test(c))).toBe(false)
+  })
+
+  it('/model context 参数阶段仍正常返回 context 与档位（回归）', () => {
+    const items = getSlashSuggestions('/model context', baseConfig({ provider: 'zhipu', model: 'glm-4-long' }))
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/model context')
+    expect(completions).toContain('/model context 1m')
+  })
 })

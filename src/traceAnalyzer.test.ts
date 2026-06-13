@@ -68,7 +68,10 @@ describe('trace analyzer', () => {
   })
 
   it('classifies incremental live frame redraws as ink-stdout-frame-leak', () => {
-    const base = '  - 她利用太阳作为放大器，向宇宙发送了信号。'
+    // base 需足够长，使相邻帧的公共前缀 ≥ 40（分析器判定「增量实时帧重绘」的阈值），
+    // 才能真实还原「长回答稳定、仅尾部逐字增长」的流式重绘场景。
+    const base =
+      '  - 叶文洁在红岸基地利用太阳作为放大器，向遥远的宇宙深处发送了人类文明的第一条信号，'
     const result = runAnalyzer([
       {
         layer: 'ink',

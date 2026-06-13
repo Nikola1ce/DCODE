@@ -39,6 +39,7 @@ import {
   loadSessionMessages,
 } from './core/session.js'
 import { runHeadless } from './headless.js'
+import { runIdeServer } from './ide/server.js'
 import { initMcp, shutdownMcp } from './mcp/client.js'
 import { initHooks, shutdownHooks, getHookManager } from './core/hooks.js'
 import { ensureBuiltinSkills } from './core/skills.js'
@@ -65,6 +66,8 @@ interface CliOptions {
   cwd?: string
   // 权限模式覆盖。
   permissionMode?: PermissionMode
+  // IDE 服务端模式：以 NDJSON over stdio 与 VSCode 扩展通信（dcode --ide-server）。
+  ideServer?: boolean
   // 无头模式：显式自动批准所有权限请求（默认拒绝，需 -y/--yes）。
   autoApprove?: boolean
   // 推理强度覆盖（low / medium / high / max）。
@@ -142,6 +145,10 @@ function parseArgs(argv: string[]): CliOptions {
       case '--dangerously-skip-permissions':
         opts.permissionMode = 'bypass'
         break
+      case '--ide-server':
+        // IDE 集成：与 VSCode 扩展通过 stdio 上的 NDJSON 协议双向通信。
+        opts.ideServer = true
+        break
       case '--reasoning-effort':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
           opts.reasoningEffort = argv[++i] as ReasoningEffort
@@ -193,6 +200,7 @@ function printHelp(): void {
     '      --dangerously-skip-permissions  跳过所有权限确认（危险）',
     '      --reasoning-effort <low|medium|high|max>  推理强度（Thinking 模式下生效；DeepSeek 将 low/medium 归并为 high）',
     '      --thinking-budget <整数>  思维链 token 预算（如 16000；仅支持该参数的 Provider 生效）',
+    '      --ide-server            IDE 集成：以 NDJSON over stdio 与 VSCode 扩展通信（一般由扩展自动启动）',
     '  -v, --version               显示版本',
     '  -h, --help                  显示帮助',
     '',
@@ -245,7 +253,11 @@ function createNonClearingStdout(real: NodeJS.WriteStream): NodeJS.WriteStream {
  */
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
-  installStdoutTrace()
+  // IDE 服务端模式下 stdout 是「纯协议通道」，绝不能写入 trace 文本，否则会破坏 NDJSON 帧。
+  // 其余模式正常安装 stdout trace（trace 默认仍走 stderr/文件，此处仅为可观测性入口）。
+  if (!opts.ideServer) {
+    installStdoutTrace()
+  }
   traceEvent('app', 'cli_start', {
     print: opts.print,
     continueSession: opts.continueSession,
@@ -333,6 +345,32 @@ async function main(): Promise<void> {
   if (resumedSessionId) {
     const msgs = loadSessionMessages(resumedSessionId)
     if (msgs.length > 0) initialMessages = msgs
+  }
+
+  // —— IDE 服务端模式（dcode --ide-server）—— //
+  // 以 NDJSON over stdio 与 VSCode 扩展双向通信，复用整套 Agent 内核（工具/MCP/Hooks/检查点等）。
+  // stdout 是纯协议通道；所有日志走 stderr。会话同样持久化，便于在终端 dcode -c 续聊同一项目。
+  if (opts.ideServer) {
+    const recorder = resumedSessionId
+      ? new SessionRecorder(resumedSessionId)
+      : SessionRecorder.create(cwd, config.model)
+    const agent = new Agent({
+      config,
+      cwd,
+      recorder,
+      initialMessages,
+      // 扩展默认以 acceptEdits 启动（自动允许文件读写、命令仍需确认）；
+      // 若用户通过 --plan/--auto/--bypass 显式覆盖则尊重之。
+      permissionMode: opts.permissionMode ?? 'acceptEdits',
+    })
+    hooksSessionIdProvider = () => agent.getSessionId()
+    await triggerSessionStartHooks(cwd, agent.getSessionId())
+
+    // 缺 API Key 不直接退出：通过 ready.hasApiKey=false 告知扩展，由扩展引导用户配置。
+    await runIdeServer(agent)
+    await shutdownHooks(cwd, agent.getSessionId())
+    await shutdownMcp()
+    process.exit(0)
   }
 
   // —— 无头模式 —— //

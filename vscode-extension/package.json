@@ -1,0 +1,186 @@
+{
+  "name": "dcode-vscode",
+  "displayName": "DCODE",
+  "description": "在 VS Code 侧边栏中使用 DCODE AI 编程助手（复用 dcode CLI 内核：工具 / MCP / Hooks / 多 Provider）。制作人：Moriarty_Dox",
+  "version": "0.1.0",
+  "publisher": "moriarty-dox",
+  "license": "MIT",
+  "author": "Moriarty_Dox",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nikola1ce/DCODE.git"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "deepseek",
+    "coding-agent",
+    "assistant",
+    "dcode",
+    "zhipu"
+  ],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dcode-sidebar",
+          "title": "DCODE",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "dcode-sidebar": [
+        {
+          "type": "webview",
+          "id": "dcode.chatView",
+          "name": "对话",
+          "icon": "media/sidebar-icon.svg",
+          "contextualTitle": "DCODE"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dcode.openChat",
+        "title": "DCODE: 打开对话面板",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.explainSelection",
+        "title": "DCODE: 解释选中代码",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.fixSelection",
+        "title": "DCODE: 修复选中代码",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.refactorSelection",
+        "title": "DCODE: 重构选中代码",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.addSelectionToChat",
+        "title": "DCODE: 将选中代码加入对话",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.newSession",
+        "title": "DCODE: 新建会话（清空上下文）",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.restart",
+        "title": "DCODE: 重启后台内核",
+        "category": "DCODE"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "dcode.editorContext",
+          "group": "navigation@9",
+          "when": "editorHasSelection"
+        }
+      ],
+      "dcode.editorContext": [
+        {
+          "command": "dcode.explainSelection",
+          "group": "1_dcode@1"
+        },
+        {
+          "command": "dcode.fixSelection",
+          "group": "1_dcode@2"
+        },
+        {
+          "command": "dcode.refactorSelection",
+          "group": "1_dcode@3"
+        },
+        {
+          "command": "dcode.addSelectionToChat",
+          "group": "1_dcode@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "dcode.addSelectionToChat",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "dcode.editorContext",
+        "label": "DCODE"
+      }
+    ],
+    "configuration": {
+      "title": "DCODE",
+      "properties": {
+        "dcode.cliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "dcode CLI 的可执行路径或命令。留空则按顺序尝试：环境变量 `DCODE_CLI_PATH` → 全局命令 `dcode` → 随扩展打包的内核。建议已全局安装时留空。"
+        },
+        "dcode.permissionMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypass"
+          ],
+          "enumDescriptions": [
+            "default：写文件 / 执行命令前在 IDE 内弹窗逐次确认",
+            "acceptEdits：自动允许文件读写，执行命令仍需确认（推荐）",
+            "plan：只读规划模式，禁止任何写入 / 执行",
+            "bypass：跳过所有确认（危险，仅在完全信任时使用）"
+          ],
+          "default": "acceptEdits",
+          "markdownDescription": "后台内核的权限模式。`default` 会在每次写文件 / 执行命令时弹窗确认；`acceptEdits` 自动放行文件读写、命令仍确认；`bypass` 跳过所有确认。"
+        },
+        "dcode.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "覆盖默认模型（如 `deepseek-v4-pro`、`glm-4-flash`）。留空则使用 `~/.dcode/config.json` 中的配置。"
+        },
+        "dcode.showThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否在对话面板展示推理模型的思维链（reasoning）。"
+        },
+        "dcode.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "打开 VS Code 后是否自动启动后台 DCODE 内核（首次打开对话面板时也会自动启动）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies -o dcode-vscode.vsix",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.6.3"
+  }
+}

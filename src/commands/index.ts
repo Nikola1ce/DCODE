@@ -88,6 +88,9 @@ import {
   resolveContextWindow,
 } from '../providers/contextWindow.js'
 
+// /model 命令主名：用于命令名阶段判断「是否为 model 前缀」以提前展示 context 子选项。
+const MODEL_COMMAND_NAME = 'model'
+
 // 命令可触发的特殊 UI 交互流程类型。
 export type SpecialFlow = 'model' | 'login' | 'resume' | 'theme'
 
@@ -929,6 +932,55 @@ export interface CommandSuggestion {
 }
 
 /**
+ * 生成 /model context 相关的补全候选（context 子命令 + 多档模型的各档位快捷项）。
+ * 抽取为独立函数，便于「输入命令名阶段（如 /m、/model）」与「参数阶段（/model <ctx>）」复用，
+ * 保证用户从 / 一路输入到 /model 的全过程都能看到 context 选项（与 /provider 子选项体验一致）。
+ * @param q 当前查询前缀（小写）：用于过滤 context 与档位标签；为空则全部返回。
+ * @param config 当前配置（用于解析当前模型的多档候选）。
+ * @returns context 子命令及档位补全列表（可能为空）。
+ */
+function getModelContextArgSuggestions(
+  q: string,
+  config?: DCodeConfig,
+): CommandSuggestion[] {
+  const suggestions: CommandSuggestion[] = []
+  // context 子命令本身：当查询是 'context' 的前缀（或为空）时给出。
+  if ('context'.startsWith(q) || q === '') {
+    suggestions.push({
+      name: 'context',
+      description: '查看/设置最大上下文长度（影响压缩阈值）',
+      completion: '/model context',
+    })
+  }
+  // 多档模型再补出各档位的快捷补全（如 /model context 200k）。
+  if (config) {
+    const providerId = getActiveProviderId(config)
+    const options = getModelContextOptions(providerId, config.model)
+    if (options.length > 1) {
+      for (const o of options) {
+        const label = formatContextWindowLabel(o)
+        const name = `context ${label}`
+        // 允许用 'context'、'context 2'、'200k' 等多种前缀命中该档位。
+        const lowerLabel = label.toLowerCase()
+        if (
+          q === '' ||
+          name.toLowerCase().startsWith(q) ||
+          lowerLabel.startsWith(q) ||
+          'context'.startsWith(q)
+        ) {
+          suggestions.push({
+            name,
+            description: `将最大上下文长度设为 ${label}`,
+            completion: `/model context ${lowerLabel}`,
+          })
+        }
+      }
+    }
+  }
+  return suggestions
+}
+
+/**
  * 为已选命令生成参数补全候选。
  * @param cmdName 命令主名。
  * @param argPrefix 空格后的参数前缀（小写）。
@@ -971,27 +1023,8 @@ function getCommandArgSuggestions(
           completion: `/model ${m}`,
         }
       })
-    // 追加 context 子命令提示；多档模型再补出各档位的快捷补全。
-    if ('context'.startsWith(q) || q === '') {
-      suggestions.push({
-        name: 'context',
-        description: '查看/设置最大上下文长度（影响压缩阈值）',
-        completion: '/model context',
-      })
-      if (config) {
-        const options = getModelContextOptions(providerId, config.model)
-        if (options.length > 1) {
-          for (const o of options) {
-            const label = formatContextWindowLabel(o)
-            suggestions.push({
-              name: `context ${label}`,
-              description: `将最大上下文长度设为 ${label}`,
-              completion: `/model context ${label.toLowerCase()}`,
-            })
-          }
-        }
-      }
-    }
+    // 追加 context 子命令提示；多档模型再补出各档位的快捷补全（复用统一生成器）。
+    suggestions.push(...getModelContextArgSuggestions(q, config))
     return suggestions
   }
 
@@ -1060,7 +1093,29 @@ function getCommandArgSuggestions(
 }
 
 /**
- * 将 Provider 子选项插入到 /provider 命令项之后。
+ * 将某命令的参数子选项插入到该命令项之后（顶层命令列表中）。
+ * 用于在「输入命令名阶段」让 /provider、/model 等命令的子选项随命令一同出现，
+ * 实现「从 / 一路输入到完整命令名，子选项全程可见」的补全体验。
+ * @param commandItems 已匹配的顶层命令建议。
+ * @param args 该命令的参数级建议。
+ * @param commandCompletion 目标命令的 completion（如 '/provider'、'/model'）。
+ * @returns 合并后的建议列表；目标命令不在列表中时把子选项追加到末尾。
+ */
+function appendArgSuggestionsAfterCommand(
+  commandItems: CommandSuggestion[],
+  args: CommandSuggestion[],
+  commandCompletion: string,
+): CommandSuggestion[] {
+  if (args.length === 0) return commandItems
+  const idx = commandItems.findIndex((c) => c.completion === commandCompletion)
+  if (idx >= 0) {
+    return [...commandItems.slice(0, idx + 1), ...args, ...commandItems.slice(idx + 1)]
+  }
+  return [...commandItems, ...args]
+}
+
+/**
+ * 将 Provider 子选项插入到 /provider 命令项之后（保留向后兼容的薄封装）。
  * @param commandItems 已匹配的顶层命令建议。
  * @param args Provider 参数级建议。
  * @returns 合并后的建议列表。
@@ -1069,12 +1124,7 @@ function appendProviderArgSuggestions(
   commandItems: CommandSuggestion[],
   args: CommandSuggestion[],
 ): CommandSuggestion[] {
-  if (args.length === 0) return commandItems
-  const idx = commandItems.findIndex((c) => c.completion === '/provider')
-  if (idx >= 0) {
-    return [...commandItems.slice(0, idx + 1), ...args, ...commandItems.slice(idx + 1)]
-  }
-  return [...commandItems, ...args]
+  return appendArgSuggestionsAfterCommand(commandItems, args, '/provider')
 }
 
 /**
@@ -1112,10 +1162,16 @@ export function getSlashSuggestions(input: string, config?: DCodeConfig): Comman
     const q = body.toLowerCase()
     const commandItems = matchingCommandSuggestions(q)
     const providerArgs = getCommandArgSuggestions('provider', '', config)
+    // /model 的 context 子选项：在「命令名阶段」也一并给出，使从 / 一路输入到 /model 全程可见
+    // （与 /provider 子选项的体验一致，不必等到完整输入 /model 才出现）。
+    const modelContextArgs = getModelContextArgSuggestions('', config)
 
-    // 仅输入 /：全部命令 + 最底层 Provider 子选项。
+    // 仅输入 /：全部命令 + Provider 子选项 + /model context 子选项（分别插入到各自命令项之后）。
     if (q === '') {
-      return providerArgs.length > 0 ? [...commandItems, ...providerArgs] : commandItems
+      let items = commandItems
+      if (providerArgs.length > 0) items = [...items, ...providerArgs]
+      items = appendArgSuggestionsAfterCommand(items, modelContextArgs, '/model')
+      return items
     }
 
     // 输入 /p … /provider 前缀：保留 plan/proxy/provider 等命令，并在 /provider 后追加子选项。
@@ -1123,7 +1179,7 @@ export function getSlashSuggestions(input: string, config?: DCodeConfig): Comman
       return appendProviderArgSuggestions(commandItems, providerArgs)
     }
 
-    // 其它命令完整匹配：展示参数子选项（如 /model）。
+    // 其它命令完整匹配：展示参数子选项（如 /model 的模型列表 + context、/review、/add-dir）。
     const exact = COMMANDS.find(
       (cmd) =>
         cmd.name.toLowerCase() === q ||
@@ -1132,6 +1188,12 @@ export function getSlashSuggestions(input: string, config?: DCodeConfig): Comman
     if (exact && exact.name !== 'provider') {
       const args = getCommandArgSuggestions(exact.name, '', config)
       if (args.length > 0) return args
+    }
+
+    // 输入 /m … /model 的「部分前缀」（尚未完整输入 /model）：在 /model 命令项后追加 context 子选项，
+    // 使从 / 一路输入到 /model 全程都能看到 context（完整匹配走上面的 exact 分支，含模型列表）。
+    if (MODEL_COMMAND_NAME.startsWith(q)) {
+      return appendArgSuggestionsAfterCommand(commandItems, modelContextArgs, '/model')
     }
 
     return commandItems

@@ -152,8 +152,11 @@ function findIncrementalFrameRedraw(stdoutEvents) {
       startSeq = null
       continue
     }
+    // 判定「增量实时帧重绘」：后一帧是在前一帧基础上追加少量内容（公共前缀占前一帧绝大部分）。
+    // 不能用固定绝对值（如 40），因为正文前缀可能很短（如「  - 某行」仅 20 余字符），
+    // 那样会漏判；改用「公共前缀≥20 且占前一帧长度≥40%」兼顾短前缀场景与误判防控。
     const common = commonPrefixLength(previous, text)
-    if (previous && common >= 40) {
+    if (previous && common >= 20 && common >= previous.length * 0.4) {
       streak += 1
       startSeq ??= event.seq
       if (streak >= 5) {
