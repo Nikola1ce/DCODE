@@ -1,9 +1,11 @@
 // Git 操作封装。
-// 为 /commit、/pr 命令提供 status、diff、log、默认分支检测与 gh 可用性检查；
+// 为 /commit、/pr、/review 命令提供 status、diff、log、默认分支检测与 gh 可用性检查；
 // 不直接执行 commit/push，由 Agent 经 run_command 在用户授权后执行。
 // 制作人：Moriarty_Dox
 
 import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 /** runGit 执行结果。 */
 export interface GitRunResult {
@@ -36,6 +38,55 @@ export const MAX_STAGED_DIFF_CHARS = 50_000
 
 /** PR 上下文 diff stat 截断上限。 */
 export const MAX_PR_DIFF_STAT_CHARS = 8_000
+
+/** /review 审查 diff 全文截断上限（字符）。 */
+export const MAX_REVIEW_DIFF_CHARS = 60_000
+
+/** /review 单文件全文审查截断上限（字符）。 */
+export const MAX_REVIEW_FILE_CHARS = 40_000
+
+/** 代码审查可选聚焦维度标识。 */
+export type ReviewFocus = 'security' | 'performance' | 'readability' | 'best-practices'
+
+/** 聚焦维度元信息：命令别名 + 中文展示名 + 审查侧重说明。 */
+interface ReviewFocusMeta {
+  /** 标准维度标识。 */
+  id: ReviewFocus
+  /** 可识别的命令参数别名（小写）。 */
+  aliases: string[]
+  /** 中文展示名。 */
+  label: string
+  /** 注入 prompt 的侧重说明。 */
+  hint: string
+}
+
+/** 全部聚焦维度定义。 */
+export const REVIEW_FOCUS_META: ReviewFocusMeta[] = [
+  {
+    id: 'security',
+    aliases: ['security', 'sec', '安全', '安全性'],
+    label: '安全性',
+    hint: '注入风险（SQL/命令/路径穿越）、密钥/凭据泄露、不安全的反序列化、权限与输入校验缺失。',
+  },
+  {
+    id: 'performance',
+    aliases: ['performance', 'perf', '性能'],
+    label: '性能',
+    hint: '不必要的重复计算、N+1 / 循环内 IO、同步阻塞、内存泄漏、低效数据结构与算法复杂度。',
+  },
+  {
+    id: 'readability',
+    aliases: ['readability', 'read', 'style', '可读性', '风格'],
+    label: '可读性',
+    hint: '命名清晰度、函数职责单一、重复代码、注释与意图表达、复杂分支的可维护性。',
+  },
+  {
+    id: 'best-practices',
+    aliases: ['best-practices', 'best', 'practice', 'practices', '最佳实践', '规范'],
+    label: '最佳实践',
+    hint: '错误处理与边界、资源释放、类型与契约、可测试性、与项目既有约定的一致性。',
+  },
+]
 
 /**
  * 在指定目录执行 git 子命令（不经过 shell，避免注入）。
@@ -135,6 +186,67 @@ export function getStagedDiff(cwd: string, maxChars = MAX_STAGED_DIFF_CHARS): st
 export function hasStagedChanges(cwd: string): boolean {
   const res = runGit(cwd, ['diff', '--staged', '--name-only'])
   return res.ok && res.stdout.trim().length > 0
+}
+
+/**
+ * 返回工作区全部变更的 diff（含已暂存与未暂存，但不含未跟踪文件）。
+ * 用于 /review 审查「当前所有改动」。
+ * @param cwd 工作目录。
+ * @param maxChars 最大字符数。
+ * @returns diff 文本（可截断）。
+ */
+export function getWorkingTreeDiff(cwd: string, maxChars = MAX_REVIEW_DIFF_CHARS): string {
+  // HEAD 与工作区比较，可同时覆盖已暂存与未暂存的改动。
+  const res = runGit(cwd, ['diff', 'HEAD'])
+  if (!res.ok) {
+    // 仓库无任何提交（无 HEAD）时回退为对比空树，展示已暂存内容。
+    const staged = runGit(cwd, ['diff', '--staged'])
+    return staged.ok ? truncateText(staged.stdout, maxChars) : res.stderr || ''
+  }
+  return truncateText(res.stdout, maxChars)
+}
+
+/**
+ * 返回工作区全部变更的 diff --stat（含已暂存与未暂存）。
+ * @param cwd 工作目录。
+ * @returns stat 文本。
+ */
+export function getWorkingTreeDiffStat(cwd: string): string {
+  const res = runGit(cwd, ['diff', 'HEAD', '--stat'])
+  if (!res.ok) {
+    const staged = runGit(cwd, ['diff', '--staged', '--stat'])
+    return staged.ok ? staged.stdout : ''
+  }
+  return res.stdout
+}
+
+/**
+ * 是否存在工作区改动（已暂存或未暂存的已跟踪文件）。
+ * @param cwd 工作目录。
+ * @returns 有改动返回 true。
+ */
+export function hasWorkingTreeChanges(cwd: string): boolean {
+  const res = runGit(cwd, ['diff', 'HEAD', '--name-only'])
+  if (res.ok) return res.stdout.trim().length > 0
+  // 无 HEAD 时退回检查已暂存。
+  return hasStagedChanges(cwd)
+}
+
+/**
+ * 返回相对 base 的完整 diff（base...HEAD），用于按分支审查 PR。
+ * @param cwd 工作目录。
+ * @param base 基线分支。
+ * @param maxChars 最大字符数。
+ * @returns diff 文本（可截断）。
+ */
+export function getDiffSinceBase(cwd: string, base: string, maxChars = MAX_REVIEW_DIFF_CHARS): string {
+  const res = runGit(cwd, ['diff', `${base}...HEAD`])
+  if (!res.ok) {
+    // 三点语法不可用（如缺少 merge-base）时回退两点语法。
+    const fallback = runGit(cwd, ['diff', `${base}..HEAD`])
+    return fallback.ok ? truncateText(fallback.stdout, maxChars) : res.stderr || ''
+  }
+  return truncateText(res.stdout, maxChars)
 }
 
 /**
@@ -334,6 +446,205 @@ export function buildPrAgentPrompt(
     '',
     `--- git diff ${base}...HEAD --stat ---`,
     stat || '（无 diff stat）',
+  ].join('\n')
+
+  return { ok: true, summary, prompt }
+}
+
+/**
+ * 将用户输入的聚焦维度词条解析为标准 ReviewFocus 列表（去重、保序）。
+ * @param tokens 维度词条（任意大小写，支持中英文别名）。
+ * @returns 命中的标准维度数组；无命中返回空数组。
+ */
+export function parseReviewFocuses(tokens: string[]): ReviewFocus[] {
+  const result: ReviewFocus[] = []
+  for (const raw of tokens) {
+    const t = raw.trim().toLowerCase()
+    if (!t) continue
+    const meta = REVIEW_FOCUS_META.find((m) => m.aliases.includes(t))
+    if (meta && !result.includes(meta.id)) {
+      result.push(meta.id)
+    }
+  }
+  return result
+}
+
+/**
+ * 读取指定文件用于「单文件审查」。
+ * 优先返回该文件的工作区 diff；若无改动则返回文件全文（均可截断）。
+ * @param cwd 工作目录。
+ * @param filePath 用户传入的文件路径（相对 cwd 或绝对路径）。
+ * @returns 成功时含 label/diff/content 标记；失败含 error。
+ */
+function readFileForReview(
+  cwd: string,
+  filePath: string,
+):
+  | { ok: true; rel: string; isDiff: boolean; body: string }
+  | { ok: false; error: string } {
+  const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath)
+  if (!existsSync(abs)) {
+    return { ok: false, error: `文件不存在：${filePath}` }
+  }
+  let st
+  try {
+    st = statSync(abs)
+  } catch {
+    return { ok: false, error: `无法读取：${filePath}` }
+  }
+  if (st.isDirectory()) {
+    return {
+      ok: false,
+      error: `「${filePath}」是目录。/review 暂仅支持单个文件或 diff 范围；目录请用 /review（工作区）或 /review <基线分支>。`,
+    }
+  }
+  const rel = relative(cwd, abs) || filePath
+  // 先尝试文件级 diff（含已暂存与未暂存）。
+  const diffRes = runGit(cwd, ['diff', 'HEAD', '--', rel])
+  if (diffRes.ok && diffRes.stdout.trim()) {
+    return { ok: true, rel, isDiff: true, body: truncateText(diffRes.stdout, MAX_REVIEW_DIFF_CHARS) }
+  }
+  // 无 diff（未改动或非仓库）→ 读取全文审查。
+  try {
+    const content = readFileSync(abs, 'utf8')
+    return { ok: true, rel, isDiff: false, body: truncateText(content, MAX_REVIEW_FILE_CHARS) }
+  } catch {
+    return { ok: false, error: `读取文件失败：${filePath}` }
+  }
+}
+
+/**
+ * 根据聚焦维度构建注入 prompt 的「审查侧重」段落。
+ * @param focuses 维度数组；为空表示全维度。
+ * @returns 多行说明文本。
+ */
+function buildFocusSection(focuses: ReviewFocus[]): string {
+  if (focuses.length === 0) {
+    return [
+      '审查维度：全面覆盖（逻辑正确性、安全性、性能、可读性、最佳实践）。',
+    ].join('\n')
+  }
+  const lines = ['审查维度（按用户指定，重点聚焦以下方面）：']
+  for (const id of focuses) {
+    const meta = REVIEW_FOCUS_META.find((m) => m.id === id)
+    if (meta) lines.push(`  • ${meta.label}：${meta.hint}`)
+  }
+  return lines.join('\n')
+}
+
+/** /review 审查范围。 */
+export type ReviewScope =
+  | { kind: 'working' } // 工作区全部改动（默认）
+  | { kind: 'staged' } // 仅已暂存
+  | { kind: 'base'; base: string } // 相对基线分支
+  | { kind: 'file'; path: string } // 指定单文件
+
+/**
+ * 构建 /review 命令的 Agent prompt 与摘要。
+ * @param cwd 工作目录。
+ * @param scope 审查范围。
+ * @param focuses 聚焦维度（为空表示全维度）。
+ * @returns 成功时含 summary 与 prompt；失败时含 error。
+ */
+export function buildReviewAgentPrompt(
+  cwd: string,
+  scope: ReviewScope,
+  focuses: ReviewFocus[] = [],
+):
+  | { ok: true; summary: string; prompt: string }
+  | { ok: false; error: string } {
+  // 单文件审查不强制要求 git 仓库；其余范围需要仓库。
+  if (scope.kind !== 'file' && !isGitRepository(cwd)) {
+    return {
+      ok: false,
+      error:
+        '当前目录不是 Git 仓库，无法审查变更。\n可改用 /review <文件路径> 审查单个文件。',
+    }
+  }
+
+  // 解析审查目标内容。
+  let scopeLabel: string
+  let contentLabel: string
+  let body: string
+
+  if (scope.kind === 'file') {
+    const fileRes = readFileForReview(cwd, scope.path)
+    if (!fileRes.ok) return { ok: false, error: fileRes.error }
+    scopeLabel = `文件：${fileRes.rel}`
+    if (fileRes.isDiff) {
+      contentLabel = `git diff HEAD -- ${fileRes.rel}`
+    } else {
+      contentLabel = `文件全文：${fileRes.rel}`
+    }
+    body = fileRes.body
+  } else if (scope.kind === 'staged') {
+    if (!hasStagedChanges(cwd)) {
+      return {
+        ok: false,
+        error: '没有已暂存（staged）的变更可审查。\n请先 git add，或用 /review 审查全部工作区改动。',
+      }
+    }
+    scopeLabel = '已暂存（staged）变更'
+    contentLabel = 'git diff --staged'
+    body = getStagedDiff(cwd, MAX_REVIEW_DIFF_CHARS)
+  } else if (scope.kind === 'base') {
+    const base = scope.base.trim() || detectDefaultBranch(cwd)
+    const diff = getDiffSinceBase(cwd, base)
+    if (!diff.trim()) {
+      return {
+        ok: false,
+        error: `当前分支相对 ${base} 没有可审查的差异。\n请确认基线分支正确（例如 /review main）。`,
+      }
+    }
+    scopeLabel = `相对基线分支 ${base}（${getCurrentBranch(cwd) || 'HEAD'} ← ${base}）`
+    contentLabel = `git diff ${base}...HEAD`
+    body = diff
+  } else {
+    // working：默认，审查全部已跟踪改动。
+    if (!hasWorkingTreeChanges(cwd)) {
+      return {
+        ok: false,
+        error:
+          '工作区没有已跟踪文件的改动可审查。\n可用 /review staged、/review <基线分支> 或 /review <文件路径>。',
+      }
+    }
+    scopeLabel = '工作区全部改动（已暂存 + 未暂存）'
+    contentLabel = 'git diff HEAD'
+    body = getWorkingTreeDiff(cwd)
+  }
+
+  const focusSection = buildFocusSection(focuses)
+  const focusSummary =
+    focuses.length === 0
+      ? '全维度'
+      : focuses
+          .map((id) => REVIEW_FOCUS_META.find((m) => m.id === id)?.label ?? id)
+          .join('、')
+
+  const summary = [
+    '代码审查范围：' + scopeLabel,
+    '聚焦维度：' + focusSummary,
+    '',
+    '完整内容已交给 Agent 逐项审查，结果按严重度分级输出。',
+  ].join('\n')
+
+  const prompt = [
+    '你是资深代码审查者。请对下面给出的代码改动进行**结构化代码审查**（仅审查，不要修改文件、不要执行命令）。',
+    '',
+    focusSection,
+    '',
+    '输出要求：',
+    '1) 先给一句总体结论（是否可合并 / 主要风险）。',
+    '2) 按严重度分级逐条列出发现，使用标记：[Critical] / [Warning] / [Suggestion]。',
+    '3) 每条包含：文件:行号（若可定位）、问题描述、具体修复建议。',
+    '4) 只针对给出的代码作判断，不臆测未展示的内容；无明显问题时明确说明。',
+    '5) 末尾给出按优先级排序的「建议修复清单」。',
+    '6) 使用简体中文；代码标识符、路径保持英文。',
+    '',
+    `--- 审查范围：${scopeLabel} ---`,
+    `--- 内容来源：${contentLabel} ---`,
+    '',
+    body || '（空）',
   ].join('\n')
 
   return { ok: true, summary, prompt }

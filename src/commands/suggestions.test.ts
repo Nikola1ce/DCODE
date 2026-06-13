@@ -108,4 +108,34 @@ describe('getSlashSuggestions', () => {
     expect(items.some((i) => i.completion === '/skills')).toBe(true)
     expect(items.find((i) => i.completion === '/skills')?.description).toContain('技能')
   })
+
+  it('/ 命令列表包含 /review', () => {
+    const items = getSlashSuggestions('/')
+    expect(items.some((i) => i.completion === '/review')).toBe(true)
+  })
+
+  it('/rev 前缀匹配 /review 命令', () => {
+    const items = getSlashSuggestions('/rev')
+    expect(items.some((i) => i.completion === '/review')).toBe(true)
+  })
+
+  it('/review 完整匹配展示范围与聚焦维度子选项', () => {
+    const items = getSlashSuggestions('/review')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/review staged')
+    expect(completions).toContain('/review status')
+    expect(completions).toContain('/review security')
+    expect(completions).toContain('/review performance')
+    expect(completions).toContain('/review readability')
+    expect(completions).toContain('/review best-practices')
+  })
+
+  it('/review s 前缀过滤子选项（staged/status/security）', () => {
+    const items = getSlashSuggestions('/review s')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/review staged')
+    expect(completions).toContain('/review status')
+    expect(completions).toContain('/review security')
+    expect(completions).not.toContain('/review readability')
+  })
 })

@@ -5,7 +5,8 @@
 // 制作人：Moriarty_Dox
 
 import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isSupportedModelName, isValidReasoningEffort } from '../constants.js'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { updateConfig, resolveApiKey } from '../config.js'
 import type { Agent } from '../core/agent.js'
@@ -26,7 +27,11 @@ import {
 import {
   buildCommitAgentPrompt,
   buildPrAgentPrompt,
+  buildReviewAgentPrompt,
+  parseReviewFocuses,
   renderGitStatusReport,
+  REVIEW_FOCUS_META,
+  type ReviewScope,
 } from '../core/gitUtils.js'
 import {
   checkForUpdate,
@@ -541,6 +546,34 @@ export const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: 'review',
+    description: '代码审查：审查工作区/已暂存/分支差异或指定文件（按严重度分级）',
+    aliases: ['cr'],
+    run: (ctx) => {
+      const raw = ctx.args.trim()
+
+      // /review status：直接展示 git 状态。
+      if (raw.toLowerCase() === 'status') {
+        return { message: renderGitStatusReport(ctx.agent.cwd) }
+      }
+
+      // /review help：用法说明。
+      if (raw.toLowerCase() === 'help' || raw === '?') {
+        return { message: renderReviewHelp() }
+      }
+
+      const parsed = parseReviewArgs(raw, ctx.agent.cwd)
+      const built = buildReviewAgentPrompt(ctx.agent.cwd, parsed.scope, parsed.focuses)
+      if (!built.ok) {
+        return { message: built.error + '\n\n' + renderReviewHelp() }
+      }
+      return {
+        message: `开始代码审查…\n\n${built.summary}`,
+        submitPrompt: built.prompt,
+      }
+    },
+  },
+  {
     name: 'mode',
     description: '查看或切换权限模式：plan | auto | bypass',
     run: (ctx) => {
@@ -707,6 +740,24 @@ function getCommandArgSuggestions(
         completion: `/model ${m}`,
       }
     })
+  }
+
+  if (cmdName === 'review') {
+    const options = [
+      { name: 'staged', description: '仅审查已暂存变更' },
+      { name: 'status', description: '查看 Git 状态' },
+      ...REVIEW_FOCUS_META.map((m) => ({
+        name: m.id,
+        description: `聚焦：${m.label}`,
+      })),
+    ]
+    return options
+      .filter((o) => q === '' || o.name.startsWith(q))
+      .map((o) => ({
+        name: o.name,
+        description: o.description,
+        completion: `/review ${o.name}`,
+      }))
   }
 
   return []
@@ -1027,6 +1078,116 @@ function renderMcpPromptsList(mgr: MCPManager): string {
  */
 function joinSkillPath(cwd: string, name: string): string {
   return join(getProjectSkillsDir(cwd), `${name}.md`)
+}
+
+/**
+ * 解析 /review 命令参数：拆分审查范围与聚焦维度。
+ *
+ * 支持形式：
+ *   /review                       → 工作区全部改动（默认）
+ *   /review staged                → 仅已暂存
+ *   /review main                  → 相对基线分支 main
+ *   /review src/foo.ts            → 指定文件
+ *   /review staged security perf  → 范围 + 聚焦维度
+ *   /review --focus security,perf → 显式聚焦（范围仍为默认/已识别）
+ *
+ * @param raw /review 之后的原始参数串（已 trim）。
+ * @param cwd 工作目录（用于判定 token 是文件还是分支）。
+ * @returns 解析出的审查范围与聚焦维度数组。
+ */
+function parseReviewArgs(
+  raw: string,
+  cwd: string,
+): { scope: ReviewScope; focuses: ReturnType<typeof parseReviewFocuses> } {
+  const focusTokens: string[] = []
+  const restTokens: string[] = []
+
+  const tokens = raw.split(/\s+/).filter(Boolean)
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i]!
+    const lower = tok.toLowerCase()
+
+    // 显式聚焦参数：--focus a,b / --focus=a,b / -f a,b。
+    if (lower === '--focus' || lower === '-f' || lower === '--focus=') {
+      const next = tokens[i + 1]
+      if (next) {
+        focusTokens.push(...next.split(','))
+        i++ // 跳过已消费的值。
+      }
+      continue
+    }
+    if (lower.startsWith('--focus=')) {
+      focusTokens.push(...tok.slice('--focus='.length).split(','))
+      continue
+    }
+
+    // 直接作为维度别名的裸 token（如 security、perf）。
+    if (parseReviewFocuses([lower]).length > 0) {
+      focusTokens.push(lower)
+      continue
+    }
+
+    restTokens.push(tok)
+  }
+
+  const focuses = parseReviewFocuses(focusTokens)
+
+  // 解析范围：取第一个非维度 token 作为范围目标。
+  const target = restTokens[0]
+  if (!target) {
+    return { scope: { kind: 'working' }, focuses }
+  }
+  if (target.toLowerCase() === 'staged' || target.toLowerCase() === 'cached') {
+    return { scope: { kind: 'staged' }, focuses }
+  }
+  if (target.toLowerCase() === 'working' || target.toLowerCase() === 'workdir') {
+    return { scope: { kind: 'working' }, focuses }
+  }
+  // 看起来像文件路径（存在于磁盘，或含路径分隔符 / 扩展名）→ 文件审查。
+  if (looksLikeFilePath(target, cwd)) {
+    return { scope: { kind: 'file', path: target }, focuses }
+  }
+  // 否则视为基线分支名。
+  return { scope: { kind: 'base', base: target }, focuses }
+}
+
+/**
+ * 判断一个 token 是否更像文件路径（而非 git 分支名）。
+ * 规则：磁盘上存在该路径，或包含路径分隔符 / 常见文件扩展名。
+ * @param token 待判定 token。
+ * @param cwd 工作目录。
+ * @returns 像文件返回 true。
+ */
+function looksLikeFilePath(token: string, cwd: string): boolean {
+  const abs = isAbsolute(token) ? token : resolve(cwd, token)
+  if (existsSync(abs)) return true
+  // 含路径分隔符通常是文件/目录引用。
+  if (token.includes('/') || token.includes('\\')) return true
+  // 含扩展名（点号后跟若干字母）也偏向文件。
+  if (/\.[a-z0-9]{1,8}$/i.test(token)) return true
+  return false
+}
+
+/**
+ * 渲染 /review 用法说明。
+ * @returns 多行帮助文本。
+ */
+function renderReviewHelp(): string {
+  const focusList = REVIEW_FOCUS_META.map((m) => `${m.id}（${m.label}）`).join('、')
+  return [
+    '/review 代码审查用法：',
+    '  /review                 审查工作区全部改动（已暂存 + 未暂存，默认）',
+    '  /review staged          仅审查已暂存（git add 后）的变更',
+    '  /review <基线分支>       审查当前分支相对基线的差异，如 /review main',
+    '  /review <文件路径>       审查指定文件，如 /review src/foo.ts',
+    '  /review status          查看 Git 状态',
+    '',
+    '聚焦维度（可叠加，附加在任意范围后，或用 --focus a,b）：',
+    `  ${focusList}`,
+    '  示例：/review staged security perf   或   /review main --focus readability',
+    '',
+    '说明：审查结果按 Critical / Warning / Suggestion 分级，仅分析不改动文件。',
+  ].join('\n')
 }
 
 /**
