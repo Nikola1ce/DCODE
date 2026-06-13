@@ -18,13 +18,30 @@ const CONTEXT_BAR_FILLED = '█'
 const CONTEXT_BAR_EMPTY = '░'
 
 /**
- * 把大数字格式化为带千分位的紧凑字符串（用于上下文 token 数显示）。
- * 例如 12345 → "12,345"；超过 1000 才加分隔符，避免小数字也被处理。
- * @param n token 数。
- * @returns 千分位字符串。
+ * 去除小数字符串末尾多余的 0 与小数点（如 "12.0" → "12"、"1.50" → "1.5"）。
+ * 用于 k/m 单位显示时让数字更干净，避免出现 "128.0k" 这类冗余。
+ * @param s toFixed 之后的数字字符串。
+ * @returns 去除尾随 0 的字符串。
  */
-function formatTokenCount(n: number): string {
-  return Math.max(0, Math.round(n)).toLocaleString('en-US')
+function trimTrailingZeros(s: string): string {
+  return s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+
+/**
+ * 把 token 数格式化为带 k / m 单位的紧凑字符串（用于上下文用量显示）。
+ * 采用 1000 进制（k=千、m=百万），与各厂商「128K / 200K / 1M 上下文」的标注口径一致，
+ * 直观且不挤占状态栏宽度。规则：
+ * - < 1000：直接显示整数（如 "512"）；
+ * - [1000, 1e6)：以 k 显示，保留 1 位小数并去除尾随 0（如 "12.3k"、"128k"）；
+ * - >= 1e6：以 m 显示，保留 2 位小数并去除尾随 0（如 "1m"、"1.25m"）。
+ * @param n token 数（负数与小数会被钳制/四舍五入）。
+ * @returns 形如 "512" / "12.3k" / "1.25m" 的字符串。
+ */
+export function formatTokenCount(n: number): string {
+  const v = Math.max(0, Math.round(n))
+  if (v < 1000) return String(v)
+  if (v < 1_000_000) return `${trimTrailingZeros((v / 1000).toFixed(1))}k`
+  return `${trimTrailingZeros((v / 1_000_000).toFixed(2))}m`
 }
 
 /**

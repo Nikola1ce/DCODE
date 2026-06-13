@@ -21,9 +21,9 @@ import {
   getProviderDefinition,
   getProviderLoginMeta,
 } from '../providers/registry.js'
+import { getModelContextWindow } from '../providers/contextWindow.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
 import { estimateMessagesTokens } from '../core/compact.js'
-import { COMPACT_TOKEN_THRESHOLD } from '../constants.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
 import { messagesToItems } from './messagesToItems.js'
@@ -149,6 +149,12 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     estimateMessagesTokens(agent.getMessages()),
   )
   const [model, setModelState] = useState(agent.getModel())
+  // 当前模型的上下文窗口大小（token）：作为状态栏进度条的总量上限。
+  // 随模型/Provider 切换重算（model 变化即触发），而非固定用压缩阈值，避免上限失真。
+  const contextLimit = useMemo(
+    () => getModelContextWindow(getActiveProviderId(configRef.current), model),
+    [model],
+  )
   const [permissionMode, setPermissionModeState] = useState(agent.permissionMode)
   const [todos, setTodos] = useState<TodoItem[]>(agent.getTodos())
 
@@ -685,7 +691,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               permissionMode={permissionMode}
               costUsd={cost}
               contextTokens={contextTokens}
-              contextLimit={COMPACT_TOKEN_THRESHOLD}
+              contextLimit={contextLimit}
               statusText={statusText}
             />
           </Box>
