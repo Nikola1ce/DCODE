@@ -14,6 +14,11 @@ import type {
 } from 'openai/resources/chat/completions'
 import type { DCodeConfig } from '../config.js'
 import { resolveApiKey } from '../config.js'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isValidThinkingBudget,
+  mapEffortToDeepSeek,
+} from '../constants.js'
 import type { DeepMessage, ToolCall } from '../core/types.js'
 import {
   getActiveProviderId,
@@ -179,8 +184,11 @@ export class OpenAICompatibleClient implements LLMClient {
     const supportsThinking = providerSupportsThinking(this.config)
     const thinkingType =
       params.thinking ?? (this.config.showThinking ? 'enabled' : 'disabled')
+    // 面向用户的四级强度（low/medium/high/max），兜底取默认值。
     const reasoningEffort =
-      params.reasoningEffort ?? this.config.reasoningEffort ?? 'high'
+      params.reasoningEffort ?? this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    // 思维链 token 预算：参数优先，其次配置；仅当为合法区间内整数时才会发送给 API。
+    const thinkingBudget = params.thinkingBudget ?? this.config.thinkingBudget
 
     let attempt = 0
     while (true) {
@@ -205,10 +213,17 @@ export class OpenAICompatibleClient implements LLMClient {
 
         // 仅 DeepSeek 等支持 thinking 的 Provider 发送扩展字段。
         if (supportsThinking) {
-          requestBody.thinking = { type: thinkingType }
+          const thinking: Record<string, unknown> = { type: thinkingType }
           if (thinkingType === 'enabled') {
-            requestBody.reasoning_effort = reasoningEffort
+            // DeepSeek 仅认 high / max：把四级强度归一化后再发送，避免非法值 400。
+            requestBody.reasoning_effort = mapEffortToDeepSeek(reasoningEffort)
+            // 思维链 token 预算：仅当为合法整数时随 thinking 一并发送（budget_tokens）。
+            // DeepSeek 当前会忽略该字段，但保持透传以兼容支持预算上限的其它 thinking Provider。
+            if (isValidThinkingBudget(thinkingBudget)) {
+              thinking.budget_tokens = thinkingBudget
+            }
           }
+          requestBody.thinking = thinking
         }
 
         const stream = (await this.client.chat.completions.create(
@@ -222,6 +237,8 @@ export class OpenAICompatibleClient implements LLMClient {
           toolCount: tools.length,
           thinkingType,
           reasoningEffort,
+          mappedReasoningEffort: mapEffortToDeepSeek(reasoningEffort),
+          thinkingBudget: isValidThinkingBudget(thinkingBudget) ? thinkingBudget : null,
         }, traceContext)
 
         let textBuf = ''

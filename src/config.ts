@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'n
 import {
   CONFIG_DIR_NAME,
   CONFIG_FILE_NAME,
+  DEFAULT_REASONING_EFFORT,
   DEFAULT_ZHIPU_BASE_URL,
   DEFAULT_ZHIPU_MODEL,
   ENV_API_KEY,
@@ -17,6 +18,9 @@ import {
   ENV_MODEL,
   ENV_PROVIDER,
   ENV_REASONING_EFFORT,
+  ENV_THINKING_BUDGET,
+  isValidReasoningEffort,
+  parseThinkingBudget,
   type ReasoningEffort,
 } from './constants.js'
 import type { ProviderId, ProviderOverrides } from './providers/types.js'
@@ -48,8 +52,11 @@ export interface DCodeConfig {
   theme: ThemeName
   // 是否默认展示推理模型的思维链（reasoning_content）。
   showThinking: boolean
-  // V4 Thinking 模式下的推理强度（high / max）；仅 thinking 启用时传给 API。
+  // Thinking 模式下的推理强度（low / medium / high / max）；仅 thinking 启用时传给 API。
   reasoningEffort: ReasoningEffort
+  // 思维链 token 预算（thinking.budget_tokens）；可选，仅对支持该参数的 Provider 生效。
+  // 未设置时不向 API 发送该字段；DeepSeek V4 无独立预算上限会忽略此值。
+  thinkingBudget?: number
   // 全局“总是允许”的权限规则集合，形如 "Bash(git status)"、"Write" 等。
   alwaysAllow: string[]
   // 累计用量统计（成本、token），用于 /cost 展示历史总览。
@@ -72,7 +79,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   model: DEFAULT_ZHIPU_MODEL,
   theme: 'dark',
   showThinking: true,
-  reasoningEffort: 'high',
+  reasoningEffort: DEFAULT_REASONING_EFFORT,
   alwaysAllow: [],
   totalCostUsd: 0,
   onboardingComplete: false,
@@ -131,8 +138,16 @@ export function loadConfig(): DCodeConfig {
   if (process.env[ENV_API_KEY]) merged.apiKey = process.env[ENV_API_KEY]
   if (process.env[ENV_BASE_URL]) merged.baseURL = process.env[ENV_BASE_URL] as string
   if (process.env[ENV_MODEL]) merged.model = process.env[ENV_MODEL] as string
-  if (process.env[ENV_REASONING_EFFORT]) {
-    merged.reasoningEffort = process.env[ENV_REASONING_EFFORT] as ReasoningEffort
+  // 推理强度：仅接受四档合法值，非法值忽略以免写入坏配置。
+  const envEffort = process.env[ENV_REASONING_EFFORT]
+  if (envEffort && isValidReasoningEffort(envEffort)) {
+    merged.reasoningEffort = envEffort
+  }
+  // 思维链 token 预算：仅接受区间内的整数，非法值忽略。
+  const envBudget = process.env[ENV_THINKING_BUDGET]
+  if (envBudget) {
+    const parsed = parseThinkingBudget(envBudget)
+    if (parsed !== undefined) merged.thinkingBudget = parsed
   }
   if (process.env[ENV_PROVIDER] && isValidProviderEnv(process.env[ENV_PROVIDER])) {
     merged.provider = process.env[ENV_PROVIDER] as ProviderId

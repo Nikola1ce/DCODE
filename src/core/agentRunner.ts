@@ -105,6 +105,7 @@ export class AgentRunner {
           model: this.opts.model,
           abortSignal: this.opts.abortSignal,
           reasoningEffort: this.opts.config.reasoningEffort,
+          thinkingBudget: this.opts.config.thinkingBudget,
           trace: {
             runId: this.runId,
             turnId: this.turnId,

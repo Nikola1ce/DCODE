@@ -4,7 +4,19 @@
 // 返回给上层 UI 处理，从而与 Agent、配置、界面解耦。
 // 制作人：Moriarty_Dox
 
-import { PRODUCT_NAME, AUTHOR, VERSION, SUPPORTED_MODELS, REASONING_EFFORTS, isSupportedModelName, isValidReasoningEffort } from '../constants.js'
+import {
+  PRODUCT_NAME,
+  AUTHOR,
+  VERSION,
+  SUPPORTED_MODELS,
+  REASONING_EFFORTS,
+  MIN_THINKING_BUDGET,
+  MAX_THINKING_BUDGET,
+  isSupportedModelName,
+  isValidReasoningEffort,
+  mapEffortToDeepSeek,
+  parseThinkingBudget,
+} from '../constants.js'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { DCodeConfig, PermissionMode } from '../config.js'
@@ -308,16 +320,18 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'effort',
-    description: '查看或切换推理强度：high | max（Thinking 模式下生效，Pro 复杂任务推荐 max）',
+    description: '查看或切换推理强度：low | medium | high | max（Thinking 模式下生效）',
     aliases: ['reasoning-effort'],
     run: (ctx) => {
       const target = ctx.args.trim().toLowerCase()
       if (!target) {
+        const cur = ctx.config.reasoningEffort
         return {
           message:
-            `当前推理强度：${ctx.config.reasoningEffort}\n` +
+            `当前推理强度：${cur}\n` +
             `可选：${REASONING_EFFORTS.join('、')}（例如 /effort max）\n` +
-            '说明：仅在 Thinking 模式启用时传给 API；/thinking 关闭时不发送 reasoning_effort。',
+            '说明：仅在 Thinking 模式启用时传给 API；/thinking 关闭时不发送 reasoning_effort。\n' +
+            `注意：DeepSeek V4 实际仅认 high / max，low / medium 会自动归并为 high（当前将以 ${mapEffortToDeepSeek(cur)} 发送）。`,
         }
       }
       if (!isValidReasoningEffort(target)) {
@@ -326,7 +340,42 @@ export const COMMANDS: SlashCommand[] = [
         }
       }
       ctx.applyConfig({ reasoningEffort: target })
-      return { message: `已切换推理强度为 ${target}。` }
+      const note =
+        target === 'low' || target === 'medium'
+          ? `（DeepSeek 将以 ${mapEffortToDeepSeek(target)} 发送）`
+          : ''
+      return { message: `已切换推理强度为 ${target}。${note}` }
+    },
+  },
+  {
+    name: 'thinking-budget',
+    description: '查看或设置思维链 token 预算（仅支持该参数的 Provider 生效；clear 清除）',
+    aliases: ['budget'],
+    run: (ctx) => {
+      const target = ctx.args.trim().toLowerCase()
+      // 无参数：展示当前预算与用法。
+      if (!target) {
+        const cur = ctx.config.thinkingBudget
+        return {
+          message:
+            `当前思维链预算：${cur !== undefined ? `${cur} tokens` : '未设置（由模型自行决定）'}\n` +
+            `用法：/thinking-budget <${MIN_THINKING_BUDGET}~${MAX_THINKING_BUDGET}>（如 /thinking-budget 16000）；/thinking-budget clear 清除。\n` +
+            '说明：约束思维链长度（thinking.budget_tokens），仅对支持该参数的 Provider 生效；DeepSeek V4 无独立预算上限会忽略此值。',
+        }
+      }
+      // clear：清除预算配置。
+      if (target === 'clear') {
+        ctx.applyConfig({ thinkingBudget: undefined })
+        return { message: '已清除思维链预算配置（恢复为由模型自行决定）。' }
+      }
+      const budget = parseThinkingBudget(target)
+      if (budget === undefined) {
+        return {
+          message: `无效的思维链预算：${target}\n请输入 ${MIN_THINKING_BUDGET}~${MAX_THINKING_BUDGET} 之间的整数。`,
+        }
+      }
+      ctx.applyConfig({ thinkingBudget: budget })
+      return { message: `已设置思维链预算为 ${budget} tokens。` }
     },
   },
   {
@@ -828,6 +877,34 @@ function getCommandArgSuggestions(
       }))
   }
 
+  // /effort：四级推理强度子选项（low / medium / high / max）。
+  if (cmdName === 'effort') {
+    return REASONING_EFFORTS.filter((e) => q === '' || e.startsWith(q)).map((e) => ({
+      name: e,
+      description:
+        e === 'max'
+          ? '最高强度（复杂 agentic 任务）'
+          : e === 'high'
+            ? '高强度（默认，多数推理任务）'
+            : `${e}（DeepSeek 归并为 ${mapEffortToDeepSeek(e)}）`,
+      completion: `/effort ${e}`,
+    }))
+  }
+
+  // /thinking-budget：clear 子选项（具体数值无法穷举，仅提示清除）。
+  if (cmdName === 'thinking-budget') {
+    const options = [
+      { name: 'clear', description: '清除思维链预算（由模型自行决定）' },
+    ]
+    return options
+      .filter((o) => q === '' || o.name.startsWith(q))
+      .map((o) => ({
+        name: o.name,
+        description: o.description,
+        completion: `/thinking-budget ${o.name}`,
+      }))
+  }
+
   return []
 }
 
@@ -1024,6 +1101,7 @@ function renderConfig(config: DCodeConfig): string {
     `  主题：${config.theme}`,
     `  思维链展示：${config.showThinking ? '开' : '关'}`,
     `  推理强度：${config.reasoningEffort}（${def.supportsThinking ? 'Thinking 模式下生效' : '当前 Provider 不支持'}）`,
+    `  思维链预算：${config.thinkingBudget !== undefined ? `${config.thinkingBudget} tokens` : '未设置'}`,
     `  Hooks：${config.hooksEnabled !== false ? '启用' : '禁用'}`,
     renderProxyHint(config),
     '',

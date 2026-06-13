@@ -64,6 +64,12 @@ export interface StreamChatParams {
   abortSignal?: AbortSignal
   thinking?: 'enabled' | 'disabled'
   reasoningEffort?: ReasoningEffort
+  /**
+   * 思维链 token 预算（thinking.budget_tokens）。
+   * 仅对支持该参数的 Provider 生效（如 Claude 兼容端点）；DeepSeek V4 无独立预算上限，会忽略此值。
+   * 未设置时不向 API 发送该字段。
+   */
+  thinkingBudget?: number
   trace?: {
     runId?: string
     turnId?: string

@@ -164,6 +164,8 @@ export const ENV_API_KEY = 'DEEPSEEK_API_KEY'
 export const ENV_BASE_URL = 'DEEPSEEK_BASE_URL'
 export const ENV_MODEL = 'DCODE_MODEL'
 export const ENV_REASONING_EFFORT = 'DCODE_REASONING_EFFORT'
+// 环境变量：思维链 token 预算（整数，落在 MIN/MAX_THINKING_BUDGET 区间内方生效）。
+export const ENV_THINKING_BUDGET = 'DCODE_THINKING_BUDGET'
 export const ENV_PROVIDER = 'DCODE_PROVIDER'
 
 // OpenAI Provider 环境变量。
@@ -188,9 +190,14 @@ export const ENV_DCODE_PROXY = 'DCODE_PROXY'
 export const ENV_HTTPS_PROXY = 'HTTPS_PROXY'
 export const ENV_HTTP_PROXY = 'HTTP_PROXY'
 
-// V4 Thinking 模式下的推理强度（仅 thinking 启用时生效）。
-export const REASONING_EFFORTS = ['high', 'max'] as const
+// Thinking 模式下面向用户的推理强度档位（仅 thinking 启用时生效）。
+// 提供 low / medium / high / max 四级精细控制，对齐 Claude / o 系列等主流推理模型的强度语义；
+// 不同 Provider 的真实可用值不一，由 mapEffortToDeepSeek 等映射函数在请求前归一化。
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'max'] as const
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
+
+// 默认推理强度：兼顾质量与成本，作为配置缺省与请求兜底。
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high'
 
 /**
  * 判断 reasoning_effort 取值是否合法。
@@ -199,4 +206,53 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
  */
 export function isValidReasoningEffort(value: string): value is ReasoningEffort {
   return (REASONING_EFFORTS as readonly string[]).includes(value)
+}
+
+/**
+ * 将统一的四级推理强度映射为 DeepSeek V4 实际接受的取值。
+ * DeepSeek API 当前仅认 high / max：为兼容性，low / medium 自动归并到 high，
+ * 这样上层可以始终暴露四档体验，而底层请求不会因非法取值而 400。
+ * @param effort 面向用户的四级强度。
+ * @returns DeepSeek 兼容的 reasoning_effort 值（'high' | 'max'）。
+ */
+export function mapEffortToDeepSeek(effort: ReasoningEffort): 'high' | 'max' {
+  return effort === 'max' ? 'max' : 'high'
+}
+
+// —— Thinking budget（思维链 token 预算）—— //
+// 部分 Provider（如 Claude 兼容端点）支持以 token 数精细约束思维链长度（thinking.budget_tokens）。
+// DeepSeek V4 不提供独立的预算上限参数（模型推理至收敛或输出截断），此值对其不生效但仍可配置，
+// 便于切换到支持该参数的 Provider 时复用同一套设置。
+
+// thinking budget 允许的最小 token 数（过小会导致推理被立刻截断，失去意义）。
+export const MIN_THINKING_BUDGET = 1024
+
+// thinking budget 允许的最大 token 数（防止单次推理预算设置过大导致成本失控）。
+export const MAX_THINKING_BUDGET = 120000
+
+/**
+ * 校验 thinking budget 取值是否为合法的正整数且落在允许区间内。
+ * @param value 待校验的 token 预算（任意类型，便于解析命令行/环境变量原始值）。
+ * @returns 合法返回 true。
+ */
+export function isValidThinkingBudget(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= MIN_THINKING_BUDGET &&
+    value <= MAX_THINKING_BUDGET
+  )
+}
+
+/**
+ * 解析字符串形式的 thinking budget（来自 CLI 参数或环境变量）。
+ * 仅接受落在 [MIN_THINKING_BUDGET, MAX_THINKING_BUDGET] 区间内的整数，其余一律视为非法。
+ * @param raw 原始字符串（如 "16000"）。
+ * @returns 合法时返回数字，否则返回 undefined。
+ */
+export function parseThinkingBudget(raw: string): number | undefined {
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const n = Number.parseInt(trimmed, 10)
+  return isValidThinkingBudget(n) ? n : undefined
 }

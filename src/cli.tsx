@@ -20,6 +20,9 @@ import {
   LEGACY_MODELS,
   REASONING_EFFORTS,
   isValidReasoningEffort,
+  parseThinkingBudget,
+  MIN_THINKING_BUDGET,
+  MAX_THINKING_BUDGET,
   type ReasoningEffort,
 } from './constants.js'
 import { loadConfig, ensureConfigDir, type PermissionMode } from './config.js'
@@ -64,8 +67,10 @@ interface CliOptions {
   permissionMode?: PermissionMode
   // 无头模式：显式自动批准所有权限请求（默认拒绝，需 -y/--yes）。
   autoApprove?: boolean
-  // 推理强度覆盖（high / max）。
+  // 推理强度覆盖（low / medium / high / max）。
   reasoningEffort?: ReasoningEffort
+  // 思维链 token 预算覆盖（thinking.budget_tokens）；原始字符串，main 中再校验。
+  thinkingBudget?: string
   // 位置参数拼成的 prompt（无头模式使用）。
   prompt: string
 }
@@ -142,6 +147,11 @@ function parseArgs(argv: string[]): CliOptions {
           opts.reasoningEffort = argv[++i] as ReasoningEffort
         }
         break
+      case '--thinking-budget':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
+          opts.thinkingBudget = argv[++i]
+        }
+        break
       case '-y':
       case '--yes':
       case '--dangerously-auto-approve':
@@ -181,7 +191,8 @@ function printHelp(): void {
     '      --auto                  以自动接受编辑模式启动',
     '      --bypass                跳过所有权限确认（危险，同 --dangerously-skip-permissions）',
     '      --dangerously-skip-permissions  跳过所有权限确认（危险）',
-    '      --reasoning-effort <high|max>   推理强度（Thinking 模式下生效，Pro 复杂任务可用 max）',
+    '      --reasoning-effort <low|medium|high|max>  推理强度（Thinking 模式下生效；DeepSeek 将 low/medium 归并为 high）',
+    '      --thinking-budget <整数>  思维链 token 预算（如 16000；仅支持该参数的 Provider 生效）',
     '  -v, --version               显示版本',
     '  -h, --help                  显示帮助',
     '',
@@ -195,7 +206,8 @@ function printHelp(): void {
     '  DEEPSEEK_API_KEY    DeepSeek API 密钥',
     '  DEEPSEEK_BASE_URL   API 端点（默认 https://api.deepseek.com）',
     '  DCODE_MODEL         默认模型',
-    '  DCODE_REASONING_EFFORT  推理强度 high | max',
+    '  DCODE_REASONING_EFFORT  推理强度 low | medium | high | max',
+    '  DCODE_THINKING_BUDGET   思维链 token 预算（整数）',
   ]
   process.stdout.write(lines.join('\n') + '\n')
 }
@@ -278,6 +290,19 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     config.reasoningEffort = opts.reasoningEffort
+  }
+
+  // 命令行覆盖：思维链 token 预算。
+  if (opts.thinkingBudget !== undefined) {
+    const budget = parseThinkingBudget(opts.thinkingBudget)
+    if (budget === undefined) {
+      process.stderr.write(
+        `无效的思维链预算：${opts.thinkingBudget}\n` +
+          `请传入 ${MIN_THINKING_BUDGET}~${MAX_THINKING_BUDGET} 之间的整数（如 --thinking-budget 16000）\n`,
+      )
+      process.exit(1)
+    }
+    config.thinkingBudget = budget
   }
 
   // 确定工作目录。

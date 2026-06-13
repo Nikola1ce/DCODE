@@ -163,4 +163,32 @@ describe('getSlashSuggestions', () => {
     expect(completions).toContain('/add-dir remove')
     expect(completions).not.toContain('/add-dir list')
   })
+
+  it('/effort 完整匹配展示四级强度子选项', () => {
+    const items = getSlashSuggestions('/effort')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/effort low')
+    expect(completions).toContain('/effort medium')
+    expect(completions).toContain('/effort high')
+    expect(completions).toContain('/effort max')
+  })
+
+  it('/effort m 前缀过滤出 medium / max', () => {
+    const items = getSlashSuggestions('/effort m')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/effort medium')
+    expect(completions).toContain('/effort max')
+    expect(completions).not.toContain('/effort low')
+    expect(completions).not.toContain('/effort high')
+  })
+
+  it('/ 命令列表包含 /thinking-budget', () => {
+    const items = getSlashSuggestions('/')
+    expect(items.some((i) => i.completion === '/thinking-budget')).toBe(true)
+  })
+
+  it('/thinking-budget 完整匹配展示 clear 子选项', () => {
+    const items = getSlashSuggestions('/thinking-budget')
+    expect(items.map((i) => i.completion)).toContain('/thinking-budget clear')
+  })
 })
