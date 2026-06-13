@@ -51,7 +51,7 @@ export const editFileTool: ToolDefinition = {
     if (ctx.permissionMode === 'acceptEdits' || ctx.permissionMode === 'bypass') {
       return null
     }
-    const abs = resolveWithinCwd(ctx.cwd, input.path)
+    const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     // 预先计算替换后的文本以生成 diff（失败则不附预览）。
     let preview: string | undefined
     try {
@@ -75,7 +75,7 @@ export const editFileTool: ToolDefinition = {
    * @returns 工具结果。
    */
   run: async (input: EditFileInput, ctx): Promise<ToolResult> => {
-    const abs = resolveWithinCwd(ctx.cwd, input.path)
+    const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     if (!existsSync(abs)) {
       return { llmContent: `错误：文件不存在 ${input.path}`, isError: true }
     }

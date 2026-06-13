@@ -45,7 +45,7 @@ export const globTool: ToolDefinition = {
   run: async (input: GlobInput, ctx): Promise<ToolResult> => {
     let searchCwd: string
     try {
-      searchCwd = input.path ? resolveWithinCwd(ctx.cwd, input.path) : ctx.cwd
+      searchCwd = input.path ? resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs) : ctx.cwd
     } catch (e: any) {
       return { llmContent: `错误：${e.message}`, isError: true }
     }

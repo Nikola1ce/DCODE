@@ -28,6 +28,8 @@ export interface AgentRunnerOptions {
   client: LLMClient
   config: DCodeConfig
   cwd: string
+  // 经 /add-dir 额外授权的工作目录（绝对路径），注入 ToolContext.extraDirs。
+  extraDirs?: string[]
   permissionMode: PermissionMode
   model: string
   userInput: string
@@ -286,6 +288,7 @@ export class AgentRunner {
   ): ToolContext {
     return {
       cwd: this.opts.cwd,
+      extraDirs: this.opts.extraDirs ?? [],
       config: this.opts.config,
       permissionMode: this.opts.permissionMode,
       abortSignal: this.opts.abortSignal,

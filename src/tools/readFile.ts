@@ -43,7 +43,7 @@ export const readFileTool: ToolDefinition = {
    * @returns 工具结果。
    */
   run: async (input: ReadFileInput, ctx): Promise<ToolResult> => {
-    const abs = resolveWithinCwd(ctx.cwd, input.path)
+    const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     if (!existsSync(abs)) {
       return { llmContent: `错误：文件不存在 ${input.path}`, isError: true }
     }

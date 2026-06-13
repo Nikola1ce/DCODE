@@ -15,6 +15,13 @@ import { buildSystemPrompt } from './systemPrompt.js'
 import { compactMessages } from './compact.js'
 import type { SkillDefinition } from './skills.js'
 import { loadSkillByName } from './skills.js'
+import {
+  addExtraDir,
+  clearExtraDirs,
+  loadExtraDirs,
+  removeExtraDir,
+  type AddDirResult,
+} from './workspaceDirs.js'
 import type { SessionRecorder } from './session.js'
 import { AgentRunner } from './agentRunner.js'
 import type { AgentRunEvent, DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolResult } from './types.js'
@@ -70,6 +77,8 @@ export class Agent {
   readonly cwd: string
   // 当前会话已加载的技能（/skill 注入 system 提示）。
   private activeSkills: SkillDefinition[] = []
+  // 经 /add-dir 额外授权的工作目录（绝对路径）；启动时从项目 .dcode/workspace.json 加载。
+  private extraDirs: string[] = []
 
   /**
    * 构造函数。
@@ -87,6 +96,8 @@ export class Agent {
     this.client = createLLMClient(opts.config)
     this.recorder = opts.recorder ?? null
     this.permissionMode = opts.permissionMode ?? 'default'
+    // 启动时加载项目级额外工作目录（/add-dir 持久化的目录），并过滤掉已失效的。
+    this.extraDirs = loadExtraDirs(this.cwd)
 
     // 初始化消息历史：若有历史则沿用，否则以 system 提示开场。
     if (opts.initialMessages && opts.initialMessages.length > 0) {
@@ -100,6 +111,7 @@ export class Agent {
             model: this.config.model,
             permissionMode: this.permissionMode,
             activeSkills: this.activeSkills,
+            extraDirs: this.extraDirs,
           }),
         },
       ]
@@ -234,6 +246,60 @@ export class Agent {
     return { ok: true, message: `已卸载技能「${name}」。` }
   }
 
+  /** 返回当前会话生效的额外工作目录（只读副本）。 */
+  getExtraDirs(): string[] {
+    return [...this.extraDirs]
+  }
+
+  /**
+   * 添加额外工作目录：持久化到项目 .dcode/workspace.json，并加入当前会话上下文。
+   * 成功后刷新 system 提示，使模型即时知晓新目录可访问。
+   * @param inputPath 目录路径（相对或绝对）。
+   * @returns 添加结果（含解析后的绝对路径与是否已存在）。
+   */
+  addExtraDir(inputPath: string): AddDirResult {
+    const result = addExtraDir(this.cwd, inputPath)
+    if (result.ok && result.resolved) {
+      // 内存状态与磁盘对齐：未在内存中则追加。
+      if (!this.extraDirs.includes(result.resolved)) {
+        this.extraDirs.push(result.resolved)
+        this.refreshSystemPrompt()
+      }
+    }
+    return result
+  }
+
+  /**
+   * 移除额外工作目录：从持久化与当前会话上下文中删除。
+   * @param inputPath 目录路径（相对或绝对）。
+   * @returns 是否确实移除。
+   */
+  removeExtraDir(inputPath: string): { removed: boolean; resolved: string } {
+    const result = removeExtraDir(this.cwd, inputPath)
+    const before = this.extraDirs.length
+    // 同步内存：按解析路径或原始字符串移除。
+    this.extraDirs = this.extraDirs.filter(
+      (d) => d !== result.resolved && d !== inputPath.trim(),
+    )
+    if (this.extraDirs.length !== before) {
+      this.refreshSystemPrompt()
+    }
+    return result
+  }
+
+  /**
+   * 清空全部额外工作目录（持久化 + 会话）。
+   * @returns 被清除的目录数量。
+   */
+  clearExtraDirs(): number {
+    const n = clearExtraDirs(this.cwd)
+    if (this.extraDirs.length > 0) {
+      this.extraDirs = []
+      this.refreshSystemPrompt()
+    }
+    return n
+  }
+
   /**
    * 用给定历史替换当前会话消息（保留/重建 system 提示）。
    * 供 /resume 恢复历史会话使用。
@@ -252,6 +318,7 @@ export class Agent {
           model: this.config.model,
           permissionMode: this.permissionMode,
           activeSkills: this.activeSkills,
+          extraDirs: this.extraDirs,
         }),
       }
       this.messages = [sys, ...messages]
@@ -275,6 +342,7 @@ export class Agent {
         model: this.config.model,
         permissionMode: this.permissionMode,
         activeSkills: this.activeSkills,
+        extraDirs: this.extraDirs,
       }),
     }
     if (this.messages[0]?.role === 'system') this.messages[0] = sys
@@ -305,6 +373,7 @@ export class Agent {
       client: this.client,
       config: this.config,
       cwd: this.cwd,
+      extraDirs: this.extraDirs,
       permissionMode: this.permissionMode,
       model: this.config.model,
       userInput,

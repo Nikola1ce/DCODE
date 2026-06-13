@@ -88,6 +88,8 @@ export interface PermissionRequest {
 export interface ToolContext {
   // 当前工作目录（绝对路径）。
   cwd: string
+  // 经 /add-dir 额外授权的工作目录（绝对路径）。文件工具可在这些目录内读写。
+  extraDirs?: string[]
   // 当前生效的完整配置。
   config: DCodeConfig
   // 当前权限模式（可能在运行期被 /plan 等命令切换）。

@@ -138,4 +138,29 @@ describe('getSlashSuggestions', () => {
     expect(completions).toContain('/review security')
     expect(completions).not.toContain('/review readability')
   })
+
+  it('/ 命令列表包含 /add-dir', () => {
+    const items = getSlashSuggestions('/')
+    expect(items.some((i) => i.completion === '/add-dir')).toBe(true)
+  })
+
+  it('/add 前缀匹配 /add-dir 命令', () => {
+    const items = getSlashSuggestions('/add')
+    expect(items.some((i) => i.completion === '/add-dir')).toBe(true)
+  })
+
+  it('/add-dir 完整匹配展示 list/remove/clear 子选项', () => {
+    const items = getSlashSuggestions('/add-dir')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/add-dir list')
+    expect(completions).toContain('/add-dir remove')
+    expect(completions).toContain('/add-dir clear')
+  })
+
+  it('/add-dir r 前缀过滤出 remove', () => {
+    const items = getSlashSuggestions('/add-dir r')
+    const completions = items.map((i) => i.completion)
+    expect(completions).toContain('/add-dir remove')
+    expect(completions).not.toContain('/add-dir list')
+  })
 })

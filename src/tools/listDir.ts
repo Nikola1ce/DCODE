@@ -42,7 +42,7 @@ export const listDirTool: ToolDefinition = {
    */
   run: async (input: ListDirInput, ctx): Promise<ToolResult> => {
     const target = input.path ?? '.'
-    const abs = resolveWithinCwd(ctx.cwd, target)
+    const abs = resolveWithinCwd(ctx.cwd, target, ctx.extraDirs)
     if (!existsSync(abs)) {
       return { llmContent: `错误：目录不存在 ${target}`, isError: true }
     }

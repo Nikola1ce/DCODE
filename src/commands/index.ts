@@ -24,6 +24,7 @@ import {
   undoCheckpoints,
   renderUndoResult,
 } from '../core/checkpoint.js'
+import { renderExtraDirsList } from '../core/workspaceDirs.js'
 import {
   buildCommitAgentPrompt,
   buildPrAgentPrompt,
@@ -574,6 +575,58 @@ export const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: 'add-dir',
+    description: '将额外目录加入工作上下文（项目级持久化，文件工具可访问）',
+    aliases: ['adddir'],
+    run: (ctx) => {
+      const raw = ctx.args.trim()
+
+      // 无参数或 list：展示当前额外目录。
+      if (!raw || raw.toLowerCase() === 'list' || raw.toLowerCase() === 'ls') {
+        return { message: renderExtraDirsList(ctx.agent.cwd, ctx.agent.getExtraDirs()) }
+      }
+
+      // 解析子命令：remove / rm / clear。
+      const spaceIdx = raw.indexOf(' ')
+      const sub = (spaceIdx === -1 ? raw : raw.slice(0, spaceIdx)).toLowerCase()
+      const rest = spaceIdx === -1 ? '' : raw.slice(spaceIdx + 1).trim()
+
+      if (sub === 'clear') {
+        const n = ctx.agent.clearExtraDirs()
+        return {
+          message: n > 0 ? `已清空 ${n} 个额外工作目录。` : '当前没有额外工作目录。',
+        }
+      }
+
+      if (sub === 'remove' || sub === 'rm' || sub === 'del') {
+        if (!rest) {
+          return { message: '用法：/add-dir remove <目录路径>' }
+        }
+        const result = ctx.agent.removeExtraDir(rest)
+        return {
+          message: result.removed
+            ? `已移除额外工作目录：${result.resolved}`
+            : `未找到该额外工作目录：${rest}（用 /add-dir list 查看）`,
+        }
+      }
+
+      // 默认：把 raw 整体当作要添加的目录路径（支持含空格的路径）。
+      const result = ctx.agent.addExtraDir(raw)
+      if (!result.ok) {
+        return { message: `添加失败：${result.error}` }
+      }
+      if (result.alreadyPresent) {
+        return { message: `该目录已在工作上下文中：${result.resolved}` }
+      }
+      return {
+        message:
+          `已将目录加入工作上下文：${result.resolved}\n` +
+          '该目录已项目级持久化，下次在本项目启动时自动恢复。\n' +
+          '现在 read_file / write_file / edit_file / glob / grep / list_dir 可访问其中文件。',
+      }
+    },
+  },
+  {
     name: 'mode',
     description: '查看或切换权限模式：plan | auto | bypass',
     run: (ctx) => {
@@ -757,6 +810,21 @@ function getCommandArgSuggestions(
         name: o.name,
         description: o.description,
         completion: `/review ${o.name}`,
+      }))
+  }
+
+  if (cmdName === 'add-dir') {
+    const options = [
+      { name: 'list', description: '查看已添加的额外目录' },
+      { name: 'remove', description: '移除某个额外目录' },
+      { name: 'clear', description: '清空全部额外目录' },
+    ]
+    return options
+      .filter((o) => q === '' || o.name.startsWith(q))
+      .map((o) => ({
+        name: o.name,
+        description: o.description,
+        completion: `/add-dir ${o.name}`,
       }))
   }
 

@@ -21,6 +21,8 @@ export interface SystemPromptContext {
   permissionMode: PermissionMode
   // 当前会话已加载的技能（/skill 注入）。
   activeSkills?: SkillDefinition[]
+  // 经 /add-dir 额外授权的工作目录（绝对路径），告知模型可访问范围。
+  extraDirs?: string[]
 }
 
 /**
@@ -36,6 +38,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 不同权限模式给模型的行为约束说明。
   const modeNote = describePermissionMode(ctx.permissionMode)
   const mcpNote = buildMcpSection()
+  const extraDirsNote = buildExtraDirsNote(ctx.extraDirs ?? [])
 
   // 主体提示。使用清晰的分节，便于模型遵循。
   const base = `你是 ${PRODUCT_NAME}，一个运行在用户终端中的 AI 编程助手，由「${AUTHOR}」打造，底层使用 DeepSeek 模型。
@@ -72,7 +75,7 @@ ${modeNote}
 
 # 运行环境
 - 操作系统平台：${process.platform}
-- 当前工作目录：${ctx.cwd}
+- 当前工作目录：${ctx.cwd}${extraDirsNote}
 - 当前日期：${new Date().toISOString().slice(0, 10)}
 - 当前模型：${ctx.model}`
 
@@ -98,6 +101,18 @@ ${skillsBlock}`
 ${memories}`
   }
   return prompt
+}
+
+/**
+ * 生成额外工作目录的提示行（追加在“当前工作目录”之后）。
+ * 让模型知道除 cwd 外还可访问哪些经 /add-dir 授权的目录。
+ * @param extraDirs 额外目录绝对路径列表。
+ * @returns 以换行起始的提示文本；无额外目录时返回空字符串。
+ */
+function buildExtraDirsNote(extraDirs: string[]): string {
+  if (extraDirs.length === 0) return ''
+  const list = extraDirs.map((d) => `  - ${d}`).join('\n')
+  return `\n- 额外可访问目录（用户已通过 /add-dir 授权，文件工具可在其中读写）：\n${list}`
 }
 
 /**

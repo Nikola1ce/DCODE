@@ -61,7 +61,7 @@ export const grepTool: ToolDefinition = {
 
     let searchRoot: string
     try {
-      searchRoot = input.path ? resolveWithinCwd(ctx.cwd, input.path) : ctx.cwd
+      searchRoot = input.path ? resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs) : ctx.cwd
     } catch (e: any) {
       return { llmContent: `错误：${e.message}`, isError: true }
     }

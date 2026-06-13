@@ -295,10 +295,12 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
   const config: DCodeConfig = { ...opts.parentCtx.config, model: opts.model }
 
   // 构建子代理专用 system 提示：基础环境 + 类型专用指令。
+  // 继承父上下文的额外授权目录，使子代理也能访问 /add-dir 添加的目录。
   const basePrompt = buildSystemPrompt({
     cwd: opts.parentCtx.cwd,
     model: opts.model,
     permissionMode,
+    extraDirs: opts.parentCtx.extraDirs,
   })
   const systemContent =
     `${basePrompt}\n\n# 子代理模式\n` +
@@ -321,6 +323,7 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
     client,
     config,
     cwd: opts.parentCtx.cwd,
+    extraDirs: opts.parentCtx.extraDirs,
     permissionMode,
     model: opts.model,
     userInput: opts.prompt,

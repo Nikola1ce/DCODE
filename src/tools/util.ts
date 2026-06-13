@@ -1,26 +1,64 @@
 // 工具公共辅助函数。
 // 提供路径解析与安全校验、文本截断、相对路径展示等被多个工具复用的逻辑。
-// 安全性要点：所有文件类工具都应通过 resolveWithinCwd 把模型给出的路径限制在工作目录内，
-// 防止越权访问工作目录之外的系统文件。
+// 安全性要点：所有文件类工具都应通过 resolveWithinCwd 把模型给出的路径限制在工作目录
+// （及用户经 /add-dir 显式授权的额外目录）内，防止越权访问未授权的系统文件。
 // 制作人：Moriarty_Dox
 
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /**
- * 将用户/模型提供的路径解析为绝对路径，并校验其位于工作目录内部。
- * 相对路径基于 cwd 解析；绝对路径需仍处于 cwd 子树内，否则抛错。
+ * 判断 child 是否位于 root 子树内（含 root 自身）。
+ * 两者均应为已规范化的绝对路径。
+ * @param root 根目录绝对路径。
+ * @param child 待判断的绝对路径。
+ * @returns 在子树内返回 true。
+ */
+function isWithin(root: string, child: string): boolean {
+  const rel = relative(root, child)
+  // rel 为空表示与 root 相同；以 .. 开头或为绝对路径表示越出 root。
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * 将一组额外授权目录解析为真实绝对路径（不存在的目录按原值规范化保留）。
+ * @param extraDirs 额外目录列表（绝对或相对，相对则基于 baseCwd）。
+ * @param baseCwd 解析相对路径的基准目录。
+ * @returns 规范化后的绝对路径数组。
+ */
+function normalizeRoots(extraDirs: string[], baseCwd: string): string[] {
+  const roots: string[] = []
+  for (const d of extraDirs) {
+    if (!d) continue
+    const abs = isAbsolute(d) ? resolve(d) : resolve(baseCwd, d)
+    try {
+      roots.push(existsSync(abs) ? realpathSync(abs) : abs)
+    } catch {
+      roots.push(abs)
+    }
+  }
+  return roots
+}
+
+/**
+ * 将用户/模型提供的路径解析为绝对路径，并校验其位于工作目录（或额外授权目录）内部。
+ * 相对路径基于 cwd 解析；绝对路径需处于 cwd 或任一 extraDirs 子树内，否则抛错。
  * @param cwd 当前工作目录（绝对路径）。
  * @param inputPath 待解析的路径（可为相对或绝对）。
+ * @param extraDirs 经 /add-dir 额外授权的目录列表（绝对路径优先；相对则基于 cwd）。
  * @returns 解析后的绝对路径。
- * @throws 当目标路径越出工作目录时抛出错误。
+ * @throws 当目标路径越出全部授权目录时抛出错误。
  */
-export function resolveWithinCwd(cwd: string, inputPath: string): string {
+export function resolveWithinCwd(
+  cwd: string,
+  inputPath: string,
+  extraDirs: string[] = [],
+): string {
   // 解析真实 cwd，防止 cwd 本身为指向外部的符号链接。
   const realCwd = realpathSync(cwd)
   const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(realCwd, inputPath)
 
-  // 对已存在路径做 realpath，阻断通过符号链接逃逸工作区。
+  // 对已存在路径做 realpath，阻断通过符号链接逃逸授权区。
   let resolved = abs
   if (existsSync(abs)) {
     resolved = realpathSync(abs)
@@ -34,13 +72,19 @@ export function resolveWithinCwd(cwd: string, inputPath: string): string {
     resolved = join(realParent, relative(parent, abs))
   }
 
-  const rel = relative(realCwd, resolved)
-  if (rel.startsWith('..') || (isAbsolute(rel) && rel !== '')) {
-    throw new Error(
-      `路径越界：出于安全考虑，只能访问当前工作目录内的文件（${inputPath}）。`,
-    )
+  // 允许的根目录集合：工作目录 + 额外授权目录。
+  const allowedRoots = [realCwd, ...normalizeRoots(extraDirs, realCwd)]
+  if (allowedRoots.some((root) => isWithin(root, resolved))) {
+    return resolved
   }
-  return resolved
+
+  const extraNote =
+    extraDirs.length > 0
+      ? '（当前工作目录或已通过 /add-dir 添加的目录）'
+      : '（当前工作目录；可用 /add-dir 添加其它目录）'
+  throw new Error(
+    `路径越界：出于安全考虑，只能访问授权目录内的文件${extraNote}：${inputPath}。`,
+  )
 }
 
 /**

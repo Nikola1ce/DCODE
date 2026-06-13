@@ -46,7 +46,7 @@ export const writeFileTool: ToolDefinition = {
     if (ctx.permissionMode === 'acceptEdits' || ctx.permissionMode === 'bypass') {
       return null
     }
-    const abs = resolveWithinCwd(ctx.cwd, input.path)
+    const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     const exists = existsSync(abs)
     // 生成 diff 预览供用户确认。
     const oldText = exists ? safeRead(abs) : ''
@@ -64,7 +64,7 @@ export const writeFileTool: ToolDefinition = {
    * @returns 工具结果。
    */
   run: async (input: WriteFileInput, ctx): Promise<ToolResult> => {
-    const abs = resolveWithinCwd(ctx.cwd, input.path)
+    const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     const exists = existsSync(abs)
 
     // 确保父目录存在。

@@ -58,6 +58,9 @@ export const MCP_CONFIG_FILE_NAME = 'mcp.json'
 // Hooks 配置文件名（~/.dcode/hooks.json 与项目 .dcode/hooks.json）。
 export const HOOKS_CONFIG_FILE_NAME = 'hooks.json'
 
+// 额外工作目录配置文件名（项目 .dcode/workspace.json，存放 /add-dir 添加的目录）。
+export const WORKSPACE_DIRS_FILE_NAME = 'workspace.json'
+
 // 项目级记忆文件名：类似 Claude Code 的 CLAUDE.md，存放项目约定/上下文。
 export const MEMORY_FILE_NAME = 'DCODE.md'
 
