@@ -8,6 +8,7 @@ import { Box, Text } from 'ink'
 import type { DisplayItem, SystemTone } from './types.js'
 import { useTheme, type Theme } from './theme.js'
 import { Banner } from './Banner.js'
+import { classifyDiffPreviewLine } from '../tools/diff.js'
 
 // 单条展示项的入参。
 interface MessageViewProps {
@@ -163,18 +164,7 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
               paddingX={1}
             >
               {item.preview.split('\n').map((line, i) => (
-                <Text
-                  key={i}
-                  color={
-                    line.startsWith('+')
-                      ? theme.success
-                      : line.startsWith('-')
-                        ? theme.error
-                        : theme.dim
-                  }
-                >
-                  {line}
-                </Text>
+                <DiffPreviewLine key={i} line={line} theme={theme} />
               ))}
             </Box>
           ) : null}
@@ -196,6 +186,51 @@ function previewText(text: string): string {
   if (lines.length <= TOOL_RESULT_PREVIEW_LINES) return text
   const shown = lines.slice(0, TOOL_RESULT_PREVIEW_LINES).join('\n')
   return `${shown}\n… 省略 ${lines.length - TOOL_RESULT_PREVIEW_LINES} 行 …`
+}
+
+// 单行 diff 预览的入参。
+interface DiffPreviewLineProps {
+  // 该行的预览文本（来自 buildDiffPreviewView，含行号列与 +/- 标记或 @@ 头）。
+  line: string
+  // 当前主题。
+  theme: Theme
+}
+
+/**
+ * 渲染一行增强 diff 预览：
+ *   - hunk 头（@@ ... @@ / 省略提示）：accent 色，作为分段标识；
+ *   - 新增行：success 前景；删除行：error 前景；并对变更行加粗以增强对比；
+ *   - 上下文行：dim 前景。
+ * 行号列已包含在文本中（renderDiffViewText 生成），无需额外绘制。
+ * @param props 入参。
+ * @returns 单行 JSX。
+ */
+function DiffPreviewLine({ line, theme }: DiffPreviewLineProps): React.ReactElement {
+  const kind = classifyDiffPreviewLine(line)
+  // 空行仍占一行高度，避免 diff 中的空行被折叠。
+  const text = line === '' ? ' ' : line
+  if (kind === 'hunk') {
+    return (
+      <Text color={theme.accent} bold>
+        {text}
+      </Text>
+    )
+  }
+  if (kind === 'add') {
+    return (
+      <Text color={theme.success} bold>
+        {text}
+      </Text>
+    )
+  }
+  if (kind === 'del') {
+    return (
+      <Text color={theme.error} bold>
+        {text}
+      </Text>
+    )
+  }
+  return <Text color={theme.dim}>{text}</Text>
 }
 
 /**

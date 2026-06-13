@@ -120,6 +120,16 @@ export const COMPACT_TOKEN_THRESHOLD = 60000
 // 读取文件时单次返回的最大字符数，超过会被截断并提示使用偏移分页读取。
 export const MAX_FILE_READ_CHARS = 100000
 
+// —— Notebook（Jupyter .ipynb）相关常量 —— //
+// notebook_read 渲染单个 cell 源码/输出时的最大字符数，超出截断，避免大输出撑爆上下文。
+export const MAX_NOTEBOOK_CELL_CHARS = 8000
+
+// notebook_read 渲染整本 notebook 时的总字符上限，超出后提示用其它参数分段查看。
+export const MAX_NOTEBOOK_READ_CHARS = 60000
+
+// notebook_edit 单个 cell 源码允许写入的最大字符数，防止异常超大内容。
+export const MAX_NOTEBOOK_EDIT_CHARS = 100000
+
 // 命令执行（Shell/PowerShell）默认超时时间（毫秒）。
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120000
 

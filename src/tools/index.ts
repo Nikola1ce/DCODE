@@ -19,6 +19,8 @@ import { grepTool } from './grep.js'
 import { killShellTool } from './killShell.js'
 import { listDirTool } from './listDir.js'
 import { MCP_PROXY_TOOLS } from './mcpProxy.js'
+import { notebookEditTool } from './notebookEdit.js'
+import { notebookReadTool } from './notebookRead.js'
 import { readFileTool } from './readFile.js'
 import { globalToolRegistry, registerMcpTools } from './registry.js'
 import { runCommandTool } from './runCommand.js'
@@ -36,6 +38,8 @@ export const ALL_TOOLS: ToolDefinition[] = [
   readFileTool,
   writeFileTool,
   editFileTool,
+  notebookReadTool,
+  notebookEditTool,
   listDirTool,
   globTool,
   grepTool,

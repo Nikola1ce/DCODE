@@ -7,7 +7,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreview, countDiff } from './diff.js'
+import { buildDiffPreviewView, countDiff } from './diff.js'
 import { resolveWithinCwd, toDisplayPath } from './util.js'
 
 // edit_file 的入参结构。
@@ -57,7 +57,7 @@ export const editFileTool: ToolDefinition = {
     try {
       const oldContent = readFileSync(abs, 'utf8')
       const newContent = applyEdit(oldContent, input)
-      preview = buildDiffPreview(oldContent, newContent)
+      preview = buildDiffPreviewView(oldContent, newContent)
     } catch {
       preview = undefined
     }

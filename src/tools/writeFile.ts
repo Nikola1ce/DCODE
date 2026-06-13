@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreview } from './diff.js'
+import { buildDiffPreviewView } from './diff.js'
 import { resolveWithinCwd, toDisplayPath } from './util.js'
 
 // write_file 的入参结构。
@@ -53,7 +53,7 @@ export const writeFileTool: ToolDefinition = {
     return {
       toolName: 'write_file',
       title: `${exists ? '覆盖' : '创建'}文件 ${toDisplayPath(ctx.cwd, abs)}`,
-      preview: buildDiffPreview(oldText, input.content),
+      preview: buildDiffPreviewView(oldText, input.content),
       ruleKey: `write_file(${input.path})`,
     }
   },

@@ -54,6 +54,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 你拥有一组工具，必须通过“调用工具”来读写文件、检索代码和执行命令，绝不要凭空臆测文件内容。
 - 修改文件前，先用 read_file 阅读相关内容，确保编辑基于真实代码。
 - 局部修改优先使用 edit_file（精确字符串替换），仅在创建新文件或整体重写时用 write_file。
+- 处理 Jupyter Notebook（.ipynb）时，用 notebook_read 查看 cell 结构（混合视图）、用 notebook_edit 增删改 cell，不要用 read_file/edit_file 直接操作其原始 JSON。
 - 需要查找代码时，用 grep 搜索内容、用 glob 按文件名匹配、用 list_dir 浏览结构。
 - 需要运行测试/构建/git 等操作时，用 run_command；并在 description 中说明用途。
 - 长耗时命令（构建、训练）用 run_command(background=true) 后台运行，获得 shell_id 后用 bash_output 轮询输出（tail=true 仅取增量），kill_shell 可终止；/shells 查看状态。

@@ -16,7 +16,7 @@ import { CONFIG_DIR_NAME } from '../constants.js'
 import { toDisplayPath } from '../tools/util.js'
 
 /** 触发检查点的工具名。 */
-export type CheckpointTool = 'write_file' | 'edit_file'
+export type CheckpointTool = 'write_file' | 'edit_file' | 'notebook_edit'
 
 /** 单条检查点记录（写入 manifest.json）。 */
 export interface CheckpointRecord {
