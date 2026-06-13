@@ -42,6 +42,7 @@ import { ensureBuiltinSkills } from './core/skills.js'
 import { getCheckpointExitHint } from './core/checkpoint.js'
 import { App } from './ui/App.js'
 import { messagesToItems } from './ui/messagesToItems.js'
+import { installStdoutTrace, traceEvent } from './trace.js'
 
 // 解析后的命令行选项。
 interface CliOptions {
@@ -204,6 +205,14 @@ function printHelp(): void {
  */
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
+  installStdoutTrace()
+  traceEvent('app', 'cli_start', {
+    print: opts.print,
+    continueSession: opts.continueSession,
+    resume: opts.resume,
+    model: opts.model,
+    cwd: opts.cwd,
+  })
 
   // 处理 --help / --version 短路退出。
   if (opts.help) {

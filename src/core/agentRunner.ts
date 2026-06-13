@@ -13,6 +13,7 @@ import {
 } from '../tools/index.js'
 import { compactMessages, shouldCompact } from './compact.js'
 import { executeToolBatch } from './toolScheduler.js'
+import { traceEvent, traceTextFields } from '../trace.js'
 import type {
   AgentRunEvent,
   DeepMessage,
@@ -102,6 +103,11 @@ export class AgentRunner {
           model: this.opts.model,
           abortSignal: this.opts.abortSignal,
           reasoningEffort: this.opts.config.reasoningEffort,
+          trace: {
+            runId: this.runId,
+            turnId: this.turnId,
+            iteration: iter,
+          },
         })) {
           if (ev.type === 'reasoning') {
             yield this.event('reasoning_delta', {
@@ -306,13 +312,78 @@ export class AgentRunner {
     type: T,
     payload: Omit<Extract<AgentRunEvent, { type: T }>, 'type' | 'runId' | 'turnId'>,
   ): Extract<AgentRunEvent, { type: T }> {
-    return {
+    const event = {
       type,
       runId: this.runId,
       turnId: this.turnId,
       ...payload,
     } as Extract<AgentRunEvent, { type: T }>
+    traceRunnerEvent(event)
+    return event
   }
+}
+
+function traceRunnerEvent(event: AgentRunEvent): void {
+  const context = {
+    runId: event.runId,
+    turnId: event.turnId,
+    iteration: 'iteration' in event ? event.iteration : undefined,
+  }
+  if (event.type === 'text_delta' || event.type === 'reasoning_delta') {
+    traceEvent('runner', event.type, {
+      ...traceTextFields('delta', event.delta),
+    }, context)
+    return
+  }
+  if (event.type === 'turn_start') {
+    traceEvent('runner', event.type, {
+      ...traceTextFields('userInput', event.userInput),
+    }, context)
+    return
+  }
+  if (event.type === 'llm_done' || event.type === 'assistant_message') {
+    traceEvent('runner', event.type, {
+      finishReason: event.type === 'llm_done' ? event.finishReason : undefined,
+      toolCallCount: event.message.toolCalls?.length ?? 0,
+      ...traceTextFields('content', event.message.content),
+      ...(event.message.reasoning ? traceTextFields('reasoning', event.message.reasoning) : {}),
+    }, context)
+    return
+  }
+  traceEvent('runner', event.type, summarizeRunnerEvent(event), context)
+}
+
+function summarizeRunnerEvent(event: AgentRunEvent): Record<string, unknown> {
+  if (event.type === 'tool_start') {
+    return { id: event.id, name: event.name, summary: event.summary }
+  }
+  if (event.type === 'tool_progress') {
+    return { id: event.id, ...traceTextFields('text', event.text) }
+  }
+  if (event.type === 'tool_end') {
+    return {
+      id: event.id,
+      name: event.name,
+      isError: !!event.result.isError,
+      durationMs: event.durationMs,
+      ...traceTextFields('result', event.result.llmContent),
+    }
+  }
+  if (event.type === 'run_end') return { reason: event.reason, iterations: event.iterations }
+  if (event.type === 'run_error') return { error: event.error }
+  if (event.type === 'llm_start') return { model: event.model, toolCount: event.toolCount }
+  if (event.type === 'tool_batch_start') return { count: event.count }
+  if (event.type === 'iteration_end') return { toolCount: event.toolCount }
+  if (event.type === 'compact_start') return { messageCount: event.messageCount }
+  if (event.type === 'compact_end') return { beforeCount: event.beforeCount, afterCount: event.afterCount }
+  if (event.type === 'tool_message') {
+    return {
+      toolName: event.message.toolName,
+      toolCallId: event.message.toolCallId,
+      ...traceTextFields('content', event.message.content),
+    }
+  }
+  return {}
 }
 
 class EventQueue<T> {

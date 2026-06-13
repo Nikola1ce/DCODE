@@ -12,6 +12,7 @@
 export function applyStreamContentDelta(
   accumulated: string,
   incoming: string,
+  options: { snapshot?: boolean } = {},
 ): { next: string; delta: string } {
   if (!incoming) {
     return { next: accumulated, delta: '' }
@@ -21,6 +22,15 @@ export function applyStreamContentDelta(
   if (accumulated.length > 0 && incoming.startsWith(accumulated)) {
     const delta = incoming.slice(accumulated.length)
     return { next: incoming, delta }
+  }
+
+  if (
+    options.snapshot === true &&
+    accumulated.length > incoming.length &&
+    incoming.length >= 24 &&
+    accumulated.startsWith(incoming)
+  ) {
+    return { next: accumulated, delta: '' }
   }
 
   // 重复 chunk：与已累积尾部完全相同。
@@ -67,8 +77,63 @@ function findCurrentBlockReplayOverlap(
   incoming: string,
 ): number {
   const block = getCurrentBlock(accumulated)
-  if (block.length < 24 || incoming.length <= block.length) return 0
-  return matchPrefixIgnoringWhitespaceRuns(block, incoming)
+  // 块太短或 incoming 不比 block 长，不可能是段落重放。
+  if (block.length < 24) return 0
+  if (
+    incoming.length >= 24 &&
+    incoming.length <= block.length &&
+    block.startsWith(incoming)
+  ) {
+    return incoming.length
+  }
+  const incomingPrefix = matchIncomingPrefixAgainstBlock(block, incoming)
+  if (incomingPrefix > 0) {
+    return incomingPrefix
+  }
+  if (incoming.length <= block.length) return 0
+  // 检查 incoming 是否以 block 开头（可能是段首重放）。
+  if (incoming.startsWith(block)) {
+    return block.length
+  }
+  // incoming 没有直接以 block 开头，可能是 whitespace 差异（如空格变换行）。
+  // 尝试 matchPrefixIgnoringWhitespaceRuns：如果 block 忽略 whitespace 后
+  // 能匹配 incoming 的前缀（且 block 至少有 16 个非空白字符），说明是同义重放。
+  const whitespaceMatch = matchPrefixIgnoringWhitespaceRuns(block, incoming)
+  if (whitespaceMatch > 0) {
+    return whitespaceMatch
+  }
+  return 0
+}
+
+function matchIncomingPrefixAgainstBlock(
+  block: string,
+  incoming: string,
+): number {
+  if (incoming.length < 24 || incoming.length > block.length) return 0
+
+  let i = 0
+  let j = 0
+  let matchedNonWhitespace = 0
+
+  while (j < incoming.length) {
+    const a = block[i]
+    const b = incoming[j]
+    if (a === undefined || b === undefined) return 0
+
+    if (isWhitespace(a) || isWhitespace(b)) {
+      if (!isWhitespace(a) || !isWhitespace(b)) return 0
+      while (i < block.length && isWhitespace(block[i])) i++
+      while (j < incoming.length && isWhitespace(incoming[j])) j++
+      continue
+    }
+
+    if (a !== b) return 0
+    i++
+    j++
+    matchedNonWhitespace++
+  }
+
+  return matchedNonWhitespace >= 16 ? incoming.length : 0
 }
 
 function getCurrentBlock(text: string): string {

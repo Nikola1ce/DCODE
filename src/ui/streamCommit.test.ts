@@ -1,47 +1,73 @@
-// StreamCommitter 单元测试。
-// 验证 UI 流式提交状态机不会在 done / 异常收尾路径重复提交尾巴。
-
 import { describe, expect, it } from 'vitest'
 import { StreamCommitter } from './streamCommit.js'
 
+function contentOf(chunks: ReturnType<StreamCommitter['onDone']>): string {
+  return chunks
+    .filter((chunk) => !chunk.spacer)
+    .map((chunk) => chunk.text)
+    .join('')
+}
+
 describe('StreamCommitter', () => {
-  it('onDone 重入不会重复提交已经落盘的尾巴', () => {
+  it('does not commit the same tail twice when onDone is called again', () => {
     const c = new StreamCommitter(false)
 
-    expect(c.onText('没有换行的最后一段')).toEqual([])
+    expect(c.onText('final tail without newline')).toEqual([])
     const firstDone = c.onDone()
     const secondDone = c.onDone()
 
-    expect(firstDone.filter((chunk) => !chunk.spacer).map((chunk) => chunk.text)).toEqual([
-      '没有换行的最后一段',
-    ])
+    expect(contentOf(firstDone)).toBe('final tail without newline')
     expect(secondDone).toEqual([])
   })
 
-  it('已按换行提交的正文不会在 done 时重复提交', () => {
+  it('does not recommit text that was already flushed by newline', () => {
     const c = new StreamCommitter(false)
 
-    const chunks = c.onText('第一行\n')
+    const chunks = c.onText('line one\n')
     const done = c.onDone()
 
-    expect(chunks.filter((chunk) => !chunk.spacer).map((chunk) => chunk.text)).toEqual([
-      '第一行',
-    ])
+    expect(contentOf(chunks)).toBe('line one')
     expect(done.filter((chunk) => !chunk.spacer)).toEqual([])
   })
 
-  it('正文开始后 reasoning 尾巴只落盘一次', () => {
+  it('commits reasoning tail only once when text starts', () => {
     const c = new StreamCommitter(true)
 
-    expect(c.onReasoning('思考尾巴')).toEqual([])
-    const textChunks = c.onText('正文')
+    expect(c.onReasoning('thinking tail')).toEqual([])
+    const textChunks = c.onText('answer')
     const doneChunks = c.onDone()
 
-    expect(textChunks.filter((chunk) => !chunk.spacer).map((chunk) => chunk.text)).toEqual([
-      '思考尾巴',
-    ])
-    expect(doneChunks.filter((chunk) => !chunk.spacer).map((chunk) => chunk.text)).toEqual([
-      '正文',
-    ])
+    expect(contentOf(textChunks)).toBe('thinking tail')
+    expect(contentOf(doneChunks)).toBe('answer')
+  })
+
+  it('soft-flushes long unbroken answer text so the live region stays short', () => {
+    const c = new StreamCommitter(false)
+    const text =
+      'Story begins during the Cultural Revolution, when the physicist Ye Wenjie loses faith in humanity after betrayal and tragedy. '.repeat(
+        5,
+      )
+
+    const chunks = c.onText(text)
+
+    expect(chunks.filter((chunk) => !chunk.spacer).length).toBeGreaterThan(0)
+    expect(c.liveText.length).toBeGreaterThan(0)
+    expect(c.liveText.length).toBeLessThan(text.length)
+    expect(contentOf([...chunks, ...c.onDone()])).toBe(text)
+  })
+
+  it('soft-flushes long unbroken reasoning text without leaking it into answer text', () => {
+    const c = new StreamCommitter(true)
+    const reasoning = 'The model is planning the structure of a long response before writing the visible answer. '.repeat(5)
+
+    const reasoningChunks = c.onReasoning(reasoning)
+    const textChunks = c.onText('final answer')
+    const doneChunks = c.onDone()
+
+    expect(reasoningChunks.filter((chunk) => !chunk.spacer).length).toBeGreaterThan(0)
+    expect(contentOf([...reasoningChunks, ...textChunks].filter((chunk) => chunk.variant === 'reasoning'))).toBe(
+      reasoning,
+    )
+    expect(contentOf(doneChunks.filter((chunk) => chunk.variant === 'text'))).toBe('final answer')
   })
 })

@@ -40,6 +40,8 @@ import { tailByVisualRows } from './textLayout.js'
 import { StreamCommitter, type StreamChunk } from './streamCommit.js'
 import { appendToolProgress } from './toolProgress.js'
 import type { DisplayItem } from './types.js'
+import { makeEventKey, isEventDuplicate } from './eventKey.js'
+import { traceEvent, traceTextFields } from '../trace.js'
 
 const MAX_PENDING_TOOL_PROGRESS_CHARS = 2000
 
@@ -65,6 +67,15 @@ let _seq = 0
 function nextId(): string {
   _seq += 1
   return `i${_seq}`
+}
+
+function traceChunk(chunk: StreamChunk): Record<string, unknown> {
+  return {
+    variant: chunk.variant,
+    head: chunk.head,
+    spacer: !!chunk.spacer,
+    ...traceTextFields('text', chunk.text),
+  }
 }
 
 /**
@@ -227,6 +238,10 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   /** 把分块列表追加到 Static 历史（一次状态更新提交多块，减少重渲染）。 */
   const pushStreamChunks = useCallback((chunks: StreamChunk[]) => {
     if (chunks.length === 0) return
+    traceEvent('app', 'static_push', {
+      chunkCount: chunks.length,
+      chunks: chunks.map(traceChunk),
+    })
     setItems((prev) => [
       ...prev,
       ...chunks.map((c) => ({ id: nextId(), kind: 'stream' as const, ...c })),
@@ -281,67 +296,103 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       committerRef.current = committer
       setLiveText('')
       setLiveReasoning('')
+      // 幂等去重：同一轮 run 中每个事件只应被处理一次。若 AgentRunner 内部重试
+      // 或同一事件被二次 yield（本轮不应发生，但防御性处理），跳过已处理过的。
+      const processedKeys = new Set<string>()
 
       try {
         await agent.runTurn(prompt, {
-          onReasoning: (d) => {
-            // 已完成行落 Static，未完成尾巴留实时区。
-            pushStreamChunks(committer.onReasoning(d))
-            setLiveReasoning(committer.liveReasoning)
-            setStatusText('正在推理')
-          },
-          onText: (d) => {
-            // 正文增量：内部会在首个正文到来时先把思维链尾巴落盘。
-            pushStreamChunks(committer.onText(d))
-            setLiveReasoning(committer.liveReasoning) // 正文开始后思维链尾巴已清空
-            setLiveText(committer.liveText)
-            setStatusText('正在回答')
-          },
-          onAssistantDone: () => {
-            // 提交本条消息剩余尾巴并补块尾间距，随后提交器自动复位迎接下一条消息。
-            pushStreamChunks(committer.onDone())
-            setLiveText('')
-            setLiveReasoning('')
-          },
-          onToolStart: (info) => {
-            toolSummaryRef.current.set(info.id, info.summary)
-            toolNameRef.current.set(info.id, info.name)
-            toolProgressBufferRef.current = ''
-            clearToolProgressTimer()
-            setRunningTool({ summary: info.summary, progress: '' })
-            setStatusText('执行工具')
-          },
-          onToolProgress: (info) => {
-            enqueueToolProgress(info.text)
-          },
-          onToolEnd: (info) => {
-            toolProgressBufferRef.current = ''
-            clearToolProgressTimer()
-            const summary = toolSummaryRef.current.get(info.id) ?? info.name
-            // run_command 展示真实输出，其它工具展示简洁摘要。
-            const resultText = info.result.isError
-              ? info.result.llmContent
-              : info.name === 'run_command'
-                ? info.result.llmContent
-                : info.result.uiSummary ?? info.result.llmContent
-            pushItem({
-              id: nextId(),
-              kind: 'tool',
-              name: info.name,
-              summary,
-              status: info.result.isError ? 'error' : 'done',
-              resultText,
-            })
-            setRunningTool(null)
-            // 同步任务面板。
-            setTodos(agent.getTodos())
-          },
-          onUsage: () => {
-            setCost(agent.usage.costUsd)
-          },
-          onCompacting: () => {
-            setStatusText('正在压缩上下文')
-            pushSystem('info', '上下文较长，正在自动压缩以释放空间…')
+          onEvent: (ev) => {
+            // 幂等去重：只有需要去重的事件（tool_*、assistant_message 等）才检查。
+            // text_delta / reasoning_delta 永远不跳过（makeEventKey 返回 null）。
+            const key = makeEventKey(ev)
+            const traceContext = {
+              runId: ev.runId,
+              turnId: ev.turnId,
+              iteration: 'iteration' in ev ? ev.iteration : undefined,
+            }
+            traceEvent('app', 'on_event_received', {
+              eventType: ev.type,
+              key,
+              ...(ev.type === 'text_delta' || ev.type === 'reasoning_delta'
+                ? traceTextFields('delta', ev.delta)
+                : {}),
+            }, traceContext)
+            if (isEventDuplicate(key, processedKeys)) {
+              traceEvent('app', 'on_event_skipped_duplicate', { eventType: ev.type, key }, traceContext)
+              return
+            }
+            if (key !== null) processedKeys.add(key)
+            committer.setTraceContext(traceContext)
+
+            // 同步处理旧版回调（向后兼容，onEvent 与旧回调不会同时存在，
+            // 因为 agent.runTurn 的实现是先调 handleRunEventForCompatibility 再调 onEvent，
+            // 故旧回调不会被执行；但此处主动检查以保证 onEvent 被注册时能完整覆盖）。
+            if (ev.type === 'reasoning_delta') {
+              const chunks = committer.onReasoning(ev.delta)
+              traceEvent('app', 'reasoning_delta_committed', {
+                chunkCount: chunks.length,
+                chunks: chunks.map(traceChunk),
+                ...traceTextFields('liveReasoning', committer.liveReasoning),
+              }, traceContext)
+              pushStreamChunks(chunks)
+              setLiveReasoning(committer.liveReasoning)
+              setStatusText('正在推理')
+            } else if (ev.type === 'text_delta') {
+              const chunks = committer.onText(ev.delta)
+              traceEvent('app', 'text_delta_committed', {
+                chunkCount: chunks.length,
+                chunks: chunks.map(traceChunk),
+                ...traceTextFields('liveText', committer.liveText),
+                ...traceTextFields('liveReasoning', committer.liveReasoning),
+              }, traceContext)
+              pushStreamChunks(chunks)
+              setLiveReasoning(committer.liveReasoning)
+              setLiveText(committer.liveText)
+              setStatusText('正在回答')
+            } else if (ev.type === 'assistant_message') {
+              const chunks = committer.onDone()
+              traceEvent('app', 'assistant_message_done_committed', {
+                chunkCount: chunks.length,
+                chunks: chunks.map(traceChunk),
+              }, traceContext)
+              pushStreamChunks(chunks)
+              setLiveText('')
+              setLiveReasoning('')
+            } else if (ev.type === 'tool_start') {
+              toolSummaryRef.current.set(ev.id, ev.summary)
+              toolNameRef.current.set(ev.id, ev.name)
+              toolProgressBufferRef.current = ''
+              clearToolProgressTimer()
+              setRunningTool({ summary: ev.summary, progress: '' })
+              setStatusText('执行工具')
+            } else if (ev.type === 'tool_progress') {
+              enqueueToolProgress(ev.text)
+            } else if (ev.type === 'tool_end') {
+              toolProgressBufferRef.current = ''
+              clearToolProgressTimer()
+              const summary = toolSummaryRef.current.get(ev.id) ?? ev.name
+              const resultText = ev.result.isError
+                ? ev.result.llmContent
+                : ev.name === 'run_command'
+                  ? ev.result.llmContent
+                  : ev.result.uiSummary ?? ev.result.llmContent
+              pushItem({
+                id: nextId(),
+                kind: 'tool',
+                name: ev.name,
+                summary,
+                status: ev.result.isError ? 'error' : 'done',
+                resultText,
+              })
+              setRunningTool(null)
+              setTodos(agent.getTodos())
+            } else if (ev.type === 'llm_done') {
+              setCost(agent.usage.costUsd)
+            } else if (ev.type === 'compact_start') {
+              setStatusText('正在压缩上下文')
+              pushSystem('info', '上下文较长，正在自动压缩以释放空间…')
+            }
           },
           requestPermission,
           abortSignal: ac.signal,
@@ -350,7 +401,13 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         // 把异常作为系统错误展示，保持界面可继续使用。
         pushSystem('error', e?.message ? String(e.message) : String(e))
         // 流式失败时，把已产出的未完成尾巴也落块，避免丢失。
-        pushStreamChunks(committer.onDone())
+        const chunks = committer.onDone()
+        traceEvent('app', 'error_done_committed', {
+          error: e?.message ? String(e.message) : String(e),
+          chunkCount: chunks.length,
+          chunks: chunks.map(traceChunk),
+        })
+        pushStreamChunks(chunks)
       } finally {
         setBusy(false)
         setStatusText('')
@@ -455,87 +512,60 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   // 安全网，防止其撑高动态区再次触发 Ink 5.2.1 的帧泄漏/视口不跟随。
   // 正文区左侧有「● 」缩进，按 termCols-2 估算更保守。
   const wrapCols = Math.max(20, termCols - 2)
-  // 思维链尾巴 / 正文尾巴各自的限高（通常只是一行，给出上限仅为安全网）。
-  const reasoningPartialCap = Math.max(2, Math.min(6, termRows - 12))
-  const textPartialCap = Math.max(3, Math.min(10, termRows - 8))
+  // 稳定的输出区域 key：权限弹窗出现时整个 App 会重新渲染，
+  // 但主输出区（Static + 实时区）被包在独立 Box 中，Ink 只需要重绘底部弹窗，
+  // 不会触发 Static 的视口重置，从而避免滚动位置被强制回到顶部。
+  const outputKey = 'main-output'
 
   return (
     <ThemeContext.Provider value={theme}>
       <Box flexDirection="column" width="100%">
-        {/* 历史区：已完成的展示项，使用 Static 避免重复渲染 */}
-        <Static items={items}>
-          {(item) => (
-            <MessageView key={item.id} item={item} showThinking={showThinking} />
-          )}
-        </Static>
-
-        {/* 实时区：流式思维链「未完成尾巴」（已完成行已逐块落入 Static）。
-            首块标签只在尚未提交过思维链分块时显示，避免重复。 */}
-        {showThinking && liveReasoning.trim() ? (
-          <Box flexDirection="column" marginBottom={1}>
-            {!committerRef.current?.reasoningHeadDone ? (
-              <Text color={theme.dim} italic>
-                💭 思考过程：
-              </Text>
-            ) : null}
-            <Text color={theme.dim}>
-              {tailByVisualRows(liveReasoning, reasoningPartialCap, wrapCols)}
-            </Text>
-          </Box>
-        ) : null}
-
-        {/* 实时区：流式正文「未完成尾巴」（已完成行已落 Static，终端随之跟随到底部）。
-            首块带「● 」，续块用两空格缩进对齐到正文列。 */}
-        {liveText.trim() ? (
-          <Box marginBottom={1}>
-            {!committerRef.current?.textHeadDone ? (
-              <Text color={theme.primary} bold>
-                {'● '}
-              </Text>
-            ) : (
-              <Text>{'  '}</Text>
+        {/* 主输出区域：稳定的独立容器。
+            权限弹窗出现时，App 整体重新渲染，但这个 Box 本身不变化，
+            Ink 只需要在底部追加弹窗，Static 视口不受影响。 */}
+        <Box key={outputKey} flexDirection="column">
+          {/* 历史区：已完成的展示项，使用 Static 避免重复渲染 */}
+          <Static items={items}>
+            {(item) => (
+              <MessageView key={item.id} item={item} showThinking={showThinking} />
             )}
-            <Box flexDirection="column">
-              <Text color={theme.text}>
-                {tailByVisualRows(liveText, textPartialCap, wrapCols)}
-              </Text>
-            </Box>
-          </Box>
-        ) : null}
+          </Static>
 
-        {/* 实时区：运行中的工具及其进度 */}
-        {runningTool ? (
-          <Box flexDirection="column" marginBottom={1}>
-            <Box>
-              <Spinner />
-              <Text color={theme.tool}> {runningTool.summary}</Text>
-            </Box>
-            {runningTool.progress.trim() ? (
-              <Box marginLeft={2}>
-                <Text color={theme.dim}>
-                  {tailByVisualRows(runningTool.progress, Math.max(2, Math.min(4, termRows - 8)), wrapCols)}
-                </Text>
+          {/* 实时区：运行中的工具及其进度 */}
+          {runningTool ? (
+            <Box flexDirection="column" marginBottom={1}>
+              <Box>
+                <Spinner />
+                <Text color={theme.tool}> {runningTool.summary}</Text>
               </Box>
-            ) : null}
-          </Box>
-        ) : null}
+              {runningTool.progress.trim() ? (
+                <Box marginLeft={2}>
+                  <Text color={theme.dim}>
+                    {tailByVisualRows(runningTool.progress, Math.max(2, Math.min(4, termRows - 8)), wrapCols)}
+                  </Text>
+                </Box>
+              ) : null}
+            </Box>
+          ) : null}
 
-        {/* 任务清单面板：空闲时窗口化限高（预留输入框/状态栏/边框约 9 行）；
-            运行中折叠为单行摘要，把动态区高度让给流式正文，
-            避免与思维链/正文叠加后超出视口、再次触发视图卡住不跟随 */}
-        <TodoPanel
-          todos={todos}
-          compact={busy}
-          maxVisible={Math.max(3, Math.min(12, termRows - 9))}
-        />
+          {/* 任务清单面板：空闲时窗口化限高（预留输入框/状态栏/边框约 9 行）；
+              运行中折叠为单行摘要，把动态区高度让给流式正文，
+              避免与思维链/正文叠加后超出视口、再次触发视图卡住不跟随 */}
+          <TodoPanel
+            todos={todos}
+            compact={busy}
+            maxVisible={Math.max(3, Math.min(12, termRows - 9))}
+          />
 
-        {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务 */}
-        <BackgroundShellPanel
-          compact={busy}
-          maxVisible={Math.max(2, Math.min(5, termRows - 12))}
-        />
+          {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务 */}
+          <BackgroundShellPanel
+            compact={busy}
+            maxVisible={Math.max(2, Math.min(5, termRows - 12))}
+          />
+        </Box>
 
-        {/* 交互流程优先渲染（互斥） */}
+        {/* 交互区域：权限弹窗优先（遮挡在主输出之上）；无弹窗时渲染输入框/状态栏。
+            注意：此处不用 key，仅靠组件替换切换，不会触发主输出区重渲染。 */}
         {permissionReq ? (
           <PermissionPrompt request={permissionReq} onDecision={handleDecision} />
         ) : flow === 'login' ? (

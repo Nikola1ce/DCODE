@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "trace:analyze": "node scripts/trace-analyze.mjs",
     "package": "node scripts/package-release.mjs",
     "start": "node dist/cli.js",
     "prepublishOnly": "node build.mjs"

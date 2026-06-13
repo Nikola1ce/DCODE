@@ -6,6 +6,7 @@
 //   4) 对限流/服务端错误做指数退避重试。
 // 制作人：Moriarty_Dox
 
+import { appendFileSync } from 'node:fs'
 import OpenAI from 'openai'
 import type {
   ChatCompletionMessageParam,
@@ -24,7 +25,6 @@ import { buildOpenAIClientAgentOptions } from '../providers/proxy.js'
 import { openaiModelSupportsCustomTemperature } from '../providers/openaiModels.js'
 import {
   applyStreamContentDelta,
-  collapseObviousRepetition,
 } from '../providers/streamDelta.js'
 import type {
   LLMClient,
@@ -32,6 +32,7 @@ import type {
   StreamChatParams,
   StreamEvent,
 } from '../providers/types.js'
+import { traceEvent, traceTextFields } from '../trace.js'
 import type { DeepSeekUsage } from './pricing.js'
 
 // 向后兼容：类型定义已迁移至 providers/types。
@@ -39,6 +40,20 @@ export type { StreamEvent, StreamChatParams } from '../providers/types.js'
 
 // 触发重试的最大次数。
 const MAX_RETRIES = 3
+
+function debugStreamEvent(event: Record<string, unknown>): void {
+  const logPath = process.env.DCODE_STREAM_DEBUG_LOG
+  if (!logPath) return
+  try {
+    appendFileSync(logPath, `${JSON.stringify({ ts: Date.now(), ...event })}\n`, 'utf8')
+  } catch {
+    // Debug logging must never affect streaming.
+  }
+}
+
+function previewText(value: string): string {
+  return value.length > 160 ? `${value.slice(0, 160)}...` : value
+}
 
 /**
  * 判断一次流式请求失败后是否允许自动重试。
@@ -159,6 +174,7 @@ export class OpenAICompatibleClient implements LLMClient {
   /** @inheritdoc */
   async *streamChat(params: StreamChatParams): AsyncGenerator<StreamEvent> {
     const { messages, tools, model, temperature = 0.2, abortSignal } = params
+    const traceContext = params.trace ?? {}
     const apiMessages = toApiMessages(messages)
     const supportsThinking = providerSupportsThinking(this.config)
     const thinkingType =
@@ -199,6 +215,14 @@ export class OpenAICompatibleClient implements LLMClient {
           requestBody as any,
           { signal: abortSignal },
         )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>
+        traceEvent('provider', 'stream_start', {
+          model,
+          providerId: this.providerId,
+          messageCount: apiMessages.length,
+          toolCount: tools.length,
+          thinkingType,
+          reasoningEffort,
+        }, traceContext)
 
         let textBuf = ''
         let reasoningBuf = ''
@@ -209,7 +233,9 @@ export class OpenAICompatibleClient implements LLMClient {
         let usage: DeepSeekUsage | undefined
         let finishReason = 'stop'
 
+        let providerSeq = 0
         for await (const chunk of stream) {
+          providerSeq += 1
           if (chunk.usage) usage = chunk.usage as DeepSeekUsage
 
           const choice = chunk.choices?.[0]
@@ -218,30 +244,93 @@ export class OpenAICompatibleClient implements LLMClient {
 
           const delta: any = choice.delta ?? {}
           const messageContent: string | undefined = (choice as any).message?.content
+          traceEvent('provider', 'raw_chunk', {
+            providerSeq,
+            choiceCount: chunk.choices?.length ?? 0,
+            finishReason: choice.finish_reason ?? null,
+            hasDeltaContent: typeof delta.content === 'string' && delta.content.length > 0,
+            hasReasoningContent:
+              typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0,
+            hasMessageContent: typeof messageContent === 'string' && messageContent.length > 0,
+            rawChunk: chunk,
+          }, traceContext)
 
           if (delta.reasoning_content) {
+            const bufferBefore = reasoningBuf
             const { next, delta: reasoningDelta } = applyStreamContentDelta(
               reasoningBuf,
               delta.reasoning_content,
             )
+            debugStreamEvent({
+              kind: 'reasoning_incoming',
+              incomingLength: delta.reasoning_content.length,
+              emittedLength: reasoningDelta.length,
+              bufferBefore: reasoningBuf.length,
+              bufferAfter: next.length,
+              incomingPreview: previewText(delta.reasoning_content),
+              emittedPreview: previewText(reasoningDelta),
+            })
+            traceEvent('provider', 'reasoning_incoming', {
+              providerSeq,
+              ...traceTextFields('incoming', delta.reasoning_content),
+              ...traceTextFields('emitted', reasoningDelta),
+              bufferBeforeHash: traceTextFields('bufferBefore', bufferBefore).bufferBeforeHash,
+              bufferBeforeLength: bufferBefore.length,
+              bufferAfterHash: traceTextFields('bufferAfter', next).bufferAfterHash,
+              bufferAfterLength: next.length,
+            }, traceContext)
             reasoningBuf = next
             if (reasoningDelta) {
               emittedVisibleDelta = true
+              traceEvent('provider', 'yield_reasoning', {
+                providerSeq,
+                ...traceTextFields('delta', reasoningDelta),
+              }, traceContext)
               yield { type: 'reasoning', delta: reasoningDelta }
             }
           }
 
           const textIncoming =
             typeof delta.content === 'string' && delta.content.length > 0
-              ? delta.content
+              ? { text: delta.content, snapshot: false }
               : typeof messageContent === 'string' && messageContent.length > 0
-                ? messageContent
-                : ''
+                ? { text: messageContent, snapshot: true }
+                : null
           if (textIncoming) {
-            const { next, delta: textDelta } = applyStreamContentDelta(textBuf, textIncoming)
+            const bufferBefore = textBuf
+            const { next, delta: textDelta } = applyStreamContentDelta(
+              textBuf,
+              textIncoming.text,
+              { snapshot: textIncoming.snapshot },
+            )
+            debugStreamEvent({
+              kind: 'text_incoming',
+              source: textIncoming.snapshot ? 'snapshot' : 'delta',
+              incomingLength: textIncoming.text.length,
+              emittedLength: textDelta.length,
+              bufferBefore: textBuf.length,
+              bufferAfter: next.length,
+              incomingPreview: previewText(textIncoming.text),
+              emittedPreview: previewText(textDelta),
+            })
+            traceEvent('provider', 'text_incoming', {
+              providerSeq,
+              source: textIncoming.snapshot ? 'snapshot' : 'delta',
+              ...traceTextFields('incoming', textIncoming.text),
+              ...traceTextFields('emitted', textDelta),
+              bufferBeforeHash: traceTextFields('bufferBefore', bufferBefore).bufferBeforeHash,
+              bufferBeforeLength: bufferBefore.length,
+              bufferAfterHash: traceTextFields('bufferAfter', next).bufferAfterHash,
+              bufferAfterLength: next.length,
+            }, traceContext)
             textBuf = next
             if (textDelta) {
               emittedVisibleDelta = true
+              traceEvent('provider', 'yield_text', {
+                providerSeq,
+                source: textIncoming.snapshot ? 'snapshot' : 'delta',
+                ...traceTextFields('delta', textDelta),
+              }, traceContext)
               yield { type: 'text', delta: textDelta }
             }
           }
@@ -258,8 +347,6 @@ export class OpenAICompatibleClient implements LLMClient {
           }
         }
 
-        textBuf = collapseObviousRepetition(textBuf)
-
         const toolCalls: ToolCall[] = [...toolAccum.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([, v]) => ({ id: v.id, name: v.name, argsJson: v.args }))
@@ -272,6 +359,12 @@ export class OpenAICompatibleClient implements LLMClient {
           timestamp: Date.now(),
         }
 
+        traceEvent('provider', 'yield_done', {
+          finishReason,
+          toolCallCount: toolCalls.length,
+          ...traceTextFields('content', textBuf),
+          ...(reasoningBuf ? traceTextFields('reasoning', reasoningBuf) : {}),
+        }, traceContext)
         yield { type: 'done', message, usage, finishReason }
         return
       } catch (err: any) {

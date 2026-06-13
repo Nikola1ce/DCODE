@@ -10,6 +10,13 @@
 // 制作人：Moriarty_Dox
 
 // 一个待提交到 Static 的展示分块。
+import { charCols, strCols } from './textLayout.js'
+import { traceEvent, traceTextFields, type TraceContext } from '../trace.js'
+
+const MAX_LIVE_TEXT_COLS = 120
+const MAX_LIVE_REASONING_COLS = 120
+const MIN_SOFT_FLUSH_REST_COLS = 24
+
 export interface StreamChunk {
   // 'reasoning' 思维链（暗色），'text' 正文。
   variant: 'text' | 'reasoning'
@@ -37,12 +44,17 @@ export class StreamCommitter {
   // 本条消息是否已提交过对应类型的首块。
   private textHead = false
   private reasoningHead = false
+  private traceContext: TraceContext = {}
 
   /**
    * @param showThinking 是否展示思维链。
    */
   constructor(showThinking: boolean) {
     this.showThinking = showThinking
+  }
+
+  setTraceContext(context: TraceContext): void {
+    this.traceContext = context
   }
 
   /** 实时区应显示的正文未完成尾巴。 */
@@ -72,8 +84,18 @@ export class StreamCommitter {
    */
   onReasoning(delta: string): StreamChunk[] {
     if (!this.showThinking) return []
+    traceEvent('committer', 'reasoning_append_before', {
+      ...traceTextFields('delta', delta),
+      ...traceTextFields('pendingReasoning', this.pendingReasoning),
+    }, this.traceContext)
     this.pendingReasoning += delta
-    return this.flush('reasoning')
+    const chunks = this.flush('reasoning')
+    traceEvent('committer', 'reasoning_append_after', {
+      chunkCount: chunks.length,
+      chunks: chunks.map(traceCommittedChunk),
+      ...traceTextFields('pendingReasoning', this.pendingReasoning),
+    }, this.traceContext)
+    return chunks
   }
 
   /**
@@ -84,6 +106,12 @@ export class StreamCommitter {
    */
   onText(delta: string): StreamChunk[] {
     const out: StreamChunk[] = []
+    traceEvent('committer', 'text_append_before', {
+      textStarted: this.textStarted,
+      ...traceTextFields('delta', delta),
+      ...traceTextFields('pendingText', this.pendingText),
+      ...traceTextFields('pendingReasoning', this.pendingReasoning),
+    }, this.traceContext)
     if (!this.textStarted) {
       this.textStarted = true
       // 正文开始前：把思维链残余尾巴落盘，并在思维链与正文之间补一行间隔。
@@ -98,6 +126,12 @@ export class StreamCommitter {
     }
     this.pendingText += delta
     out.push(...this.flush('text'))
+    traceEvent('committer', 'text_append_after', {
+      chunkCount: out.length,
+      chunks: out.map(traceCommittedChunk),
+      ...traceTextFields('pendingText', this.pendingText),
+      ...traceTextFields('pendingReasoning', this.pendingReasoning),
+    }, this.traceContext)
     return out
   }
 
@@ -107,6 +141,13 @@ export class StreamCommitter {
    */
   onDone(): StreamChunk[] {
     const out: StreamChunk[] = []
+    traceEvent('committer', 'done_before', {
+      textStarted: this.textStarted,
+      textHead: this.textHead,
+      reasoningHead: this.reasoningHead,
+      ...traceTextFields('pendingText', this.pendingText),
+      ...traceTextFields('pendingReasoning', this.pendingReasoning),
+    }, this.traceContext)
     if (this.textStarted) {
       // 提交正文最后一行（未完成尾巴），再补消息间隔。
       // 尾巴为空（原文以换行结尾）时无需再补空行，交由间隔块统一处理，避免双空行。
@@ -122,6 +163,10 @@ export class StreamCommitter {
       }
       if (this.reasoningHead) out.push(this.makeSpacer('reasoning'))
     }
+    traceEvent('committer', 'done_after', {
+      chunkCount: out.length,
+      chunks: out.map(traceCommittedChunk),
+    }, this.traceContext)
     this.reset()
     return out
   }
@@ -135,13 +180,44 @@ export class StreamCommitter {
   private flush(variant: 'text' | 'reasoning'): StreamChunk[] {
     const buf = variant === 'text' ? this.pendingText : this.pendingReasoning
     const lastNl = buf.lastIndexOf('\n')
-    if (lastNl < 0) return []
+    if (lastNl < 0) return this.flushLongLive(variant)
     const done = buf.slice(0, lastNl) // 已完成行（不含最后那个换行符，它是与尾巴的分隔）
     const rest = buf.slice(lastNl + 1) // 余下未完成尾巴
+    traceEvent('committer', 'newline_split', {
+      variant,
+      ...traceTextFields('done', done),
+      ...traceTextFields('rest', rest),
+    }, this.traceContext)
     if (variant === 'text') this.pendingText = rest
     else this.pendingReasoning = rest
     const c = this.commit(variant, done)
-    return c ? [c] : []
+    const out = c ? [c] : []
+    out.push(...this.flushLongLive(variant))
+    return out
+  }
+
+  private flushLongLive(variant: 'text' | 'reasoning'): StreamChunk[] {
+    const out: StreamChunk[] = []
+    let buf = variant === 'text' ? this.pendingText : this.pendingReasoning
+    const maxCols = variant === 'text' ? MAX_LIVE_TEXT_COLS : MAX_LIVE_REASONING_COLS
+
+    while (strCols(buf) > maxCols + MIN_SOFT_FLUSH_REST_COLS) {
+      const split = splitByCols(buf, maxCols)
+      if (!split) break
+      traceEvent('committer', 'soft_split', {
+        variant,
+        maxCols,
+        ...traceTextFields('done', split.done),
+        ...traceTextFields('rest', split.rest),
+      }, this.traceContext)
+      const c = this.commit(variant, split.done)
+      if (c) out.push(c)
+      buf = split.rest
+    }
+
+    if (variant === 'text') this.pendingText = buf
+    else this.pendingReasoning = buf
+    return out
   }
 
   /**
@@ -158,6 +234,11 @@ export class StreamCommitter {
     if (text.trim() === '' && head) return null
     if (variant === 'text') this.textHead = true
     else this.reasoningHead = true
+    traceEvent('committer', 'commit_chunk', {
+      variant,
+      head,
+      ...traceTextFields('text', text),
+    }, this.traceContext)
     return { variant, text, head }
   }
 
@@ -173,5 +254,43 @@ export class StreamCommitter {
     this.textStarted = false
     this.textHead = false
     this.reasoningHead = false
+  }
+}
+
+function splitByCols(text: string, maxCols: number): { done: string; rest: string } | null {
+  const chars = [...text]
+  let cols = 0
+  let splitIndex = 0
+
+  for (let i = 0; i < chars.length; i++) {
+    const nextCols = cols + charCols(chars[i].codePointAt(0) ?? 0)
+    if (nextCols > maxCols) break
+    cols = nextCols
+    splitIndex = i + 1
+  }
+
+  if (splitIndex <= 0 || splitIndex >= chars.length) return null
+  const softIndex = findSoftSplitIndex(chars, splitIndex)
+  const cut = softIndex > 0 ? softIndex : splitIndex
+  return {
+    done: chars.slice(0, cut).join(''),
+    rest: chars.slice(cut).join(''),
+  }
+}
+
+function findSoftSplitIndex(chars: string[], hardIndex: number): number {
+  const min = Math.max(0, hardIndex - 24)
+  for (let i = hardIndex - 1; i >= min; i--) {
+    if (/[\s，。；：、,.!?;:]/.test(chars[i])) return i + 1
+  }
+  return 0
+}
+
+function traceCommittedChunk(chunk: StreamChunk): Record<string, unknown> {
+  return {
+    variant: chunk.variant,
+    head: chunk.head,
+    spacer: !!chunk.spacer,
+    ...traceTextFields('text', chunk.text),
   }
 }

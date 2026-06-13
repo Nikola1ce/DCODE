@@ -64,6 +64,11 @@ export interface StreamChatParams {
   abortSignal?: AbortSignal
   thinking?: 'enabled' | 'disabled'
   reasoningEffort?: ReasoningEffort
+  trace?: {
+    runId?: string
+    turnId?: string
+    iteration?: number
+  }
 }
 
 /**
