@@ -142,7 +142,9 @@ function isValidRecord(value: unknown): value is CheckpointRecord {
     typeof r.id === 'string' &&
     typeof r.timestamp === 'number' &&
     typeof r.targetPath === 'string' &&
-    (r.tool === 'write_file' || r.tool === 'edit_file') &&
+    // 必须覆盖 CheckpointTool 的全部取值；遗漏 notebook_edit 会导致 notebook 检查点
+    // 在重新加载 manifest 时被静默过滤，使 /undo 无法回退 .ipynb 编辑。
+    (r.tool === 'write_file' || r.tool === 'edit_file' || r.tool === 'notebook_edit') &&
     typeof r.bytes === 'number' &&
     typeof r.wasNewFile === 'boolean'
   )

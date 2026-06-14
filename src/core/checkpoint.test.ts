@@ -83,6 +83,26 @@ describe('checkpoint', () => {
     expect(getCheckpointsDir(tempCwd)).toContain('checkpoints')
   })
 
+  it('notebook_edit 检查点可被持久化、列出并成功 undo（回归：isValidRecord 须认 notebook_edit）', () => {
+    setup()
+    const file = join(tempCwd, 'nb.ipynb')
+    writeFileSync(file, 'original-notebook', 'utf8')
+
+    // notebook_edit 写回前会创建检查点；该工具名必须被 manifest 校验接受，
+    // 否则记录会在 loadManifest 重新读取时被静默过滤，导致 /undo 无法回退 .ipynb。
+    saveCheckpointBeforeWrite(tempCwd, file, 'notebook_edit')
+    writeFileSync(file, 'edited-notebook', 'utf8')
+
+    // 重新读取（经 loadManifest→isValidRecord）后仍应保留该条记录。
+    const records = listCheckpoints(tempCwd)
+    expect(records.length).toBe(1)
+    expect(records[0].tool).toBe('notebook_edit')
+
+    const result = undoCheckpoints(tempCwd, 1)
+    expect(result.count).toBe(1)
+    expect(readFileSync(file, 'utf8')).toBe('original-notebook')
+  })
+
   it('undo 失败时保留 manifest 条目以便再次回退', () => {
     setup()
     const file = join(tempCwd, 'd.txt')

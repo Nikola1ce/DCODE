@@ -1,6 +1,6 @@
 // 系统提示构建。
-// 组装发送给 DeepSeek 的 system 消息：包含身份设定、行为准则、工具使用规范、
-// 运行环境信息与项目记忆。针对 DeepSeek 模型与编程场景做了表达优化（中文、强调使用工具、
+// 组装发送给大模型（经供应商 API Key 接入）的 system 消息：包含身份设定、行为准则、
+// 工具使用规范、运行环境信息与项目记忆。针对编程场景做了表达优化（中文、强调使用工具、
 // 强调最小改动与先读后写）。
 // 制作人：Moriarty_Dox
 
@@ -41,7 +41,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const extraDirsNote = buildExtraDirsNote(ctx.extraDirs ?? [])
 
   // 主体提示。使用清晰的分节，便于模型遵循。
-  const base = `你是 ${PRODUCT_NAME}，一个运行在用户终端中的 AI 编程助手，由「${AUTHOR}」打造，底层使用 DeepSeek 模型。
+  const base = `你是 ${PRODUCT_NAME}，一个运行在用户终端中的 AI 编程助手，由「${AUTHOR}」打造，通过供应商 API Key 接入大模型提供服务。
 你的目标是高效、安全地帮助用户完成软件工程任务：理解代码库、编写与修改代码、运行命令、排查问题、解释实现。
 
 # 沟通风格

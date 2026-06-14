@@ -16,14 +16,23 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { tailByVisualRows, wrappedRows } from './textLayout.js'
 
-// 辅助：加载 App.tsx 源码。
-function getAppSource(): string {
-  return fs.readFileSync(path.join(process.cwd(), 'src/ui/App.tsx'), 'utf8')
+// 辅助：把源码行尾统一规范为 \n，使断言不受 CRLF/LF 差异影响。
+// 仓库未配置 .gitattributes 且 core.autocrlf=true，同一文件在不同环境检出时
+// 可能是 CRLF 或 LF；断言若硬编码 \r\n，会在 LF 环境（如 CI/Linux）下误报。
+function normalizeEol(text: string): string {
+  return text.replace(/\r\n/g, '\n')
 }
 
-// 辅助：加载任意源码文件。
+// 辅助：加载 App.tsx 源码（行尾已规范为 \n）。
+function getAppSource(): string {
+  return normalizeEol(
+    fs.readFileSync(path.join(process.cwd(), 'src/ui/App.tsx'), 'utf8'),
+  )
+}
+
+// 辅助：加载任意源码文件（行尾已规范为 \n）。
 function readSource(rel: string): string {
-  return fs.readFileSync(path.join(process.cwd(), rel), 'utf8')
+  return normalizeEol(fs.readFileSync(path.join(process.cwd(), rel), 'utf8'))
 }
 
 describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
@@ -41,7 +50,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
   it('主输出区域包含 Static、实时区、TodoPanel 和 BackgroundShellPanel', () => {
     const source = getAppSource()
     // 用唯一模式定位主输出区域的结束：</Box> 后面紧跟"交互区域"注释
-    const mainBoxEnd = source.indexOf('</Box>\r\n\r\n        {/* 交互区域')
+    const mainBoxEnd = source.indexOf('</Box>\n\n        {/* 交互区域')
     expect(mainBoxEnd).toBeGreaterThan(0)
 
     const mainBoxStart = source.indexOf('<Box key={outputKey}')
@@ -56,7 +65,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
 
   it('权限弹窗在主输出区域之后（兄弟节点关系）', () => {
     const source = getAppSource()
-    const mainBoxEnd = source.indexOf('</Box>\r\n\r\n        {/* 交互区域')
+    const mainBoxEnd = source.indexOf('</Box>\n\n        {/* 交互区域')
     expect(mainBoxEnd).toBeGreaterThan(0)
 
     const mainBoxStart = source.indexOf('<Box key={outputKey}')
@@ -73,7 +82,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
 
   it('交互区域包含 InputPrompt、StatusLine 和 PermissionPrompt', () => {
     const source = getAppSource()
-    const mainBoxEnd = source.indexOf('</Box>\r\n\r\n        {/* 交互区域')
+    const mainBoxEnd = source.indexOf('</Box>\n\n        {/* 交互区域')
     const interaction = source.slice(mainBoxEnd + 6)
 
     expect(interaction).toContain('<PermissionPrompt')
@@ -83,7 +92,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
 
   it('PermissionPrompt 前面最近的 </Box> 之后紧跟 permissionReq（兄弟节点）', () => {
     const source = getAppSource()
-    const mainBoxEnd = source.indexOf('</Box>\r\n\r\n        {/* 交互区域')
+    const mainBoxEnd = source.indexOf('</Box>\n\n        {/* 交互区域')
     const afterClose = source.slice(mainBoxEnd + 6)
 
     // 在 </Box> 之后到 <PermissionPrompt 之前的内容应该是注释和条件渲染的开始
@@ -95,7 +104,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
 
   it('TodoPanel 和 BackgroundShellPanel 在主输出区域内而非交互区域内', () => {
     const source = getAppSource()
-    const mainBoxEnd = source.indexOf('</Box>\r\n\r\n        {/* 交互区域')
+    const mainBoxEnd = source.indexOf('</Box>\n\n        {/* 交互区域')
     const mainBoxStart = source.indexOf('<Box key={outputKey}')
     const mainOutput = source.slice(mainBoxStart, mainBoxEnd + 6)
     const interaction = source.slice(mainBoxEnd + 6)
