@@ -46,15 +46,15 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
       )
 
     case 'assistant':
-      // 助手回复：可选思维链（暗色）+ 正文。
+      // 助手回复（会话回放）：思维链折叠为一行「✻ 已思考」摘要（Claude Code 风格），不再整段铺开；
+      // 随后展示正文。这样恢复历史会话时的观感与实时流式一致、不刷屏。
       return (
         <Box flexDirection="column" marginBottom={1}>
-          {showThinking && item.reasoning ? (
-            <Box flexDirection="column" marginBottom={1}>
+          {showThinking && item.reasoning && item.reasoning.trim() ? (
+            <Box marginBottom={item.text.trim() ? 1 : 0}>
               <Text color={theme.dim} italic>
-                {'💭 思考过程：'}
+                {`✻ 已思考（${item.reasoning.trim().length} 字）`}
               </Text>
-              <Text color={theme.dim}>{item.reasoning.trim()}</Text>
             </Box>
           ) : null}
           {item.text.trim() ? (
@@ -67,6 +67,17 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
               </Box>
             </Box>
           ) : null}
+        </Box>
+      )
+
+    case 'thinking':
+      // 思考折叠摘要（实时流式产出）：历史区只保留一行「✻ 已思考（N 秒）」，
+      // 暗色斜体，弱化存在感，既留痕又不喧宾夺主。
+      return (
+        <Box marginBottom={1}>
+          <Text color={theme.dim} italic>
+            {formatThinkingSummary(item.durationMs, item.chars)}
+          </Text>
         </Box>
       )
 
@@ -174,6 +185,20 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
     default:
       return <Text> </Text>
   }
+}
+
+/**
+ * 生成思考折叠摘要文案「✻ 已思考（N 秒）」。
+ * 耗时不足 1 秒时显示「<1 秒」；附带可选的思考字符数，便于感知思考量。
+ * @param durationMs 思考耗时（毫秒）。
+ * @param chars 思考内容字符数（可选）。
+ * @returns 一行摘要文本。
+ */
+function formatThinkingSummary(durationMs: number, chars?: number): string {
+  const seconds = durationMs / 1000
+  const timeText = seconds < 1 ? '<1 秒' : `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`
+  const charsText = chars && chars > 0 ? `，${chars} 字` : ''
+  return `✻ 已思考（${timeText}${charsText}）`
 }
 
 /**

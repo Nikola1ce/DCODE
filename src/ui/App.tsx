@@ -42,7 +42,7 @@ import { StatusLine, Spinner } from './StatusLine.js'
 import { TodoPanel } from './TodoPanel.js'
 import { BackgroundShellPanel } from './BackgroundShellPanel.js'
 import { tailByVisualRows } from './textLayout.js'
-import { StreamCommitter, type StreamChunk } from './streamCommit.js'
+import { StreamCommitter, type StreamChunk, type ThinkingSummary } from './streamCommit.js'
 import { appendToolProgress } from './toolProgress.js'
 import type { DisplayItem } from './types.js'
 import { makeEventKey, isEventDuplicate } from './eventKey.js'
@@ -292,6 +292,24 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     ])
   }, [])
 
+  /**
+   * 把「思考折叠摘要」追加到 Static 历史（Claude Code 风格的一行「✻ 已思考（N 秒）」）。
+   * 仅当本条消息确实出现过思维链时才追加；无思考则忽略。
+   * @param summary StreamCommitter.takeThinkingSummary() 的返回值。
+   */
+  const pushThinkingSummary = useCallback((summary: ThinkingSummary) => {
+    if (!summary.hadReasoning) return
+    setItems((prev) => [
+      ...prev,
+      {
+        id: nextId(),
+        kind: 'thinking' as const,
+        durationMs: summary.durationMs,
+        chars: summary.chars,
+      },
+    ])
+  }, [])
+
   const clearToolProgressTimer = useCallback(() => {
     if (toolProgressTimerRef.current) {
       clearTimeout(toolProgressTimerRef.current)
@@ -373,28 +391,29 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             // 因为 agent.runTurn 的实现是先调 handleRunEventForCompatibility 再调 onEvent，
             // 故旧回调不会被执行；但此处主动检查以保证 onEvent 被注册时能完整覆盖）。
             if (ev.type === 'reasoning_delta') {
-              const chunks = committer.onReasoning(ev.delta)
+              // 思维链不再逐块落 Static：仅更新动态区滚动预览（Claude Code 风格）。
+              committer.onReasoning(ev.delta)
               traceEvent('app', 'reasoning_delta_committed', {
-                chunkCount: chunks.length,
-                chunks: chunks.map(traceChunk),
                 ...traceTextFields('liveReasoning', committer.liveReasoning),
               }, traceContext)
-              pushStreamChunks(chunks)
               setLiveReasoning(committer.liveReasoning)
-              setStatusText('正在推理')
+              setStatusText('正在思考')
             } else if (ev.type === 'text_delta') {
+              // 正文开始即思考结束：先把「思考折叠摘要」落入历史区（显示在答案上方），再处理正文。
+              pushThinkingSummary(committer.takeThinkingSummary())
               const chunks = committer.onText(ev.delta)
               traceEvent('app', 'text_delta_committed', {
                 chunkCount: chunks.length,
                 chunks: chunks.map(traceChunk),
                 ...traceTextFields('liveText', committer.liveText),
-                ...traceTextFields('liveReasoning', committer.liveReasoning),
               }, traceContext)
               pushStreamChunks(chunks)
-              setLiveReasoning(committer.liveReasoning)
+              setLiveReasoning('')
               setLiveText(committer.liveText)
               setStatusText('正在回答')
             } else if (ev.type === 'assistant_message') {
+              // 覆盖「只思考、无正文」的情形：此时仍要折叠出一行思考摘要。
+              pushThinkingSummary(committer.takeThinkingSummary())
               const chunks = committer.onDone()
               traceEvent('app', 'assistant_message_done_committed', {
                 chunkCount: chunks.length,
@@ -446,7 +465,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       } catch (e: any) {
         // 把异常作为系统错误展示，保持界面可继续使用。
         pushSystem('error', e?.message ? String(e.message) : String(e))
-        // 流式失败时，把已产出的未完成尾巴也落块，避免丢失。
+        // 流式失败时：先落思考折叠摘要（若有），再把已产出的未完成尾巴落块，避免丢失。
+        pushThinkingSummary(committer.takeThinkingSummary())
         const chunks = committer.onDone()
         traceEvent('app', 'error_done_committed', {
           error: e?.message ? String(e.message) : String(e),
@@ -472,6 +492,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       clearToolProgressTimer,
       enqueueToolProgress,
       pushStreamChunks,
+      pushThinkingSummary,
       pushSystem,
       refreshContextTokens,
       requestPermission,
@@ -521,12 +542,34 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       pushItem({ id: nextId(), kind: 'user', text: input })
 
       if (isSlashCommand(input)) {
-        const result = await runSlashCommand(input, {
-          agent,
-          config: configRef.current,
-          applyConfig,
-        })
-        await handleCommandResult(result)
+        // 长耗时命令（如 /update 下载安装）通过 onProgress 把实时输出展示到实时区进度面板。
+        // 复用 runningTool 面板：标题为步骤名，progress 累积滚动输出（与工具进度一致的观感）。
+        const cmdHasProgress = { current: false }
+        try {
+          const result = await runSlashCommand(input, {
+            agent,
+            config: configRef.current,
+            applyConfig,
+            onProgress: ({ title, text }) => {
+              cmdHasProgress.current = true
+              setBusy(true)
+              setStatusText(title)
+              setRunningTool((prev) =>
+                prev && prev.summary === title
+                  ? { ...prev, progress: appendToolProgress(prev.progress, text + '\n') }
+                  : { summary: title, progress: text + '\n' },
+              )
+            },
+          })
+          await handleCommandResult(result)
+        } finally {
+          // 命令结束后清理实时区进度面板与忙碌态（仅当本命令确实用过进度）。
+          if (cmdHasProgress.current) {
+            setRunningTool(null)
+            setBusy(false)
+            setStatusText('')
+          }
+        }
         return
       }
       // 无 API Key 时引导先登录。
@@ -583,6 +626,29 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               <MessageView key={item.id} item={item} showThinking={showThinking} />
             )}
           </Static>
+
+          {/* 思考实时预览区（Claude Code 风格）：思考进行中时，动态区显示「✻ 思考中…」+
+              暗色斜体的滚动预览（仅尾部若干视觉行）。思考结束后该区清空，历史区只折叠出一行
+              「✻ 已思考（N 秒）」。仅当有思考预览且未在执行工具时显示，避免与工具进度叠加。 */}
+          {showThinking && liveReasoning.trim() && !runningTool ? (
+            <Box flexDirection="column" marginBottom={1}>
+              <Box>
+                <Spinner />
+                <Text color={theme.dim} italic>
+                  {' 思考中…'}
+                </Text>
+              </Box>
+              <Box marginLeft={2}>
+                <Text color={theme.dim} italic>
+                  {tailByVisualRows(
+                    liveReasoning,
+                    Math.max(2, Math.min(5, termRows - 8)),
+                    wrapCols,
+                  )}
+                </Text>
+              </Box>
+            </Box>
+          ) : null}
 
           {/* 实时区：运行中的工具及其进度。
               权限弹窗期间工具在等待授权，spinner 改为静态帧——避免 80ms 定时重绘叠加

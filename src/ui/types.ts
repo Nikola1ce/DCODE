@@ -14,6 +14,11 @@ export type DisplayItem =
   | { id: string; kind: 'user'; text: string }
   // 助手的一条回复（可含思维链）。用于「会话回放」等一次性整条渲染场景。
   | { id: string; kind: 'assistant'; text: string; reasoning?: string }
+  // 思考过程的「折叠摘要」（Claude Code 风格）：思考结束后历史区只保留这一行，
+  // 不再把完整思维链逐块刷入滚动历史，避免冗长杂乱。
+  //   durationMs: 本次思考耗时（毫秒），用于显示「✻ 已思考（N 秒）」；
+  //   chars:      思考内容字符数（可选，用于补充说明思考量）。
+  | { id: string; kind: 'thinking'; durationMs: number; chars?: number }
   // 流式分块：实时流式时把「已完成的整行」逐块落入 Static，使输出像普通命令输出一样
   // 自然流进滚动历史、终端跟随到底部（避免动态区原地重绘导致视口被钉住、不跟随）。
   //   variant: 'reasoning' 为思维链分块（暗色），'text' 为正文分块；

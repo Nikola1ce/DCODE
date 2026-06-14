@@ -29,30 +29,64 @@ type StreamEvent =
   | { type: 'text'; delta: string }
   | { type: 'done' }
 
+/**
+ * 模拟 App 对 StreamCommitter 的驱动方式（与新 Claude Code 风格一致）：
+ * - reasoning：只更新动态预览，不落 Static（无 committed chunk）；
+ * - text 首次到达 / done：先 takeThinkingSummary 取折叠摘要（hadReasoning 时计为一次思考摘要）；
+ * 返回已落 Static 的正文/分块，以及思考摘要次数与最后的思考字符数，供断言。
+ */
 function simulateStreamProcessor(
   showThinking: boolean,
   events: StreamEvent[],
 ): CommittedChunk[] {
+  return runStream(showThinking, events).committed
+}
+
+interface StreamRunResult {
+  committed: CommittedChunk[]
+  thinkingSummaries: number
+  lastThinkingChars: number
+  // 思考过程中动态预览出现过的最大长度（用于验证预览确实更新过）。
+  maxReasoningPreview: number
+}
+
+function runStream(showThinking: boolean, events: StreamEvent[]): StreamRunResult {
   const committer = new StreamCommitter(showThinking)
   const committed: CommittedChunk[] = []
+  let thinkingSummaries = 0
+  let lastThinkingChars = 0
+  let maxReasoningPreview = 0
+  let textStarted = false
+
+  const takeSummary = () => {
+    const s = committer.takeThinkingSummary()
+    if (s.hadReasoning) {
+      thinkingSummaries += 1
+      lastThinkingChars = s.chars
+    }
+  }
 
   for (const ev of events) {
     if (ev.type === 'done') {
+      takeSummary()
       for (const c of committer.onDone()) {
         if (!c.spacer) committed.push({ variant: c.variant, text: c.text, head: c.head })
       }
     } else if (ev.type === 'reasoning') {
-      for (const c of committer.onReasoning(ev.delta)) {
-        if (!c.spacer) committed.push({ variant: c.variant, text: c.text, head: c.head })
-      }
+      committer.onReasoning(ev.delta)
+      maxReasoningPreview = Math.max(maxReasoningPreview, committer.liveReasoning.length)
     } else if (ev.type === 'text') {
+      if (!textStarted) {
+        textStarted = true
+        takeSummary()
+      }
       for (const c of committer.onText(ev.delta)) {
         if (!c.spacer) committed.push({ variant: c.variant, text: c.text, head: c.head })
       }
     }
   }
 
-  return committed
+  return { committed, thinkingSummaries, lastThinkingChars, maxReasoningPreview }
 }
 
 // ============================================================================
@@ -192,30 +226,31 @@ describe('Bug 1 修复验证：full snapshot 不会被当成 delta 追加', () =
 // ============================================================================
 
 describe('Bug 1 修复验证：thinking 内容不会重复进入 answer 内容', () => {
-  it('reasoning 在正文开始时被正确"落盘"到 reasoning 区，而非 text 区', () => {
+  it('reasoning 不再落 Static：正文区只含正文，思考折叠为一次摘要', () => {
     const events: StreamEvent[] = [
       { type: 'reasoning', delta: '推理中...\n' },
       { type: 'reasoning', delta: '继续推理' },
-      { type: 'text', delta: '这是回答。\n' }, // 正文开始，reasoning 尾巴应落 reasoning
+      { type: 'text', delta: '这是回答。\n' }, // 正文开始 → 思考结束，折叠为摘要
       { type: 'done' },
     ]
 
-    const committed = simulateStreamProcessor(true, events)
+    const result = runStream(true, events)
 
-    const reasoningChunks = committed.filter((c) => c.variant === 'reasoning')
-    const answerChunks = committed.filter((c) => c.variant === 'text')
+    // 新行为：committed 中不应出现任何 reasoning 分块。
+    const reasoningChunks = result.committed.filter((c) => c.variant === 'reasoning')
+    const answerChunks = result.committed.filter((c) => c.variant === 'text')
+    expect(reasoningChunks).toHaveLength(0)
 
-    // reasoning 内容：'推理中...\n' 产生一个 chunk（按换行 flush），
-    // '继续推理'（无换行）留在 pending，在 done() 时作为第二个 chunk 提交。
-    // 验证 chunks 结构而非拼接后的字符串（join('') 会丢失换行）。
-    expect(reasoningChunks).toHaveLength(2)
-    expect(reasoningChunks[0].text).toBe('推理中...')
-    expect(reasoningChunks[1].text).toBe('继续推理')
-    // 验证拼接后内容正确（通过累加，不依赖 join 丢失的换行）。
-    const fullReasoning = reasoningChunks.map((c) => c.text).join('\n')
-    expect(fullReasoning).toBe('推理中...\n继续推理')
-    // answer 内容：这是回答。
-    expect(answerChunks.map((c) => c.text).join('')).toBe('这是回答。')
+    // 思考只折叠出一次摘要，字符数为两段思维链长度之和。
+    expect(result.thinkingSummaries).toBe(1)
+    expect(result.lastThinkingChars).toBe('推理中...\n'.length + '继续推理'.length)
+    // 动态预览在思考过程中确实更新过（非空）。
+    expect(result.maxReasoningPreview).toBeGreaterThan(0)
+
+    // answer 内容：这是回答。（不含任何思维链）
+    const answerText = answerChunks.map((c) => c.text).join('')
+    expect(answerText).toBe('这是回答。')
+    expect(answerText.includes('推理')).toBe(false)
   })
 
   it('关闭 thinking 时 reasoning delta 被静默忽略，不进入 text', () => {
@@ -234,22 +269,19 @@ describe('Bug 1 修复验证：thinking 内容不会重复进入 answer 内容',
     expect(committed[0].text).toBe('回答内容')
   })
 
-  it('纯 reasoning 消息（正文为空）结束后 reasoning 正确落盘且不进入 text 区', () => {
+  it('纯 reasoning 消息（正文为空）结束后只折叠出一次思考摘要、无 text 块', () => {
     const events: StreamEvent[] = [
       { type: 'reasoning', delta: '仅推理\n' },
       { type: 'reasoning', delta: '没有正文' },
-      { type: 'done' }, // 没有 text，reasoning 尾巴在 done 时落盘
+      { type: 'done' }, // 没有 text：done 时取走思考摘要
     ]
 
-    const committed = simulateStreamProcessor(true, events)
-    // '仅推理\n' 按换行 flush 产生一个 chunk；'没有正文' 无换行，在 done() 时产生第二个 chunk
-    expect(committed).toHaveLength(2)
-    // 均为 reasoning 类型，无 text 块混入
-    expect(committed.every((c) => c.variant === 'reasoning')).toBe(true)
-    // 第一块为首块标记
-    expect(committed[0].head).toBe(true)
-    // 第二块为续块
-    expect(committed[1].head).toBe(false)
+    const result = runStream(true, events)
+    // 不再落任何 Static 分块（思维链与正文都没有可提交内容）。
+    expect(result.committed).toHaveLength(0)
+    // 思考折叠出一次摘要。
+    expect(result.thinkingSummaries).toBe(1)
+    expect(result.lastThinkingChars).toBe('仅推理\n'.length + '没有正文'.length)
   })
 })
 

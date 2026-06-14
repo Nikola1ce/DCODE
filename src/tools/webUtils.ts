@@ -5,6 +5,11 @@
 
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import {
+  readResponseWithProgress,
+  renderProgressBar,
+  type DownloadProgress,
+} from '../core/download.js'
 
 /** URL 校验结果。 */
 export type UrlValidationResult =
@@ -128,6 +133,48 @@ export async function safeFetch(
   }
 
   throw new Error(`重定向次数超过 ${MAX_FETCH_REDIRECTS} 次，已中止。`)
+}
+
+/** safeFetchText 的可选项。 */
+export interface SafeFetchTextOptions {
+  /** fetch 选项（signal / headers 等；redirect 会被强制 manual）。 */
+  init: RequestInit
+  /**
+   * 文本进度回调：按字节流读取响应体时实时回调一行可读的进度文本（已内部节流）。
+   * 通常接 ctx.onProgress，把下载进度展示到 CLI 实时区。
+   */
+  onProgressText?: (text: string) => void
+  /** 进度条前缀标签（如主机名），用于渲染。 */
+  label?: string
+  /** 取消信号（与 init.signal 二选一即可，二者都会被尊重）。 */
+  signal?: AbortSignal
+}
+
+/**
+ * 安全 fetch 并「带进度地」读取响应体为文本。
+ * 在 safeFetch 完成 SSRF 校验与重定向跟随后，改用 readResponseWithProgress 逐块读取 body，
+ * 把「百分比/已下载量/速度/ETA」实时渲染成一行进度文本回调出去，最终用 UTF-8 解码为字符串。
+ * 这样网络抓取（web_fetch）也能像下载文件一样显示进度条。
+ * @param urlString 目标 URL。
+ * @param opts 选项（init / 进度回调 / 标签 / 取消信号）。
+ * @returns { res, text } 最终响应与解码后的完整文本。
+ */
+export async function safeFetchText(
+  urlString: string,
+  opts: SafeFetchTextOptions,
+): Promise<{ res: Response; text: string }> {
+  const res = await safeFetch(urlString, opts.init)
+  // 非 2xx 也返回，交由上层根据 res.ok 决定如何处理（避免在此吞掉状态码语义）。
+  if (!res.ok) {
+    return { res, text: '' }
+  }
+  const signal = opts.signal ?? (opts.init.signal as AbortSignal | undefined) ?? undefined
+  const onProgress = opts.onProgressText
+    ? (p: DownloadProgress) => opts.onProgressText?.(renderProgressBar(p, opts.label))
+    : undefined
+  const bytes = await readResponseWithProgress(res, { onProgress, signal, label: opts.label })
+  const text = new TextDecoder('utf-8').decode(bytes)
+  return { res, text }
 }
 
 /**

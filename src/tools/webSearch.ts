@@ -12,6 +12,37 @@ import {
   WEB_SEARCH_TIMEOUT_MS,
 } from '../constants.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
+import { readResponseWithProgress, renderProgressBar } from '../core/download.js'
+
+/**
+ * 带进度地发起 GET 请求并解析 JSON 响应。
+ * 搜索 API 的响应体通常较小且可能无 Content-Length，此处仍按字节流读取并上报进度，
+ * 让「联网搜索」也有可见的下载反馈（无总量时显示已下载量 + 速度）。
+ * @param url 请求 URL。
+ * @param init fetch 选项（headers / signal）。
+ * @param onProgress 进度文本回调（接 ctx.onProgress）。
+ * @param label 进度条前缀标签。
+ * @returns 解析后的 JSON 对象与原始 Response。
+ */
+async function fetchJsonWithProgress<T>(
+  url: URL,
+  init: RequestInit,
+  onProgress: ((text: string) => void) | undefined,
+  label: string,
+): Promise<{ res: Response; data: T }> {
+  const res = await fetch(url, init)
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '')
+    throw new Error(`${label} HTTP ${res.status}: ${errText.slice(0, 200)}`)
+  }
+  const bytes = await readResponseWithProgress(res, {
+    signal: init.signal as AbortSignal | undefined,
+    label,
+    onProgress: onProgress ? (p) => onProgress(renderProgressBar(p, label)) : undefined,
+  })
+  const text = new TextDecoder('utf-8').decode(bytes)
+  return { res, data: JSON.parse(text) as T }
+}
 
 /** web_search 入参。 */
 interface WebSearchInput {
@@ -106,10 +137,12 @@ export const webSearchTool: ToolDefinition = {
     const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS)
 
     try {
+      // 发起前先提示「正在搜索」，让实时区立即有反馈（搜索 API 响应到达前的空窗期）。
+      ctx.onProgress?.(`⠋ 正在搜索「${term}」…`)
       const items =
         provider === 'serpapi'
-          ? await searchViaSerpApi(term, count, apiKey, controller.signal)
-          : await searchViaBing(term, count, apiKey, controller.signal)
+          ? await searchViaSerpApi(term, count, apiKey, controller.signal, ctx.onProgress)
+          : await searchViaBing(term, count, apiKey, controller.signal, ctx.onProgress)
 
       if (items.length === 0) {
         return {
@@ -157,12 +190,14 @@ function clampResults(n: number): number {
  * @param count 结果数。
  * @param apiKey API Key。
  * @param signal 取消信号。
+ * @param onProgress 进度文本回调（下载搜索结果时实时上报）。
  */
 async function searchViaSerpApi(
   term: string,
   count: number,
   apiKey: string,
   signal: AbortSignal,
+  onProgress?: (text: string) => void,
 ): Promise<SearchResultItem[]> {
   const url = new URL('https://serpapi.com/search.json')
   url.searchParams.set('engine', 'google')
@@ -170,18 +205,14 @@ async function searchViaSerpApi(
   url.searchParams.set('num', String(count))
   url.searchParams.set('api_key', apiKey)
 
-  const res = await fetch(url, {
-    signal,
-    headers: { 'User-Agent': `${PRODUCT_NAME}/${VERSION}` },
-  })
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '')
-    throw new Error(`SerpAPI HTTP ${res.status}: ${errText.slice(0, 200)}`)
-  }
-
-  const data = (await res.json()) as {
+  const { data } = await fetchJsonWithProgress<{
     organic_results?: { title?: string; link?: string; snippet?: string }[]
-  }
+  }>(
+    url,
+    { signal, headers: { 'User-Agent': `${PRODUCT_NAME}/${VERSION}` } },
+    onProgress,
+    'SerpAPI',
+  )
   return (data.organic_results ?? []).slice(0, count).map((r) => ({
     title: r.title ?? '(无标题)',
     url: r.link ?? '',
@@ -195,33 +226,34 @@ async function searchViaSerpApi(
  * @param count 结果数。
  * @param apiKey API Key。
  * @param signal 取消信号。
+ * @param onProgress 进度文本回调（下载搜索结果时实时上报）。
  */
 async function searchViaBing(
   term: string,
   count: number,
   apiKey: string,
   signal: AbortSignal,
+  onProgress?: (text: string) => void,
 ): Promise<SearchResultItem[]> {
   const url = new URL(BING_SEARCH_ENDPOINT)
   url.searchParams.set('q', term)
   url.searchParams.set('count', String(count))
   url.searchParams.set('textFormat', 'Raw')
 
-  const res = await fetch(url, {
-    signal,
-    headers: {
-      'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
-      'Ocp-Apim-Subscription-Key': apiKey,
-    },
-  })
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '')
-    throw new Error(`Bing Search HTTP ${res.status}: ${errText.slice(0, 200)}`)
-  }
-
-  const data = (await res.json()) as {
+  const { data } = await fetchJsonWithProgress<{
     webPages?: { value?: { name?: string; url?: string; snippet?: string }[] }
-  }
+  }>(
+    url,
+    {
+      signal,
+      headers: {
+        'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
+        'Ocp-Apim-Subscription-Key': apiKey,
+      },
+    },
+    onProgress,
+    'Bing Search',
+  )
   return (data.webPages?.value ?? []).slice(0, count).map((r) => ({
     title: r.name ?? '(无标题)',
     url: r.url ?? '',

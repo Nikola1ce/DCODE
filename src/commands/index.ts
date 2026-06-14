@@ -118,6 +118,9 @@ export interface SlashCommandContext {
   applyConfig: (patch: Partial<DCodeConfig>) => void
   // 命令参数（命令名之后的剩余文本，已去除首尾空白）。
   args: string
+  // 可选：长耗时命令（如 /update 下载安装）的实时进度回调。
+  // 上层 UI 据此在实时区展示下载/安装进度，不提供时命令应静默完成。
+  onProgress?: (info: { title: string; text: string }) => void
 }
 
 // 单个斜杠命令定义。
@@ -879,11 +882,19 @@ export const COMMANDS: SlashCommand[] = [
       const sub = ctx.args.trim().toLowerCase()
       if (!sub || sub === 'check' || sub === 'status') {
         const force = sub === 'check'
-        const check = await checkForUpdate({ forceRefresh: force })
+        // 检测阶段也上报进度（“正在从 GitHub 检测最新版本…”）。
+        const check = await checkForUpdate({
+          forceRefresh: force,
+          onProgress: (text) => ctx.onProgress?.({ title: '检测更新', text }),
+        })
         return { message: renderUpdateStatus(check) }
       }
       if (sub === 'run' || sub === 'install' || sub === 'force') {
-        const result = await runUpdate({ force: sub === 'force' })
+        // 更新阶段把 git pull / npm install 的实时输出推送到 UI 实时区。
+        const result = await runUpdate({
+          force: sub === 'force',
+          onProgress: (text) => ctx.onProgress?.({ title: '更新 DCODE', text }),
+        })
         return { message: result.message }
       }
       return {

@@ -3,7 +3,7 @@
 // 或对 npm 全局安装执行 npm update -g dcode。供 /update 命令与 CLI 启动提示使用。
 // 制作人：Moriarty_Dox
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +16,12 @@ import {
 } from '../constants.js'
 import { homedir } from 'node:os'
 import { runGit } from './gitUtils.js'
+
+/**
+ * 更新过程的进度回调：把版本检测、git pull、npm install 等步骤的实时输出
+ * 逐行推送给上层（如 /update 命令 → CLI 实时区），让长时间下载/安装有可见反馈。
+ */
+export type UpdateProgressReporter = (text: string) => void
 
 /** 更新检测缓存文件名（位于 ~/.dcode/）。 */
 export const UPDATE_CHECK_CACHE_FILE = 'update-check-cache.json'
@@ -226,12 +232,17 @@ export function writeUpdateCheckCache(data: Omit<UpdateCheckCache, 'checkedAt'> 
 /**
  * 从 GitHub API 获取最新 Release 版本号。
  * @param timeoutMs 请求超时（毫秒）。
+ * @param onProgress 可选进度回调（展示「正在检测…」等反馈）。
  * @returns 版本字符串（不含 v）或 null。
  */
-export async function fetchLatestReleaseVersion(timeoutMs = 8000): Promise<string | null> {
+export async function fetchLatestReleaseVersion(
+  timeoutMs = 8000,
+  onProgress?: UpdateProgressReporter,
+): Promise<string | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    onProgress?.('⠋ 正在从 GitHub 检测最新版本…')
     const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
@@ -243,6 +254,7 @@ export async function fetchLatestReleaseVersion(timeoutMs = 8000): Promise<strin
     const body = (await res.json()) as { tag_name?: string }
     const tag = body.tag_name?.trim()
     if (!tag) return null
+    onProgress?.(`✓ 最新 Release：v${tag.replace(/^v/i, '')}`)
     return tag.replace(/^v/i, '')
   } catch {
     return null
@@ -260,6 +272,7 @@ export async function fetchLatestReleaseVersion(timeoutMs = 8000): Promise<strin
 export async function checkForUpdate(options?: {
   forceRefresh?: boolean
   timeoutMs?: number
+  onProgress?: UpdateProgressReporter
 }): Promise<UpdateCheckResult> {
   const installRoot = getInstallRoot()
   const installType = detectInstallType(installRoot)
@@ -281,7 +294,7 @@ export async function checkForUpdate(options?: {
   }
 
   if (!fromCache) {
-    latestVersion = await fetchLatestReleaseVersion(timeoutMs)
+    latestVersion = await fetchLatestReleaseVersion(timeoutMs, options?.onProgress)
     if (latestVersion === null) {
       error = '无法获取 GitHub 最新版本（网络或 API 限制）'
     }
@@ -303,7 +316,7 @@ export async function checkForUpdate(options?: {
 }
 
 /**
- * 在指定目录执行 shell 命令（跨平台）。
+ * 在指定目录执行 shell 命令（跨平台，同步阻塞）。
  * @param cwd 工作目录。
  * @param command 完整命令字符串。
  * @returns 步骤结果。
@@ -333,52 +346,146 @@ function runShellStep(cwd: string, name: string, command: string): UpdateStepRes
 }
 
 /**
+ * 在指定目录执行 shell 命令并「实时流式」上报输出（跨平台，异步）。
+ * git pull / npm install 这类下载安装步骤无字节级百分比，但其自身 stdout/stderr 常包含
+ * 下载/安装进度文本；本函数逐块把输出推送给 onProgress，让用户看到「正在下载…」的实时反馈，
+ * 而非长时间无响应地干等。完整输出仍会累计返回，作为步骤结果用于最终汇总展示。
+ * @param cwd 工作目录。
+ * @param name 步骤名（展示用）。
+ * @param command 完整命令字符串。
+ * @param onProgress 实时进度回调（可选）。
+ * @returns 步骤结果（Promise）。
+ */
+function runShellStepStreaming(
+  cwd: string,
+  name: string,
+  command: string,
+  onProgress?: UpdateProgressReporter,
+): Promise<UpdateStepResult> {
+  return new Promise((resolve) => {
+    const isWin = process.platform === 'win32'
+    onProgress?.(`⟳ ${name}：$ ${command}`)
+    const child = spawn(isWin ? 'cmd.exe' : 'sh', isWin ? ['/c', command] : ['-c', command], {
+      cwd,
+      windowsHide: true,
+    })
+
+    let combined = ''
+    const maxOut = 8000
+
+    // 把子进程输出按「行」上报，避免半行刷屏；同时累计完整文本用于结果汇总。
+    let lineBuf = ''
+    const handle = (data: Buffer) => {
+      const chunk = data.toString('utf8')
+      combined += chunk
+      lineBuf += chunk
+      // 按换行切分，逐行上报已完成的行（保留最后未完成的一行在缓冲）。
+      const parts = lineBuf.split(/\r?\n/)
+      lineBuf = parts.pop() ?? ''
+      for (const line of parts) {
+        const trimmed = line.trim()
+        if (trimmed) onProgress?.(`  ${trimmed}`)
+      }
+    }
+    child.stdout?.on('data', handle)
+    child.stderr?.on('data', handle)
+
+    const finalize = (exitCode: number) => {
+      // 上报最后未完成的一行（若有）。
+      const tail = lineBuf.trim()
+      if (tail) onProgress?.(`  ${tail}`)
+      const trimmed = combined.trimEnd()
+      const output =
+        trimmed.length > maxOut ? trimmed.slice(0, maxOut) + '\n…（输出已截断）' : trimmed
+      const ok = exitCode === 0
+      onProgress?.(`${ok ? '✓' : '✗'} ${name}`)
+      resolve({
+        name,
+        command,
+        ok,
+        output: output || (ok ? '（无输出）' : `退出码 ${exitCode}`),
+      })
+    }
+
+    child.on('error', (err) => {
+      combined += `\n${err.message}`
+      finalize(1)
+    })
+    child.on('close', (code) => {
+      finalize(code ?? 1)
+    })
+  })
+}
+
+/**
  * 执行源码安装的一键更新：git pull → npm install → npm run build。
+ * 每一步均实时上报输出（onProgress），让下载/安装过程在 CLI 有可见进度。
  * @param root 包根目录。
+ * @param onProgress 实时进度回调（可选）。
  * @returns 步骤列表与是否全部成功。
  */
-export function runSourceUpdate(root: string): { ok: boolean; steps: UpdateStepResult[] } {
+export async function runSourceUpdate(
+  root: string,
+  onProgress?: UpdateProgressReporter,
+): Promise<{ ok: boolean; steps: UpdateStepResult[] }> {
   const steps: UpdateStepResult[] = []
 
-  const pull = runShellStep(root, 'git pull', 'git pull --ff-only')
+  const pull = await runShellStepStreaming(root, 'git pull', 'git pull --ff-only', onProgress)
   steps.push(pull)
   if (!pull.ok) return { ok: false, steps }
 
-  const install = runShellStep(root, 'npm install', 'npm install')
+  const install = await runShellStepStreaming(root, 'npm install', 'npm install', onProgress)
   steps.push(install)
   if (!install.ok) return { ok: false, steps }
 
-  const build = runShellStep(root, 'npm run build', 'npm run build')
+  const build = await runShellStepStreaming(root, 'npm run build', 'npm run build', onProgress)
   steps.push(build)
   return { ok: build.ok, steps }
 }
 
 /**
  * 执行 npm 全局安装更新。
+ * @param onProgress 实时进度回调（可选）。
  * @returns 步骤列表与是否成功。
  */
-export function runNpmGlobalUpdate(): { ok: boolean; steps: UpdateStepResult[] } {
-  const step = runShellStep(process.cwd(), 'npm 全局更新', 'npm update -g dcode')
+export async function runNpmGlobalUpdate(
+  onProgress?: UpdateProgressReporter,
+): Promise<{ ok: boolean; steps: UpdateStepResult[] }> {
+  const step = await runShellStepStreaming(
+    process.cwd(),
+    'npm 全局更新',
+    'npm update -g dcode',
+    onProgress,
+  )
   return { ok: step.ok, steps: [step] }
 }
 
 /**
  * 在项目内 node_modules 安装目录执行 npm install（拉取 registry 最新版）。
  * @param root 包根目录。
+ * @param onProgress 实时进度回调（可选）。
  * @returns 步骤列表与是否成功。
  */
-export function runNpmLocalUpdate(root: string): { ok: boolean; steps: UpdateStepResult[] } {
-  const step = runShellStep(root, 'npm install', 'npm install dcode@latest')
+export async function runNpmLocalUpdate(
+  root: string,
+  onProgress?: UpdateProgressReporter,
+): Promise<{ ok: boolean; steps: UpdateStepResult[] }> {
+  const step = await runShellStepStreaming(root, 'npm install', 'npm install dcode@latest', onProgress)
   return { ok: step.ok, steps: [step] }
 }
 
 /**
  * 根据安装类型执行完整更新流程。
  * @param options.force 为 true 时即使版本相同也执行更新步骤。
+ * @param options.onProgress 实时进度回调：把版本检测与各更新步骤的输出推送到 UI 实时区。
  * @returns 更新汇总结果。
  */
-export async function runUpdate(options?: { force?: boolean }): Promise<UpdateRunResult> {
-  const check = await checkForUpdate({ forceRefresh: true })
+export async function runUpdate(options?: {
+  force?: boolean
+  onProgress?: UpdateProgressReporter
+}): Promise<UpdateRunResult> {
+  const onProgress = options?.onProgress
+  const check = await checkForUpdate({ forceRefresh: true, onProgress })
   const { installRoot, installType } = check
 
   if (!options?.force && !check.updateAvailable) {
@@ -402,10 +509,10 @@ export async function runUpdate(options?: { force?: boolean }): Promise<UpdateRu
 
   const { ok, steps } =
     installType === 'source'
-      ? runSourceUpdate(installRoot)
+      ? await runSourceUpdate(installRoot, onProgress)
       : installType === 'npm-global'
-        ? runNpmGlobalUpdate()
-        : runNpmLocalUpdate(installRoot)
+        ? await runNpmGlobalUpdate(onProgress)
+        : await runNpmLocalUpdate(installRoot, onProgress)
 
   const lines = steps.map((s) => {
     const status = s.ok ? '✓' : '✗'

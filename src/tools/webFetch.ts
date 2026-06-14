@@ -12,7 +12,7 @@ import {
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import {
   extractBodyText,
-  safeFetch,
+  safeFetchText,
   truncateWebContent,
   validateFetchUrl,
 } from './webUtils.js'
@@ -75,12 +75,19 @@ export const webFetchTool: ToolDefinition = {
     const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS)
 
     try {
-      const res = await safeFetch(validated.url.toString(), {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
-          Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+      // 带进度抓取：按字节流读取响应体，把「百分比/已下载量/速度」实时上报到 CLI 实时区。
+      // 进度条前缀用主机名，便于用户辨认正在下载的资源。
+      const { res, text: raw } = await safeFetchText(validated.url.toString(), {
+        init: {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
+            Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+          },
         },
+        signal: controller.signal,
+        label: validated.url.hostname,
+        onProgressText: (line) => ctx.onProgress?.(line),
       })
 
       if (!res.ok) {
@@ -92,7 +99,6 @@ export const webFetchTool: ToolDefinition = {
       }
 
       const contentType = res.headers.get('content-type') ?? ''
-      const raw = await res.text()
 
       let text: string
       if (contentType.includes('text/html') || raw.trimStart().startsWith('<!')) {
