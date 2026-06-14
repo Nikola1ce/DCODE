@@ -1,13 +1,13 @@
 {
   "name": "dcode-vscode",
   "displayName": "DCODE",
-  "description": "在 VS Code 侧边栏中使用 DCODE AI 编程助手（复用 dcode CLI 内核：工具 / MCP / Hooks / 多 Provider）。制作人：Moriarty_Dox",
-  "version": "0.1.0",
-  "publisher": "moriarty-dox",
+  "description": "在 VS Code 右侧辅助侧边栏中使用 DCODE AI 编程助手（复用 dcode CLI 内核：工具 / MCP / Hooks / 多 Provider）。制作人：Moriarty_Dox",
+  "version": "0.2.1",
+  "publisher": "Moriarty-Dox",
   "license": "MIT",
   "author": "Moriarty_Dox",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.106.0"
   },
   "repository": {
     "type": "git",
@@ -31,7 +31,7 @@
   "activationEvents": [],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "dcode-sidebar",
           "title": "DCODE",
@@ -57,6 +57,11 @@
         "category": "DCODE"
       },
       {
+        "command": "dcode.addSelectionToContext",
+        "title": "DCODE: 加入上下文",
+        "category": "DCODE"
+      },
+      {
         "command": "dcode.explainSelection",
         "title": "DCODE: 解释选中代码",
         "category": "DCODE"
@@ -74,6 +79,11 @@
       {
         "command": "dcode.addSelectionToChat",
         "title": "DCODE: 将选中代码加入对话",
+        "category": "DCODE"
+      },
+      {
+        "command": "dcode.addFilesToChat",
+        "title": "DCODE: 加入 DCODE 上下文",
         "category": "DCODE"
       },
       {
@@ -97,26 +107,44 @@
       ],
       "dcode.editorContext": [
         {
-          "command": "dcode.explainSelection",
+          "command": "dcode.addSelectionToContext",
           "group": "1_dcode@1"
         },
         {
-          "command": "dcode.fixSelection",
+          "command": "dcode.explainSelection",
           "group": "1_dcode@2"
         },
         {
-          "command": "dcode.refactorSelection",
+          "command": "dcode.fixSelection",
           "group": "1_dcode@3"
         },
         {
-          "command": "dcode.addSelectionToChat",
+          "command": "dcode.refactorSelection",
           "group": "1_dcode@4"
+        },
+        {
+          "command": "dcode.addSelectionToChat",
+          "group": "1_dcode@5"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dcode.addFilesToChat",
+          "group": "6_dcode@1"
         }
       ],
       "commandPalette": [
         {
+          "command": "dcode.addSelectionToContext",
+          "when": "editorHasSelection"
+        },
+        {
           "command": "dcode.addSelectionToChat",
           "when": "editorHasSelection"
+        },
+        {
+          "command": "dcode.addFilesToChat",
+          "when": "false"
         }
       ]
     },
@@ -175,11 +203,14 @@
     "typecheck": "tsc --noEmit",
     "prepackage": "node prepackage.mjs",
     "package": "node prepackage.mjs && vsce package --no-dependencies -o dcode-vscode.vsix",
+    "publish": "node prepackage.mjs && vsce publish --no-dependencies",
+    "publish:patch": "node prepackage.mjs && vsce publish patch --no-dependencies",
+    "publish:minor": "node prepackage.mjs && vsce publish minor --no-dependencies",
     "vscode:prepublish": "node esbuild.mjs --production"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.106.0",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.25.12",
     "typescript": "^5.6.3"

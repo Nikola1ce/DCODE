@@ -59,8 +59,29 @@ export function activate(context: vscode.ExtensionContext): void {
         true,
       ),
     ),
+    // 「加入上下文」：把当前选区作为「上下文 chip」附件加入对话（类 Cursor），
+    // 不把整段代码文本塞进输入框，而是以可移除的 chip 形式携带，发送时更省 token。
+    vscode.commands.registerCommand('dcode.addSelectionToContext', () =>
+      addSelectionToContext(),
+    ),
     vscode.commands.registerCommand('dcode.addSelectionToChat', () =>
       runSelectionCommand('', false),
+    ),
+    // 资源管理器右键「加入 DCODE 上下文」：支持文件与文件夹、单选与多选
+    //（uri 为右键直接命中的那一项，uris 为框选/Ctrl 多选的完整集合）。
+    // 文件夹会在 panelProvider 侧浅层展开其直接子文件，统一转为相对路径附件回填到对话 chips。
+    vscode.commands.registerCommand(
+      'dcode.addFilesToChat',
+      async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
+        // 多选时 VS Code 通过第二个参数传入完整选中集合；否则回退到单个 uri。
+        const targets =
+          uris && uris.length > 0 ? uris : uri ? [uri] : []
+        if (targets.length === 0) {
+          void vscode.window.showWarningMessage('DCODE：请在资源管理器中选择文件或文件夹后再试。')
+          return
+        }
+        await panelProvider?.addFilesToChat(targets)
+      },
     ),
     vscode.commands.registerCommand('dcode.newSession', () => {
       panelProvider?.newSession()
@@ -99,6 +120,41 @@ async function runSelectionCommand(
   const languageId = editor.document.languageId
 
   await panelProvider?.injectSelection(prompt, code, languageId, relPath, autoSend)
+}
+
+/**
+ * 把当前编辑器选区作为「上下文 chip」附件加入对话面板。
+ * 与 runSelectionCommand 的「注入文本」不同：此处构造一个 selection 类型的
+ * ContextAttachment（含相对路径、起止行、代码片段、语言），交给面板以可移除的
+ * chip 形式展示并随下一轮发送，避免把整段代码塞进输入框，更省 token、更直观。
+ */
+async function addSelectionToContext(): Promise<void> {
+  const editor = vscode.window.activeTextEditor
+  if (!editor) {
+    void vscode.window.showWarningMessage('DCODE：没有活动的编辑器。')
+    return
+  }
+  const selection = editor.selection
+  const code = editor.document.getText(selection)
+  if (!code.trim()) {
+    void vscode.window.showWarningMessage('DCODE：请先选中要加入上下文的代码。')
+    return
+  }
+  // 相对工作区路径（展示用），失败则回退到文件名。
+  const fsPath = editor.document.uri.fsPath
+  const relPath = vscode.workspace.asRelativePath(fsPath) || path.basename(fsPath)
+  const languageId = editor.document.languageId
+  // VS Code 选区行号为 0 基，转换为 1 基以便展示与提示模型。
+  const startLine = selection.start.line + 1
+  const endLine = selection.end.line + 1
+
+  await panelProvider?.addSelectionToContext({
+    relPath,
+    startLine,
+    endLine,
+    snippet: code,
+    languageId,
+  })
 }
 
 /**

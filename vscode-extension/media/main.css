@@ -24,32 +24,174 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* 作为状态栏下拉选择器（#picker）的绝对定位参照。 */
+  position: relative;
 }
 
-/* 顶部状态栏：模型名 / 权限模式 / 操作按钮。 */
+/* 顶部状态栏：供应商 / 模型 / 权限模式（可点击药丸） + 操作按钮。 */
 #status-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-panel-border);
   font-size: 0.85em;
   flex: 0 0 auto;
 }
 
-#status-model {
-  font-weight: 600;
+/* 可点击「药丸」按钮：供应商 / 模型 / 权限模式共用。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 46%;
+  padding: 2px 7px;
+  border-radius: 11px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
   color: var(--vscode-foreground);
+  font-size: 0.95em;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-#status-mode {
+.status-pill:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-focusBorder);
+}
+
+/* 展开态：高亮边框，提示选择器已打开。 */
+.status-pill.expanded {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* 药丸内主标签：过长省略。 */
+.status-pill > span:not(.pill-caret) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 模型药丸略加粗以示主体。 */
+#status-model #status-model-label {
+  font-weight: 600;
+}
+
+/* 权限模式药丸更弱化。 */
+.status-pill.subtle {
   color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+/* 下拉小箭头。 */
+.pill-caret {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  opacity: 0.7;
+  transition: transform 0.12s ease;
+}
+
+.status-pill.expanded .pill-caret {
+  transform: rotate(180deg);
 }
 
 #status-actions {
   margin-left: auto;
   display: flex;
   gap: 4px;
+}
+
+/* —— 通用下拉选择器（模型 / 供应商 / 权限模式，类 Cursor 点击切换） —— */
+#picker {
+  position: absolute;
+  z-index: 60;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-focusBorder));
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+
+#picker-header {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  padding: 4px 8px 6px;
+}
+
+.picker-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.picker-item:hover {
+  background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-hoverBackground));
+}
+
+.picker-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.picker-item.disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.picker-item.disabled:hover {
+  background: transparent;
+}
+
+.picker-check {
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+  color: var(--vscode-charts-green, #89d185);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.picker-item.active .picker-check {
+  color: inherit;
+}
+
+.picker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.picker-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-hint {
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item.active .picker-hint {
+  color: inherit;
+  opacity: 0.85;
 }
 
 #status-actions button {
@@ -347,6 +489,12 @@ body {
   font-size: 0.85em;
   padding: 4px 8px;
   border-radius: 4px;
+  /* 命令结果（/help、/about、/config 等）以 textContent 写入且含 \n 换行与 padEnd 对齐空格：
+     pre-wrap 既保留换行与连续空格（维持列表对齐），又允许超长行自动折行避免溢出面板。 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 命令输出多为等宽对齐文本（命令名/工具名按列对齐），用编辑器等宽字体保证对齐工整。 */
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
 }
 
 .system-line.info {
@@ -381,6 +529,11 @@ body {
   gap: 6px;
 }
 
+/* 输入框包裹层：作为命令补全菜单的绝对定位锚点。 */
+#composer-input-wrap {
+  position: relative;
+}
+
 #input {
   width: 100%;
   box-sizing: border-box;
@@ -400,6 +553,122 @@ body {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
+
+/* —— 上下文附件 chips —— */
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 0.8em;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+
+.ctx-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+  direction: rtl; /* 路径过长时优先保留尾部（文件名）。 */
+  text-align: left;
+}
+
+.ctx-chip-remove {
+  flex: 0 0 auto;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.1em;
+  line-height: 1;
+  padding: 0 0 0 2px;
+  opacity: 0.7;
+}
+
+.ctx-chip-remove:hover {
+  opacity: 1;
+}
+
+/* 历史用户消息中的只读附件 chips（在消息上方展示）。 */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.ctx-chip.readonly {
+  font-size: 0.78em;
+  opacity: 0.85;
+}
+
+/* —— 斜杠命令补全菜单 —— */
+#command-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 20;
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-panel-border));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.command-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 0.88em;
+}
+
+.command-item.active {
+  background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-editorSuggestWidget-selectedForeground, var(--vscode-list-activeSelectionForeground));
+}
+
+.command-item-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  flex: 0 0 auto;
+  color: var(--vscode-editorSuggestWidget-highlightForeground, var(--vscode-textLink-foreground));
+}
+
+.command-item.active .command-item-name {
+  color: inherit;
+}
+
+.command-item-desc {
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.command-item.active .command-item-desc {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* 说明：早期版本支持「从资源管理器拖文件进面板」，并配套了 #drop-overlay 拖放遮罩样式。
+   因 VS Code Webview 出于安全会清洗拖放数据（多数平台拿不到文件 URI、拖放不可靠），
+   已彻底移除拖放交互；对应的 #drop-overlay 遮罩样式亦随之删除（死代码清理）。
+   现统一通过「+ 文件 / + 文件夹」按钮与资源管理器右键「加入对话」进入上下文。 */
 
 #composer-actions {
   display: flex;
@@ -433,6 +702,19 @@ body {
   border-color: var(--vscode-errorForeground);
 }
 
+/* 幽灵按钮：用于「+ 文件」等次要操作，弱化为描边样式，避免与主「发送」按钮抢视觉。 */
+#composer-actions button.ghost-btn {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-button-border, var(--vscode-panel-border, transparent));
+  opacity: 0.85;
+}
+
+#composer-actions button.ghost-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  opacity: 1;
+}
+
 /* 流式光标：助手输出进行中的小竖条。 */
 .cursor-blink::after {
   content: '▋';
@@ -459,4 +741,110 @@ body {
 #empty-state h3 {
   margin: 0 0 8px;
   color: var(--vscode-foreground);
+}
+
+/* —— 面板内 /login：API Key 录入弹窗 —— */
+
+/* 半透明遮罩，覆盖整个面板并居中卡片。 */
+.login-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+/* 录入卡片：贴合 VS Code 编辑器小部件风格。 */
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-focusBorder));
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.login-title {
+  font-weight: 600;
+  font-size: 1.05em;
+  color: var(--vscode-foreground);
+}
+
+/* 说明区：链接、端点、环境变量、存储位置。 */
+.login-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  word-break: break-word;
+}
+
+.login-meta a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.login-meta a:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
+.login-input-row {
+  display: flex;
+}
+
+/* 掩码输入框。 */
+.login-input {
+  flex: 1;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  outline: none;
+}
+
+.login-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.login-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.login-actions button {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 4px 14px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  font-size: 0.9em;
+}
+
+.login-save {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.login-save:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.login-cancel {
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
+.login-cancel:hover {
+  background: var(--vscode-toolbar-hoverBackground);
 }

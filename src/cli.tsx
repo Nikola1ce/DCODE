@@ -367,7 +367,8 @@ async function main(): Promise<void> {
     await triggerSessionStartHooks(cwd, agent.getSessionId())
 
     // 缺 API Key 不直接退出：通过 ready.hasApiKey=false 告知扩展，由扩展引导用户配置。
-    await runIdeServer(agent)
+    // 传入 config 让斜杠命令（/model、/provider、/commit、/review 等）可在 IDE 模式下复用并持久化。
+    await runIdeServer(agent, config)
     await shutdownHooks(cwd, agent.getSessionId())
     await shutdownMcp()
     process.exit(0)

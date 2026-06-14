@@ -1266,7 +1266,7 @@ function renderAbout(): string {
   const mcpCount = globalToolRegistry.mcpCount
   return [
     `${PRODUCT_NAME}  v${VERSION}`,
-    `适配 DeepSeek 模型的DCode AI 助手`,
+    `适配多供应商DCode AI 助手`,
     `制作人：${AUTHOR}`,
     '',
     `内置工具：${ALL_TOOLS.filter((t) => !t.name.startsWith('mcp__')).map((t) => t.name).join('、')}`,

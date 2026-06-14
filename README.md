@@ -80,7 +80,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **Skills**：可复用 Markdown 技能包，`/skills` 查看列表，`/skill` 加载领域工作流
 - **文件检查点**：`write_file` / `edit_file` 前自动备份，`/checkpoints`、`/undo` 回滚
 - **Git 集成**：`/commit` 生成 Conventional Commits 并提交，`/pr` 生成 PR 描述（可选 `gh`）
-- **VS Code 扩展（早期预览，尚未完全完成）**：侧边栏对话面板 + 选中代码右键「解释 / 修复 / 重构」+ 代码块一键「应用 / 预览 diff」到编辑器 + IDE 内权限授权；经 `dcode --ide-server`（NDJSON over stdio）完整复用 Agent 内核，可打包为自带内核的 `.vsix`（见 [`vscode-extension/`](vscode-extension/README.md)）。当前仍处开发阶段，部分功能与稳定性待完善，生产环境建议优先使用终端版 `dcode`。
+- **VS Code 扩展（早期预览，尚未完全完成）**：右侧辅助侧边栏对话面板 + 资源管理器右键把**文件/文件夹**一键「加入 DCODE 上下文」（或用面板内 **+ 文件 / + 文件夹** 按钮，以省 token 的相对路径 chips 携带）+ 选中代码右键「加入上下文 / 解释 / 修复 / 重构」+ 代码块一键「应用 / 预览 diff」到编辑器 + 点击切换 供应商/模型/权限模式 + IDE 内权限授权；经 `dcode --ide-server`（NDJSON over stdio）完整复用 Agent 内核，可打包为自带内核的 `.vsix`（见 [`vscode-extension/`](vscode-extension/README.md)）。当前仍处开发阶段，部分功能与稳定性待完善，生产环境建议优先使用终端版 `dcode`。
 
 ### 工程能力（P2 体验增强已落地）
 

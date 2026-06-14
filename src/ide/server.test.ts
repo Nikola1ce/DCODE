@@ -18,6 +18,7 @@ import {
 } from './protocol.js'
 import type { Agent, TurnHandlers } from '../core/agent.js'
 import type { AgentRunEvent, PermissionDecision, PermissionRequest } from '../core/types.js'
+import type { DCodeConfig } from '../config.js'
 
 // 假 Agent：仅实现 IdeServer 用到的方法/属性。runTurn 行为可注入。
 class FakeAgent {
@@ -56,7 +57,15 @@ class FakeAgent {
   clear() {
     this.cleared = true
   }
+  // 斜杠命令可能触发的热更新；测试中仅记录最后一次 patch。
+  lastConfigPatch: any = null
+  applyConfigPatch(patch: any) {
+    this.lastConfigPatch = patch
+  }
+  // 记录最近一次 runTurn 的输入，便于断言附件前缀已拼接。
+  lastTurnInput: string | null = null
   async runTurn(input: string, handlers: TurnHandlers) {
+    this.lastTurnInput = input
     if (this.turnImpl) return this.turnImpl(input, handlers)
   }
 }
@@ -66,11 +75,16 @@ function setup(agent: FakeAgent) {
   const input = new PassThrough()
   const output = new PassThrough()
   const log = new PassThrough()
+  // 最小可用配置：仅满足 IdeServer 持有/透传所需，斜杠命令测试可按需扩展。
+  const fakeConfig = { provider: 'zhipu', model: 'fake-model' } as unknown as DCodeConfig
   const server = new IdeServer({
     agent: agent as unknown as Agent,
+    config: fakeConfig,
     input,
     output,
     log,
+    // 注入不写盘的 applyConfig，避免单测污染 ~/.dcode/config.json。
+    applyConfig: () => {},
   })
   const received: ServerMessage[] = []
   const decoder = createLineDecoder<ServerMessage>()
@@ -264,6 +278,76 @@ describe('IdeServer 状态切换与串行约束', () => {
     expect(status2.permissionMode).toBe('plan')
   })
 
+  it('ready/status 携带可切换供应商与模型列表', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    const ready = (await ctx.waitFor('ready')) as Extract<ServerMessage, { type: 'ready' }>
+    // providers 至少包含 zhipu / deepseek / openai 三家，且恰有一个 active。
+    expect(Array.isArray(ready.providers)).toBe(true)
+    expect(ready.providers!.some((p) => p.id === 'zhipu')).toBe(true)
+    expect(ready.providers!.some((p) => p.id === 'deepseek')).toBe(true)
+    expect(ready.providers!.filter((p) => p.active).length).toBe(1)
+    // models 非空（当前供应商的建议模型）。
+    expect(Array.isArray(ready.models)).toBe(true)
+    expect(ready.models!.length).toBeGreaterThan(0)
+  })
+
+  it('set_provider 切换供应商：透传补丁、必要时同步模型并回推 status + log', async () => {
+    const agent = new FakeAgent()
+    // 记录 applyConfig 收到的补丁，断言含 provider 字段。
+    let lastPatch: any = null
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const log = new PassThrough()
+    const fakeConfig = { provider: 'zhipu', model: 'glm-4-flash' } as unknown as DCodeConfig
+    const server = new IdeServer({
+      agent: agent as unknown as Agent,
+      config: fakeConfig,
+      input,
+      output,
+      log,
+      applyConfig: (patch) => {
+        lastPatch = patch
+      },
+    })
+    activeServer = server
+    const received: ServerMessage[] = []
+    const decoder = createLineDecoder<ServerMessage>()
+    output.on('data', (chunk: Buffer) => {
+      for (const m of decoder.push(chunk)) received.push(m)
+    })
+    void server.start()
+    const waitFor = async (type: ServerMessage['type'], timeoutMs = 1000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const found = received.find((m) => m.type === type)
+        if (found) return found
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new Error(`等待 ${type} 超时；已收到：${received.map((m) => m.type).join(',')}`)
+    }
+    await waitFor('ready')
+    input.write(encodeMessage({ type: 'set_provider', provider: 'deepseek' }))
+    const status = (await waitFor('status')) as Extract<ServerMessage, { type: 'status' }>
+    // 切到 deepseek 应带 provider 补丁；zhipu→deepseek 模型不在 deepseek 目录，会自动换默认模型。
+    expect(lastPatch?.provider).toBe('deepseek')
+    expect(agent.lastSetModel).toBeTruthy()
+    expect(status.providers!.some((p) => p.id === 'deepseek')).toBe(true)
+  })
+
+  it('set_provider 收到不支持的供应商：回推 warn 日志且不切换', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.received.length = 0
+    ctx.send({ type: 'set_provider', provider: 'ollama' })
+    const logMsg = (await ctx.waitFor('log')) as Extract<ServerMessage, { type: 'log' }>
+    expect(logMsg.level).toBe('warn')
+    expect(logMsg.message).toContain('暂不支持')
+  })
+
   it('进行中再次 prompt 被拒（串行约束）', async () => {
     const agent = new FakeAgent()
     // 第一轮永不结束（直到 abort），用于占用 active 槽。
@@ -295,5 +379,218 @@ describe('IdeServer 状态切换与串行约束', () => {
     ctx.send({ type: 'clear' })
     await ctx.waitFor('log')
     expect(agent.cleared).toBe(true)
+  })
+})
+
+describe('IdeServer 斜杠命令与补全', () => {
+  it('本地命令 /help 返回 command_result 文本', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'slash_command', requestId: 'cmd1', input: '/help' })
+    const res = (await ctx.waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.requestId).toBe('cmd1')
+    expect(res.message).toContain('可用命令')
+    expect(res.submitted).toBeFalsy()
+  })
+
+  it('未知命令 /nope 返回带提示的 command_result', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'slash_command', requestId: 'cmd2', input: '/nope' })
+    const res = (await ctx.waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.message).toContain('未知命令')
+  })
+
+  it('/clear 命令清空会话并标记 cleared', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'slash_command', requestId: 'cmd3', input: '/clear' })
+    const res = (await ctx.waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.cleared).toBe(true)
+    expect(agent.cleared).toBe(true)
+  })
+
+  it('/exit 在 IDE 内以 hint 提示（不退出进程）', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'slash_command', requestId: 'cmd4', input: '/exit' })
+    const res = (await ctx.waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.hint).toBe(true)
+    expect(res.message).toContain('关闭')
+  })
+
+  it('request_commands 返回 command_suggestions（含 queryId）', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'request_commands', queryId: 'q1', input: '/he' })
+    const res = (await ctx.waitFor('command_suggestions')) as Extract<
+      ServerMessage,
+      { type: 'command_suggestions' }
+    >
+    expect(res.queryId).toBe('q1')
+    // '/he' 应匹配 help 命令。
+    expect(res.suggestions.some((s) => s.completion === '/help')).toBe(true)
+  })
+
+  it('/login 在面板内回传 login_prompt（请求录入 Key，而非引导到终端）', async () => {
+    const agent = new FakeAgent()
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({ type: 'slash_command', requestId: 'cmdLogin', input: '/login' })
+    const res = (await ctx.waitFor('login_prompt')) as Extract<
+      ServerMessage,
+      { type: 'login_prompt' }
+    >
+    // 携带当前供应商（fakeConfig.provider=zhipu）的录入元信息。
+    expect(res.providerId).toBe('zhipu')
+    expect(res.providerName).toBeTruthy()
+    expect(res.apiKeyEnv).toBeTruthy()
+  })
+
+  it('submit_api_key 保存后回传 command_result（已保存）并回推 status', async () => {
+    const agent = new FakeAgent()
+    // 用可观测的 applyConfig 断言补丁确实写入 providers[provider].apiKey。
+    let lastPatch: any = null
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const log = new PassThrough()
+    const fakeConfig = { provider: 'zhipu', model: 'glm-4-flash' } as unknown as DCodeConfig
+    const server = new IdeServer({
+      agent: agent as unknown as Agent,
+      config: fakeConfig,
+      input,
+      output,
+      log,
+      applyConfig: (patch) => {
+        lastPatch = patch
+      },
+    })
+    activeServer = server
+    const received: ServerMessage[] = []
+    const decoder = createLineDecoder<ServerMessage>()
+    output.on('data', (chunk: Buffer) => {
+      for (const m of decoder.push(chunk)) received.push(m)
+    })
+    void server.start()
+    const waitFor = async (type: ServerMessage['type'], timeoutMs = 1000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const found = received.find((m) => m.type === type)
+        if (found) return found
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new Error(`等待 ${type} 超时；已收到：${received.map((m) => m.type).join(',')}`)
+    }
+    await waitFor('ready')
+    received.length = 0
+    input.write(encodeMessage({ type: 'submit_api_key', provider: 'zhipu', apiKey: 'sk-test-123' }))
+    const res = (await waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.message).toContain('已保存')
+    // 补丁应把 Key 写入 providers.zhipu.apiKey（各供应商独立）。
+    expect(lastPatch?.providers?.zhipu?.apiKey).toBe('sk-test-123')
+    // 保存后回推 status 以刷新面板 hasApiKey。
+    await waitFor('status')
+  })
+
+  it('submit_api_key 收到空 Key 不保存，回传提示', async () => {
+    const agent = new FakeAgent()
+    let applyCalled = false
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const log = new PassThrough()
+    const fakeConfig = { provider: 'zhipu', model: 'glm-4-flash' } as unknown as DCodeConfig
+    const server = new IdeServer({
+      agent: agent as unknown as Agent,
+      config: fakeConfig,
+      input,
+      output,
+      log,
+      applyConfig: () => {
+        applyCalled = true
+      },
+    })
+    activeServer = server
+    const received: ServerMessage[] = []
+    const decoder = createLineDecoder<ServerMessage>()
+    output.on('data', (chunk: Buffer) => {
+      for (const m of decoder.push(chunk)) received.push(m)
+    })
+    void server.start()
+    const waitFor = async (type: ServerMessage['type'], timeoutMs = 1000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const found = received.find((m) => m.type === type)
+        if (found) return found
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new Error(`等待 ${type} 超时；已收到：${received.map((m) => m.type).join(',')}`)
+    }
+    await waitFor('ready')
+    received.length = 0
+    input.write(encodeMessage({ type: 'submit_api_key', provider: 'zhipu', apiKey: '   ' }))
+    const res = (await waitFor('command_result')) as Extract<
+      ServerMessage,
+      { type: 'command_result' }
+    >
+    expect(res.message).toContain('为空')
+    expect(applyCalled).toBe(false)
+  })
+
+  it('prompt 携带 attachments 时把上下文清单拼接到输入前', async () => {
+    const agent = new FakeAgent()
+    // 注入一轮：仅结束，便于断言 lastTurnInput。
+    agent.turnImpl = async (_input, handlers) => {
+      handlers.onEvent?.({
+        type: 'run_end',
+        runId: 'run',
+        turnId: 'turn',
+        timestamp: Date.now(),
+        iterations: 1,
+        reason: 'final',
+      } as AgentRunEvent)
+    }
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    await ctx.waitFor('ready')
+    ctx.send({
+      type: 'prompt',
+      requestId: 'reqA',
+      text: '请总结这些文件',
+      attachments: [
+        { kind: 'file', path: 'src/a.ts' },
+        { kind: 'file', path: 'src/b.ts' },
+      ],
+    })
+    await ctx.waitFor('turn_done')
+    expect(agent.lastTurnInput).toContain('上下文文件')
+    expect(agent.lastTurnInput).toContain('src/a.ts')
+    expect(agent.lastTurnInput).toContain('src/b.ts')
+    expect(agent.lastTurnInput).toContain('请总结这些文件')
   })
 })

@@ -16,6 +16,7 @@ import {
   createServerMessageDecoder,
   encodeClientMessage,
   type ClientMessage,
+  type ContextAttachment,
   type IdePermissionMode,
   type PermissionDecision,
   type ServerMessage,
@@ -270,10 +271,31 @@ export class DcodeClient {
    * 发起一轮对话。
    * @param requestId 轮次 id。
    * @param text 用户输入。
+   * @param attachments 可选上下文附件（拖拽文件/选区引用）。
    * @returns 是否成功发送。
    */
-  prompt(requestId: string, text: string): boolean {
-    return this.send({ type: 'prompt', requestId, text })
+  prompt(requestId: string, text: string, attachments?: ContextAttachment[]): boolean {
+    return this.send({ type: 'prompt', requestId, text, attachments })
+  }
+
+  /**
+   * 执行一条斜杠命令（如 /model、/commit、/review）。
+   * @param requestId 轮次 id（命令转 prompt 时复用）。
+   * @param input 完整命令输入（含前导 /）。
+   * @returns 是否成功发送。
+   */
+  slashCommand(requestId: string, input: string): boolean {
+    return this.send({ type: 'slash_command', requestId, input })
+  }
+
+  /**
+   * 请求斜杠命令补全候选。
+   * @param queryId 补全请求 id（响应中原样带回）。
+   * @param input 当前输入框内容（含前导 /）。
+   * @returns 是否成功发送。
+   */
+  requestCommands(queryId: string, input: string): boolean {
+    return this.send({ type: 'request_commands', queryId, input })
   }
 
   /**
@@ -307,6 +329,23 @@ export class DcodeClient {
    */
   setModel(model: string): void {
     this.send({ type: 'set_model', model })
+  }
+
+  /**
+   * 切换 LLM 供应商。
+   * @param provider 供应商标识（zhipu / deepseek / openai）。
+   */
+  setProvider(provider: string): void {
+    this.send({ type: 'set_provider', provider })
+  }
+
+  /**
+   * 提交 API Key（面板内 /login 录入完成时调用）。
+   * @param provider 目标供应商标识（取自 login_prompt）。
+   * @param apiKey 用户输入的 API Key。
+   */
+  submitApiKey(provider: string, apiKey: string): void {
+    this.send({ type: 'submit_api_key', provider, apiKey })
   }
 
   /** 清空当前会话上下文。 */

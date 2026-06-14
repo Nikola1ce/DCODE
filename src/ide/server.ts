@@ -18,27 +18,55 @@ import type {
   PermissionDecision,
   PermissionRequest,
 } from '../core/types.js'
-import type { PermissionMode } from '../config.js'
+import type { DCodeConfig, PermissionMode } from '../config.js'
+import { loadConfig, updateConfig } from '../config.js'
+import {
+  getSlashSuggestions,
+  isSlashCommand,
+  runSlashCommand,
+  type CommandSuggestion,
+  type SlashCommandResult,
+} from '../commands/index.js'
 import {
   IDE_PROTOCOL_VERSION,
   createLineDecoder,
   encodeMessage,
   type ClientMessage,
+  type ContextAttachment,
   type IdePermissionMode,
+  type ModelOption,
+  type ProviderOption,
   type ServerMessage,
 } from './protocol.js'
 import { VERSION } from '../constants.js'
+import {
+  buildProviderLoginPatch,
+  buildProviderSwitchPatch,
+  getActiveProviderId,
+  getModelSelectOptions,
+  getProviderDefinition,
+  getProviderLoginMeta,
+  isValidProviderId,
+  PROVIDER_SWITCH_OPTIONS,
+  resolveProviderApiKey,
+} from '../providers/registry.js'
+import type { ProviderId } from '../providers/types.js'
 
 // 服务端运行所需的依赖（便于测试时注入假的输入/输出流与 Agent）。
 export interface IdeServerDeps {
   // Agent 实例（已在 cli 中按 cwd/config 构造好）。
   agent: Agent
+  // 当前生效配置（用于斜杠命令读取/展示；server 内会随命令热更新此引用）。
+  config: DCodeConfig
   // 读取客户端消息的输入流（默认 process.stdin）。
   input: NodeJS.ReadableStream
   // 写出服务端消息的输出流（默认 process.stdout，必须是纯协议通道）。
   output: NodeJS.WritableStream
   // 日志输出流（默认 process.stderr）。
   log?: NodeJS.WritableStream
+  // 持久化并热更新配置的回调（默认：updateConfig 写盘 + agent.applyConfigPatch 热更新）。
+  // 抽成依赖便于测试注入。
+  applyConfig?: (patch: Partial<DCodeConfig>) => void
 }
 
 /**
@@ -47,9 +75,13 @@ export interface IdeServerDeps {
  */
 export class IdeServer {
   private readonly agent: Agent
+  // 当前生效配置；斜杠命令通过 applyConfig 修改后会同步刷新此引用。
+  private config: DCodeConfig
   private readonly input: NodeJS.ReadableStream
   private readonly output: NodeJS.WritableStream
   private readonly logStream: NodeJS.WritableStream
+  // 持久化 + 热更新配置的回调。
+  private readonly applyConfig: (patch: Partial<DCodeConfig>) => void
 
   // 当前进行中的轮次 id；为 null 表示空闲。用于串行化与中断定位。
   private activeRequestId: string | null = null
@@ -67,9 +99,19 @@ export class IdeServer {
 
   constructor(deps: IdeServerDeps) {
     this.agent = deps.agent
+    this.config = deps.config
     this.input = deps.input
     this.output = deps.output
     this.logStream = deps.log ?? process.stderr
+    // 默认实现：写盘（updateConfig）+ 热更新 Agent（applyConfigPatch），并刷新本地 config 引用。
+    // 与 TUI 的 App.applyConfig 行为保持一致，确保斜杠命令在 IDE 模式下与终端一致地生效与持久化。
+    this.applyConfig =
+      deps.applyConfig ??
+      ((patch: Partial<DCodeConfig>) => {
+        const next = updateConfig(patch)
+        this.config = next
+        this.agent.applyConfigPatch(patch)
+      })
   }
 
   /**
@@ -80,6 +122,7 @@ export class IdeServer {
     return new Promise<void>((resolve) => {
       this.resolveDone = resolve
       // 第一条消息：宣告就绪并回传当前状态，客户端据此初始化 UI。
+      // 一并下发可用供应商与模型列表，使面板可直接渲染「点击切换模型 / 供应商」下拉菜单。
       this.send({
         type: 'ready',
         protocolVersion: IDE_PROTOCOL_VERSION,
@@ -90,6 +133,8 @@ export class IdeServer {
         cwd: this.agent.cwd,
         hasApiKey: this.agent.hasApiKey(),
         sessionId: this.agent.getSessionId(),
+        providers: this.buildProviderOptions(),
+        models: this.buildModelOptions(),
       })
 
       const decoder = createLineDecoder<ClientMessage>()
@@ -113,7 +158,7 @@ export class IdeServer {
     try {
       switch (msg.type) {
         case 'prompt':
-          await this.handlePrompt(msg.requestId, msg.text)
+          await this.handlePrompt(msg.requestId, msg.text, msg.attachments)
           break
         case 'cancel':
           this.handleCancel(msg.requestId)
@@ -127,8 +172,20 @@ export class IdeServer {
         case 'set_model':
           this.handleSetModel(msg.model)
           break
+        case 'set_provider':
+          this.handleSetProvider(msg.provider)
+          break
         case 'clear':
           this.handleClear()
+          break
+        case 'slash_command':
+          await this.handleSlashCommand(msg.requestId, msg.input)
+          break
+        case 'request_commands':
+          this.handleRequestCommands(msg.queryId, msg.input)
+          break
+        case 'submit_api_key':
+          this.handleSubmitApiKey(msg.provider, msg.apiKey)
           break
         case 'shutdown':
           this.shutdown()
@@ -146,8 +203,13 @@ export class IdeServer {
    * 处理一轮对话请求：驱动 Agent.runTurn，并把事件流转换为协议消息。
    * @param requestId 客户端轮次 id。
    * @param text 用户输入。
+   * @param attachments 可选上下文附件（拖拽文件/选区），会转写为提示前缀拼到 text 前。
    */
-  private async handlePrompt(requestId: string, text: string): Promise<void> {
+  private async handlePrompt(
+    requestId: string,
+    text: string,
+    attachments?: ContextAttachment[],
+  ): Promise<void> {
     // 串行约束：同一时刻只允许一轮，避免消息历史竞态与输出交织。
     if (this.activeRequestId) {
       this.send({
@@ -157,7 +219,10 @@ export class IdeServer {
       })
       return
     }
-    if (!text.trim()) {
+    // 把上下文附件转写为提示前缀（拖拽文件以引用形式给出，引导模型按需 read_file）。
+    const prefix = buildAttachmentsPrefix(attachments)
+    const finalText = prefix ? `${prefix}\n\n${text}`.trim() : text.trim()
+    if (!finalText) {
       this.send({ type: 'turn_error', requestId, message: '输入为空。' })
       return
     }
@@ -178,7 +243,7 @@ export class IdeServer {
     let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined
 
     try {
-      await this.agent.runTurn(text, {
+      await this.agent.runTurn(finalText, {
         abortSignal: ac.signal,
         // 权限请求：转为 IPC 往返，等待客户端弹窗决策。
         requestPermission: (req) => this.requestPermissionViaIpc(requestId, req),
@@ -353,10 +418,52 @@ export class IdeServer {
 
   /**
    * 切换模型。
+   * 与终端 /model 一致：热更新 Agent 并持久化（写盘 + 刷新本地 config 引用），随后回推 status。
    * @param model 模型名。
    */
   private handleSetModel(model: string): void {
-    this.agent.setModel(model)
+    const trimmed = model.trim()
+    if (!trimmed) return
+    this.agent.setModel(trimmed)
+    // 持久化模型选择，保证下次启动与终端一致；applyConfig 同时刷新 this.config，
+    // 使 buildModelOptions 能据新 config 标记 active。
+    this.applyConfig({ model: trimmed })
+    this.emitStatus()
+  }
+
+  /**
+   * 切换 LLM 供应商。
+   * 复用 registry 的 buildProviderSwitchPatch 计算补丁（含 baseURL、必要时切换默认模型），
+   * 经 applyConfig 持久化 + 热更新 Agent（重建 LLM 客户端使新端点/Key 立即生效），随后回推 status。
+   * @param provider 目标供应商标识。
+   */
+  private handleSetProvider(provider: string): void {
+    const target = provider.trim().toLowerCase()
+    // 仅允许面板可切换的供应商（zhipu / deepseek / openai），其余忽略并提示。
+    if (!isValidProviderId(target) || !PROVIDER_SWITCH_OPTIONS.some((o) => o.id === target)) {
+      this.send({
+        type: 'log',
+        level: 'warn',
+        message: `暂不支持切换至供应商：${provider}`,
+      })
+      return
+    }
+    const patch = buildProviderSwitchPatch(this.config, target as ProviderId)
+    this.applyConfig(patch)
+    // 若切换后模型随之改变（如 zhipu→openai 自动换默认模型），同步 Agent 的模型，避免发请求用错模型。
+    if (patch.model) {
+      this.agent.setModel(patch.model)
+    }
+    const def = getProviderDefinition(target as ProviderId)
+    const key = resolveProviderApiKey(this.config)
+    // 给一条人类可读的反馈（面板会作为系统行展示）。
+    this.send({
+      type: 'log',
+      level: key ? 'info' : 'warn',
+      message: key
+        ? `已切换供应商为 ${def.name}（${target}）。`
+        : `已切换供应商为 ${def.name}（${target}），但尚未配置该供应商的 API Key，请在终端用 /login 配置或设置环境变量后重启内核。`,
+    })
     this.emitStatus()
   }
 
@@ -367,7 +474,190 @@ export class IdeServer {
     this.emitStatus()
   }
 
-  /** 回推当前状态（模型/Provider/权限模式/会话）。 */
+  /**
+   * 处理一条斜杠命令：复用 CLI 的 runSlashCommand，并按结果智能适配到 IDE 面板。
+   *
+   * 适配策略（与用户确认一致）：
+   *   - message：作为 command_result 文本展示；
+   *   - cleared：通知客户端清屏；
+   *   - submitPrompt：转为一轮普通 prompt 在后台执行（复用 requestId 关联流式事件）；
+   *   - openFlow（model/login/resume/theme）：面板内无对应交互流程，给出友好提示引导到设置/终端；
+   *   - exit：面板不支持退出进程，提示用户改用「重启内核」或关闭面板；
+   *   - 命令切换了模型/权限模式时，回推一次 status 让面板刷新状态栏。
+   *
+   * @param requestId 轮次 id（命令转 prompt 时复用）。
+   * @param input 完整命令输入（含前导 /）。
+   */
+  private async handleSlashCommand(requestId: string, input: string): Promise<void> {
+    if (!isSlashCommand(input)) {
+      // 兜底：非斜杠输入按普通 prompt 处理（理论上客户端不会走到这里）。
+      await this.handlePrompt(requestId, input)
+      return
+    }
+
+    let result: SlashCommandResult
+    try {
+      result = await runSlashCommand(input, {
+        agent: this.agent,
+        config: this.config,
+        applyConfig: this.applyConfig,
+      })
+    } catch (e: any) {
+      this.send({
+        type: 'command_result',
+        requestId,
+        message: `命令执行出错：${e?.message ?? String(e)}`,
+      })
+      return
+    }
+
+    // exit：面板内无意义，提示改用重启/关闭面板。
+    if (result.exit) {
+      this.send({
+        type: 'command_result',
+        requestId,
+        hint: true,
+        message:
+          '/exit 用于退出终端版 DCODE。在 VS Code 中可直接关闭侧边栏面板；如需重置内核请使用「DCODE: 重启后台内核」命令。',
+      })
+      return
+    }
+
+    // openFlow：终端 TUI 的交互流程。
+    if (result.openFlow) {
+      // /login：面板内提供等价的「API Key 录入」交互——请求客户端弹出安全输入框，
+      // 用户输入后通过 submit_api_key 回传，由 handleSubmitApiKey 保存并热更新（无需跳转终端）。
+      if (result.openFlow === 'login') {
+        this.sendLoginPrompt()
+        return
+      }
+      // 其余流程（model / resume / theme）面板已有等价能力或跟随 VSCode，给出友好引导提示。
+      this.send({
+        type: 'command_result',
+        requestId,
+        hint: true,
+        message: describeFlowHint(result.openFlow),
+      })
+      // 切到设置可能让用户随后改模型/Provider；这里仍回推一次当前状态，保证状态栏准确。
+      this.emitStatus()
+      return
+    }
+
+    // submitPrompt：命令需要 Agent 介入（如 /init、/commit、/review）。转为一轮普通对话执行。
+    if (result.submitPrompt) {
+      // 先把命令的提示语作为一次性结果展示（如「开始代码审查…」），并标记 submitted=true，
+      // 让客户端进入处理中态，等待后续 text/tool/turn_done 事件。
+      this.send({
+        type: 'command_result',
+        requestId,
+        message: result.message,
+        submitted: true,
+      })
+      await this.handlePrompt(requestId, result.submitPrompt)
+      return
+    }
+
+    // 普通本地命令：回传文本结果与是否清屏。
+    this.send({
+      type: 'command_result',
+      requestId,
+      message: result.message,
+      cleared: result.cleared,
+    })
+    // 命令可能改了模型/Provider/权限模式，统一回推一次状态。
+    this.emitStatus()
+  }
+
+  /**
+   * 处理命令补全请求：复用 CLI 的 getSlashSuggestions，按当前配置生成候选。
+   * @param queryId 补全请求 id（原样带回，便于客户端丢弃过期响应）。
+   * @param input 当前输入框内容（含前导 /）。
+   */
+  private handleRequestCommands(queryId: string, input: string): void {
+    let suggestions: CommandSuggestion[]
+    try {
+      suggestions = getSlashSuggestions(input, this.config)
+    } catch (e: any) {
+      this.logLine(`[ide-server] 生成命令补全出错：${e?.message ?? String(e)}`)
+      suggestions = []
+    }
+    this.send({
+      type: 'command_suggestions',
+      queryId,
+      // 收窄为协议字段（CommandSuggestion 与 CommandSuggestionItem 字段一致）。
+      suggestions: suggestions.map((s) => ({
+        name: s.name,
+        description: s.description,
+        completion: s.completion,
+        aliases: s.aliases,
+      })),
+    })
+  }
+
+  /**
+   * 向客户端请求打开「API Key 录入界面」（面板内 /login）。
+   * 携带当前生效供应商的展示元信息（名称、平台链接、端点、环境变量名），
+   * 客户端据此弹出安全输入框；用户输入完成后通过 submit_api_key 回传。
+   */
+  private sendLoginPrompt(): void {
+    const id = getActiveProviderId(this.config)
+    const meta = getProviderLoginMeta(id)
+    this.send({
+      type: 'login_prompt',
+      providerId: meta.providerId,
+      providerName: meta.providerName,
+      platformUrl: meta.platformUrl,
+      baseURL: meta.baseURL,
+      apiKeyEnv: meta.apiKeyEnv,
+    })
+  }
+
+  /**
+   * 处理客户端提交的 API Key（面板内 /login 的录入结果）。
+   * 复用 buildProviderLoginPatch 把 Key 写入 providers[providerId].apiKey（各供应商独立保留），
+   * 经 applyConfig 持久化到 ~/.dcode/config.json 并热更新 Agent（重建 LLM 客户端使 Key 立即生效），
+   * 随后回推一条反馈与最新 status（刷新面板 hasApiKey 标记，使供应商药丸不再显示「未配置 Key」）。
+   * @param provider 目标供应商标识（来自 login_prompt；非法/缺省时回退到当前生效供应商）。
+   * @param apiKey 用户输入的 API Key。
+   */
+  private handleSubmitApiKey(provider: string, apiKey: string): void {
+    const key = (apiKey ?? '').trim()
+    if (!key) {
+      this.send({
+        type: 'command_result',
+        requestId: '',
+        hint: true,
+        message: 'API Key 为空，未保存。',
+      })
+      return
+    }
+    // 解析目标供应商：优先用客户端回传值，非法时回退到当前生效供应商，保证写入到正确的 providers 槽位。
+    const target: ProviderId =
+      provider && isValidProviderId(provider)
+        ? (provider as ProviderId)
+        : getActiveProviderId(this.config)
+    try {
+      const patch = buildProviderLoginPatch(this.config, target, key)
+      this.applyConfig(patch)
+    } catch (e: any) {
+      this.send({
+        type: 'command_result',
+        requestId: '',
+        message: `保存 API Key 失败：${e?.message ?? String(e)}`,
+      })
+      return
+    }
+    const def = getProviderDefinition(target)
+    this.send({
+      type: 'command_result',
+      requestId: '',
+      message: `${def.name} API Key 已保存，当前 Provider 已生效。`,
+    })
+    // 刷新状态：hasApiKey 变为 true，面板供应商药丸/提示同步更新。
+    this.emitStatus()
+  }
+
+  /** 回推当前状态（模型/Provider/权限模式/会话 + 可切换供应商与模型列表）。 */
   private emitStatus(): void {
     this.send({
       type: 'status',
@@ -375,7 +665,46 @@ export class IdeServer {
       provider: this.agent.getProviderId(),
       permissionMode: this.toIdeMode(this.agent.permissionMode),
       sessionId: this.agent.getSessionId(),
+      providers: this.buildProviderOptions(),
+      models: this.buildModelOptions(),
     })
+  }
+
+  /**
+   * 构建「可切换供应商」列表（供面板下拉菜单）。
+   * 数据源为 registry 的 PROVIDER_SWITCH_OPTIONS（面板允许切换的子集）+ BUILTIN_PROVIDERS（展示名）；
+   * 逐个解析其 API Key 可用性（环境变量或已保存），并标记当前生效项。
+   * @returns 供应商选项数组。
+   */
+  private buildProviderOptions(): ProviderOption[] {
+    const active = getActiveProviderId(this.config)
+    return PROVIDER_SWITCH_OPTIONS.map((opt) => {
+      const def = getProviderDefinition(opt.id)
+      // 以「假设切到该供应商」的配置解析其 Key 是否可用（不修改真实配置）。
+      const key = resolveProviderApiKey({ ...this.config, provider: opt.id })
+      return {
+        id: opt.id,
+        name: def.name,
+        description: opt.description,
+        active: opt.id === active,
+        hasApiKey: !!key,
+      }
+    })
+  }
+
+  /**
+   * 构建「当前供应商下可选模型」列表（供面板下拉菜单）。
+   * 复用 registry 的 getModelSelectOptions（含按供应商格式化的 label 与 hint），并标记当前生效模型。
+   * @returns 模型选项数组。
+   */
+  private buildModelOptions(): ModelOption[] {
+    const current = this.agent.getModel()
+    return getModelSelectOptions(this.config).map((o) => ({
+      value: o.value,
+      label: o.label,
+      hint: o.hint,
+      active: o.value === current,
+    }))
   }
 
   /** 把所有悬挂的权限请求按「拒绝」兑现，避免 Promise 永久挂起。 */
@@ -436,14 +765,73 @@ export class IdeServer {
 }
 
 /**
+ * 把上下文附件转写为「上下文清单」提示前缀，拼接到用户输入之前。
+ * 设计：文件附件以相对路径引用形式给出，明确告诉模型「按需用 read_file 读取」，避免无谓内联占用上下文；
+ * 选区附件携带 snippet 时直接内联代码围栏，便于模型聚焦。
+ * @param attachments 附件列表（可空）。
+ * @returns 前缀文本；无有效附件时返回空串。
+ */
+function buildAttachmentsPrefix(attachments?: ContextAttachment[]): string {
+  if (!attachments || attachments.length === 0) return ''
+  const fileRefs: string[] = []
+  const snippets: string[] = []
+  for (const att of attachments) {
+    if (!att || !att.path) continue
+    if (att.kind === 'selection' && att.snippet) {
+      const range =
+        att.startLine && att.endLine ? `（第 ${att.startLine}-${att.endLine} 行）` : ''
+      const fence = '```' + (att.languageId ?? '') + '\n' + att.snippet + '\n```'
+      snippets.push(`文件 \`${att.path}\`${range} 的选区：\n${fence}`)
+    } else {
+      fileRefs.push(att.path)
+    }
+  }
+  const parts: string[] = []
+  if (fileRefs.length > 0) {
+    const list = fileRefs.map((p) => `  - ${p}`).join('\n')
+    parts.push(
+      `【上下文文件】用户拖拽/添加了以下文件作为参考，请在需要时用 read_file 读取其内容：\n${list}`,
+    )
+  }
+  if (snippets.length > 0) {
+    parts.push(`【选区上下文】\n${snippets.join('\n\n')}`)
+  }
+  return parts.join('\n\n')
+}
+
+/**
+ * 为终端 TUI 专属的交互流程（openFlow）生成面板内的友好引导提示。
+ * @param flow 流程类型。
+ * @returns 引导文本。
+ */
+function describeFlowHint(flow: 'model' | 'login' | 'resume' | 'theme'): string {
+  switch (flow) {
+    case 'model':
+      return '在 VS Code 中切换模型请直接输入「/model <模型名>」（如 /model glm-4-flash），或在 DCODE 设置的「dcode.model」中配置。'
+    case 'login':
+      // 正常情况下 /login 走 sendLoginPrompt（面板内录入），不会到这里；保留作为防御性兜底文案。
+      return '在输入框输入 /login 即可在面板内直接录入 API Key；也可设置环境变量（如 ZHIPU_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY）后重启内核。'
+    case 'resume':
+      return '面板暂不支持历史会话选择。可在终端用 dcode -r 恢复历史会话；本面板内可用「清空」开始新会话。'
+    case 'theme':
+      return '面板主题跟随 VS Code 的明暗主题，无需单独切换。'
+    default:
+      return '该操作请在终端版 DCODE 中完成。'
+  }
+}
+
+/**
  * 以默认依赖（process.stdin/stdout/stderr）运行 IDE 服务端。
  * 供 cli.tsx 在 --ide-server 模式下调用。
  * @param agent 已构造的 Agent 实例。
+ * @param config 当前生效配置（供斜杠命令读取/展示/持久化）。
  * @returns 服务端关闭后 resolve。
  */
-export async function runIdeServer(agent: Agent): Promise<void> {
+export async function runIdeServer(agent: Agent, config?: DCodeConfig): Promise<void> {
   const server = new IdeServer({
     agent,
+    // 未显式传入时回退到从磁盘加载当前配置，保证斜杠命令可用。
+    config: config ?? loadConfig(),
     input: process.stdin,
     output: process.stdout,
     log: process.stderr,
