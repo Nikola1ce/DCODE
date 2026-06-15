@@ -4,8 +4,14 @@
 // 这些是「随模型切换的动态压缩阈值 + 多档上下文长度选择」功能的核心，必须有回归保护。
 // 制作人：Moriarty_Dox
 
-import { describe, expect, it } from 'vitest'
-import { COMPACT_THRESHOLD_RATIO, DEFAULT_MODEL, PRO_MODEL } from '../constants.js'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  COMPACT_MAX_ABS_THRESHOLD,
+  COMPACT_THRESHOLD_RATIO,
+  DEFAULT_MODEL,
+  ENV_COMPACT_MAX_TOKENS,
+  PRO_MODEL,
+} from '../constants.js'
 import {
   contextOverrideKey,
   formatContextWindowLabel,
@@ -176,17 +182,35 @@ describe('resolveContextWindow（解析当前生效窗口）', () => {
   })
 })
 
-describe('getCompactThreshold（压缩阈值 = 窗口×比率）', () => {
-  it('按 COMPACT_THRESHOLD_RATIO 计算并向下取整', () => {
-    expect(getCompactThreshold(200_000)).toBe(
-      Math.floor(200_000 * COMPACT_THRESHOLD_RATIO),
-    )
+describe('getCompactThreshold（压缩阈值 = min(窗口×比率, 绝对上限)）', () => {
+  // 每个用例后清理环境变量，避免相互污染。
+  afterEach(() => {
+    delete process.env[ENV_COMPACT_MAX_TOKENS]
+  })
+
+  it('小窗口（低于绝对上限）仍按 COMPACT_THRESHOLD_RATIO 计算并向下取整', () => {
+    // 128K×0.9=115200 < 120000 绝对上限，因此仍取比率值。
     expect(getCompactThreshold(128_000)).toBe(
       Math.floor(128_000 * COMPACT_THRESHOLD_RATIO),
     )
+    expect(getCompactThreshold(128_000)).toBeLessThanOrEqual(COMPACT_MAX_ABS_THRESHOLD)
   })
 
-  it('窗口随档位变化，阈值随之变化（200K→1M 阈值约为 5 倍）', () => {
+  it('大窗口被绝对上限封顶（避免历史膨胀到几十万 token 才压缩）', () => {
+    // 1M×0.9=900000、200K×0.9=180000 均超过 12 万绝对上限，故都封顶到 COMPACT_MAX_ABS_THRESHOLD。
+    expect(getCompactThreshold(1_000_000)).toBe(COMPACT_MAX_ABS_THRESHOLD)
+    expect(getCompactThreshold(200_000)).toBe(COMPACT_MAX_ABS_THRESHOLD)
+  })
+
+  it('环境变量 DCODE_COMPACT_MAX_TOKENS 可调高绝对上限', () => {
+    process.env[ENV_COMPACT_MAX_TOKENS] = '300000'
+    // 上限调到 30 万后，1M×0.9=90 万仍超上限 → 取 30 万；200K×0.9=18 万 < 30 万 → 取比率值 18 万。
+    expect(getCompactThreshold(1_000_000)).toBe(300_000)
+    expect(getCompactThreshold(200_000)).toBe(180_000)
+  })
+
+  it('环境变量设为 0 关闭封顶，退回纯比率阈值', () => {
+    process.env[ENV_COMPACT_MAX_TOKENS] = '0'
     expect(getCompactThreshold(1_000_000)).toBe(900_000)
     expect(getCompactThreshold(200_000)).toBe(180_000)
   })

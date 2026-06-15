@@ -6,3 +6,9 @@ release/out/
 .dcode-local/
 .dcode/checkpoints/
 docs
+
+# 模型/价格检查插件（本地自用，不进版本库）
+scripts/models-check.mjs
+scripts/lib/
+MODELS_CHECK.md
+vscode-extension/

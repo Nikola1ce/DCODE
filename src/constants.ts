@@ -138,8 +138,58 @@ export const COMPACT_TOKEN_THRESHOLD = 60000
 // 取 0.9 是为了在接近上限前留出约 10% 余量给「本轮新输出 + 摘要生成」，避免请求真正超限被 API 拒绝。
 export const COMPACT_THRESHOLD_RATIO = 0.9
 
+// 自动压缩触发的「绝对 token 上限」（成本护栏，可由环境变量 DCODE_COMPACT_MAX_TOKENS 覆盖）。
+// 背景：DeepSeek V4 等模型上下文窗口高达 1M，若仅用「窗口 × 90%」做阈值，历史会一路膨胀到
+// 约 90 万 token 才压缩——而每一轮请求都要把全部历史作为输入 token 重新发送，成本随对话线性飙升。
+// 因此对大窗口模型再叠加一个绝对上限：实际阈值 = min(窗口 × 比率, 本上限)。
+// 取 120000（12 万）兼顾「足够容纳大量代码与多轮历史」与「单轮输入成本可控」；
+// 小窗口模型（< 13 万）本就低于该上限，不受影响，仍按窗口 × 90% 触发。
+export const COMPACT_MAX_ABS_THRESHOLD = 120_000
+
+// 绝对上限允许的最小值：防止用户把上限设得过低导致频繁压缩、反而因反复摘要更费 token。
+export const MIN_COMPACT_ABS_THRESHOLD = 8_000
+
+// 环境变量：覆盖自动压缩的绝对 token 上限（正整数；低于 MIN_COMPACT_ABS_THRESHOLD 则忽略）。
+// 设为 0 或负数可显式关闭绝对上限封顶，退回纯「窗口 × 比率」行为（适合确实想吃满超大窗口的用户）。
+export const ENV_COMPACT_MAX_TOKENS = 'DCODE_COMPACT_MAX_TOKENS'
+
+/**
+ * 解析自动压缩绝对上限：优先读环境变量 DCODE_COMPACT_MAX_TOKENS，否则用默认 COMPACT_MAX_ABS_THRESHOLD。
+ * - 值为有效正整数且 ≥ MIN_COMPACT_ABS_THRESHOLD：采用该值；
+ * - 值可解析为 ≤ 0：表示关闭封顶，返回 0（调用方据此跳过绝对上限）；
+ * - 其余非法输入：回退默认值。
+ * @returns 绝对上限 token 数；返回 0 表示不启用封顶。
+ */
+export function resolveCompactMaxAbsThreshold(): number {
+  const raw = process.env[ENV_COMPACT_MAX_TOKENS]
+  if (raw === undefined || raw.trim() === '') return COMPACT_MAX_ABS_THRESHOLD
+  const trimmed = raw.trim()
+  // 允许显式关闭：0 / 负数。
+  if (/^-?\d+$/.test(trimmed)) {
+    const n = Number.parseInt(trimmed, 10)
+    if (n <= 0) return 0
+    if (n >= MIN_COMPACT_ABS_THRESHOLD) return n
+  }
+  // 非法或过小：回退默认。
+  return COMPACT_MAX_ABS_THRESHOLD
+}
+
 // 读取文件时单次返回的最大字符数，超过会被截断并提示使用偏移分页读取。
 export const MAX_FILE_READ_CHARS = 100000
+
+// —— 历史「发送前瘦身」相关常量（见 core/historyTrim.ts）—— //
+// 每轮请求都会把完整历史作为输入 token 重发，旧的大工具结果（read_file/grep 等）反复计费。
+// 瘦身只作用于发送副本，不影响磁盘会话记录与 /resume。
+
+// 保留最近多少条消息「绝对不瘦身」（保证模型当前推理可见最新工具结果全文）。
+// 取 8 略大于压缩保留的 KEEP_RECENT(6)，确保「即将被压缩保留的最近若干轮」原文不被截断。
+export const HISTORY_TRIM_KEEP_RECENT = 8
+
+// 单条工具结果超过该字符数，且已滚出最近窗口时，才会被瘦身（小结果保持原样，避免误伤）。
+export const HISTORY_TRIM_MAX_TOOL_RESULT_CHARS = 4000
+
+// 瘦身时为旧的大工具结果保留的「头部字符数」（保留开头便于模型回忆该结果大致内容）。
+export const HISTORY_TRIM_HEAD_CHARS = 800
 
 // —— Notebook（Jupyter .ipynb）相关常量 —— //
 // notebook_read 渲染单个 cell 源码/输出时的最大字符数，超出截断，避免大输出撑爆上下文。

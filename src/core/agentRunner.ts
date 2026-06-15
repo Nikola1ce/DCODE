@@ -12,6 +12,7 @@ import {
   toOpenAITools,
 } from '../tools/index.js'
 import { compactMessages, shouldCompact } from './compact.js'
+import { trimHistoryForRequest } from './historyTrim.js'
 import { resolveContextWindow } from '../providers/contextWindow.js'
 import { executeToolBatch } from './toolScheduler.js'
 import { traceEvent, traceTextFields } from '../trace.js'
@@ -99,9 +100,12 @@ export class AgentRunner {
       let assistantMsg: DeepMessage | null = null
       let finishReason = 'stop'
       const llmStartedAt = Date.now()
+      // 发送前对历史副本做「瘦身」：截断滚出最近窗口的超大旧工具结果，降低每轮输入 token。
+      // 纯函数变换，不修改 this.messages，磁盘会话记录与 /resume 仍保留完整原文。
+      const requestMessages = trimHistoryForRequest(this.opts.getMessages())
       try {
         for await (const ev of this.opts.client.streamChat({
-          messages: this.opts.getMessages(),
+          messages: requestMessages,
           tools: apiTools,
           model: this.opts.model,
           abortSignal: this.opts.abortSignal,

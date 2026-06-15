@@ -58,6 +58,9 @@ const OPENAI_PRICING: Record<string, ModelPricing> = {
   'gpt-5-pro': { inputCacheHit: 5, inputCacheMiss: 5, output: 20 },
   'gpt-5.2': { inputCacheHit: 3, inputCacheMiss: 3, output: 12 },
   'gpt-5.2-pro': { inputCacheHit: 6, inputCacheMiss: 6, output: 24 },
+  // Codex 编码专用模型：定价对齐同代 gpt-5.4 档（输入 2.5 / 输出 15）。
+  // 此前缺该条目，导致选用 gpt-5.3-codex 时成本被算作 0、误显示为「免费」。
+  'gpt-5.3-codex': { inputCacheHit: 2.5, inputCacheMiss: 2.5, output: 15 },
   'gpt-5.1': { inputCacheHit: 2.5, inputCacheMiss: 2.5, output: 10 },
   'gpt-5.1-mini': { inputCacheHit: 0.5, inputCacheMiss: 0.5, output: 2 },
   'o3': { inputCacheHit: 10, inputCacheMiss: 10, output: 40 },
@@ -97,6 +100,35 @@ export function isFreeModelForProvider(providerId: ProviderId, model: string): b
     return ZHIPU_FREE_MODEL_SET.has(model)
   }
   return false
+}
+
+/**
+ * 模型的「定价已知度」状态。
+ * - free：明确免费（本地后端、智谱免费模型等），成本恒为 0；
+ * - priced：已配置价目表，成本可按 token 估算；
+ * - unknown：既非免费、又未在价目表中登记——成本无法估算（旧实现会误算作 0/显示「免费」）。
+ */
+export type ModelPricingStatus = 'free' | 'priced' | 'unknown'
+
+/**
+ * 返回某 Provider+模型 的定价已知度状态，供展示层区分「免费」与「未知价格」。
+ * 关键作用：避免把「未配置价目的收费模型」误显示为「免费」而误导用户。
+ * 注意：DeepSeek 对未知模型会回退到默认模型价目（始终视为 priced），与 OpenAI/智谱「未知即 unknown」不同——
+ * 这是有意为之：DeepSeek 全系同源、价位相近，回退估算比显示「未知」更有参考价值。
+ * @param providerId Provider 标识。
+ * @param model 模型名。
+ * @returns 定价状态。
+ */
+export function getModelPricingStatus(
+  providerId: ProviderId,
+  model: string,
+): ModelPricingStatus {
+  if (isFreeModelForProvider(providerId, model)) return 'free'
+  if (providerId === 'deepseek') return 'priced' // 未知模型回退默认价，仍可估算。
+  if (providerId === 'openai') return model in OPENAI_PRICING ? 'priced' : 'unknown'
+  if (providerId === 'zhipu') return model in ZHIPU_PRICING ? 'priced' : 'unknown'
+  // 理论上 ollama/custom 已在 isFreeModelForProvider 命中，这里兜底为 free。
+  return 'free'
 }
 
 /**

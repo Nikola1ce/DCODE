@@ -46,6 +46,9 @@ export interface DeepMessage {
   metadata?: {
     kind?: 'summary' | 'synthetic_error'
     source?: 'model' | 'tool' | 'system'
+    // 仅 tool：标记该结果已被「发送前历史瘦身」截断过（见 core/historyTrim.ts），
+    // 防止重复瘦身；仅作用于发送副本，不写回持久化历史。
+    trimmed?: boolean
   }
 }
 
@@ -209,6 +212,9 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>
   // 是否为只读工具（只读工具在 plan 模式下仍可执行）。
   readOnly: boolean
+  // 是否依赖 MCP 连接：为 true 的工具仅在已连接至少一个 MCP Server 时才暴露给模型，
+  // 未连接时从工具列表中剔除，避免每轮请求白白发送无用的 schema 浪费 token。
+  requiresMcp?: boolean
   // 调度/审计用安全策略；不影响工具 schema，对旧工具定义兼容。
   safety?: ToolSafetyPolicy
   /**

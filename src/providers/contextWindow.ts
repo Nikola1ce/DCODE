@@ -13,7 +13,12 @@
 // 用户选定的档位通过 config.modelContextOverrides 持久化，并由 resolveContextWindow 解析为最终生效值。
 // 制作人：Moriarty_Dox
 
-import { COMPACT_THRESHOLD_RATIO, DEFAULT_MODEL, PRO_MODEL } from '../constants.js'
+import {
+  COMPACT_THRESHOLD_RATIO,
+  DEFAULT_MODEL,
+  PRO_MODEL,
+  resolveCompactMaxAbsThreshold,
+} from '../constants.js'
 import type { ProviderId } from './types.js'
 
 // 常用上下文窗口刻度。
@@ -271,13 +276,21 @@ export function contextOverrideKey(providerId: ProviderId, model: string): strin
 
 /**
  * 根据「当前生效的最大上下文长度」计算自动压缩触发阈值。
- * 阈值 = floor(contextWindow × COMPACT_THRESHOLD_RATIO)，预留约 10% 余量给本轮新输出与摘要生成。
+ * 基础阈值 = floor(contextWindow × COMPACT_THRESHOLD_RATIO)，预留约 10% 余量给本轮新输出与摘要生成。
+ * 在此基础上再叠加一个「绝对 token 上限」作为成本护栏（见 resolveCompactMaxAbsThreshold）：
+ * 对超大窗口模型（如 1M 的 DeepSeek V4），避免历史膨胀到几十万 token 才压缩、导致每轮输入成本飙升；
+ * 小窗口模型本就低于该上限，不受影响。最终阈值 = min(基础阈值, 绝对上限)。
+ * 用户可用环境变量 DCODE_COMPACT_MAX_TOKENS 调整或关闭（设为 0/负数）封顶。
  * @param contextWindow 当前生效的上下文窗口 token 数。
  * @returns 压缩触发阈值（token 数，正整数）。
  */
 export function getCompactThreshold(contextWindow: number): number {
   const safe = contextWindow > 0 ? contextWindow : FALLBACK_CONTEXT
-  return Math.max(1, Math.floor(safe * COMPACT_THRESHOLD_RATIO))
+  const ratioThreshold = Math.max(1, Math.floor(safe * COMPACT_THRESHOLD_RATIO))
+  const absCap = resolveCompactMaxAbsThreshold()
+  // absCap <= 0 表示用户显式关闭封顶，退回纯比率阈值。
+  if (absCap <= 0) return ratioThreshold
+  return Math.max(1, Math.min(ratioThreshold, absCap))
 }
 
 /**

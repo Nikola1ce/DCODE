@@ -26,6 +26,8 @@ import {
   resolveContextWindow,
 } from '../providers/contextWindow.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
+import { getModelPricingStatus } from '../providers/pricing.js'
+import { formatCost } from '../deepseek/pricing.js'
 import { estimateMessagesTokens } from '../core/compact.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
@@ -166,6 +168,14 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       ),
     [model, contextConfigVersion],
   )
+  // 状态栏成本文案：按「定价已知度」区分展示，避免把未配置价目的收费模型误显示为「免费」。
+  // free → 免费；unknown → 未知；priced → 具体金额。依赖 provider/model/cost 变化重算。
+  const costLabel = useMemo(() => {
+    const status = getModelPricingStatus(getActiveProviderId(configRef.current), model)
+    if (status === 'free') return '免费'
+    if (status === 'unknown') return '未知'
+    return formatCost(cost)
+  }, [model, cost, contextConfigVersion])
   const [permissionMode, setPermissionModeState] = useState(agent.permissionMode)
   const [todos, setTodos] = useState<TodoItem[]>(agent.getTodos())
 
@@ -778,6 +788,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               model={model}
               permissionMode={permissionMode}
               costUsd={cost}
+              costLabel={costLabel}
               contextTokens={contextTokens}
               contextLimit={contextLimit}
               statusText={statusText}

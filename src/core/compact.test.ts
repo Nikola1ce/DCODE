@@ -85,19 +85,22 @@ describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => 
     return [{ role: 'user', content }]
   }
 
-  it('同一份历史在小窗口下触发压缩、在大窗口下不触发', () => {
-    // 约 150K token 的历史：
-    const messages = makeMessagesWithTokens(150_000)
-    expect(estimateMessagesTokens(messages)).toBeGreaterThan(140_000)
-    // 200K 窗口阈值 = 180K，150K < 180K，不压缩。
-    expect(shouldCompact(messages, 200_000)).toBe(false)
-    // 128K 窗口阈值 = 115.2K，150K > 115.2K，触发压缩。
-    expect(shouldCompact(messages, 128_000)).toBe(true)
+  it('低于绝对上限时，窗口越大阈值越高（比率行为仍生效）', () => {
+    // 约 100K token 的历史（< 120K 绝对上限，故仍由窗口×90% 主导）：
+    const messages = makeMessagesWithTokens(100_000)
+    expect(estimateMessagesTokens(messages)).toBeGreaterThan(95_000)
+    // 100K 窗口阈值 = 90K，100K > 90K → 压缩。
+    expect(shouldCompact(messages, 100_000)).toBe(true)
+    // 128K 窗口阈值 = 115.2K，100K < 115.2K → 不压缩。
+    expect(shouldCompact(messages, 128_000)).toBe(false)
   })
 
-  it('1M 大窗口下同样的历史不会触发压缩（阈值 900K）', () => {
+  it('大窗口被绝对上限（约 120K）封顶：超大历史照常触发压缩', () => {
+    // 约 150K token 的历史：1M×0.9=900K 看似不该压缩，但绝对上限 120K 会封顶 → 触发压缩。
     const messages = makeMessagesWithTokens(150_000)
-    expect(shouldCompact(messages, 1_000_000)).toBe(false)
+    expect(estimateMessagesTokens(messages)).toBeGreaterThan(140_000)
+    expect(shouldCompact(messages, 1_000_000)).toBe(true)
+    expect(shouldCompact(messages, 200_000)).toBe(true)
   })
 
   it('恰好跨越窗口×90% 阈值的边界判断正确', () => {

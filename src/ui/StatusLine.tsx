@@ -106,6 +106,9 @@ interface StatusLineProps {
   permissionMode: PermissionMode
   // 累计成本（美元）。
   costUsd: number
+  // 可选：成本展示文案。传入时优先使用（用于区分「免费」「未知价格」与具体金额）；
+  // 缺省时回退到按 costUsd 金额格式化，兼容旧调用。
+  costLabel?: string
   // 当前会话已使用（估算）的上下文 token 数；用于状态栏上下文进度条。
   contextTokens?: number
   // 总共可用的上下文 token 预算；达到后会触发自动压缩。缺省时不渲染进度条。
@@ -134,6 +137,7 @@ export function StatusLine({
   model,
   permissionMode,
   costUsd,
+  costLabel,
   contextTokens,
   contextLimit,
   statusText,
@@ -160,7 +164,7 @@ export function StatusLine({
       ) : (
         <Box>
           <Text color={theme.dim}>
-            {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {formatCost(costUsd)}
+            {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {costLabel ?? formatCost(costUsd)}
           </Text>
           {showContext ? (
             <>

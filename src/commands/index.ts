@@ -54,6 +54,7 @@ import {
 import { getMcpManager, type MCPManager } from '../mcp/client.js'
 import { getGlobalMcpConfigPath } from '../mcp/config.js'
 import { formatCost } from '../deepseek/pricing.js'
+import { getModelPricingStatus } from '../providers/pricing.js'
 import { getProjectMemoryPath, hasProjectMemory } from '../memory.js'
 import { ALL_TOOLS } from '../tools/index.js'
 import { globalToolRegistry } from '../tools/registry.js'
@@ -1294,12 +1295,24 @@ function renderAbout(): string {
  */
 function renderCost(agent: Agent): string {
   const u = agent.usage
+  const status = getModelPricingStatus(agent.getProviderId(), agent.getModel())
+  // 区分三态：免费模型显示「免费」；未配置价目的收费模型显示「未知」而非误报免费；其余按金额。
+  let costLine: string
+  if (status === 'free') {
+    costLine = '免费（该模型不计费）'
+  } else if (status === 'unknown') {
+    costLine =
+      `未知（该模型未配置定价，无法估算）` +
+      `${u.inputTokens + u.outputTokens > 0 ? `；累计用量 输入 ${u.inputTokens} / 输出 ${u.outputTokens} token` : ''}`
+  } else {
+    costLine = formatCost(u.costUsd)
+  }
   return [
     '本次会话用量统计：',
     `  Provider / 模型：${agent.getProviderId()} / ${agent.getModel()}`,
     `  输入 token：${u.inputTokens}（其中缓存命中 ${u.cacheHitTokens}）`,
     `  输出 token：${u.outputTokens}`,
-    `  预估成本：${formatCost(u.costUsd)}`,
+    `  预估成本：${costLine}`,
   ].join('\n')
 }
 

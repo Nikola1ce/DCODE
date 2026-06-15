@@ -13,6 +13,7 @@ import type {
 } from '../core/types.js'
 import { editFileTool } from './editFile.js'
 import { getHookManager } from '../core/hooks.js'
+import { getMcpManager } from '../mcp/client.js'
 import { bashOutputTool } from './bashOutput.js'
 import { globTool } from './glob.js'
 import { grepTool } from './grep.js'
@@ -68,13 +69,28 @@ export function getTool(name: string): ToolDefinition | undefined {
 }
 
 /**
+ * 是否已连接至少一个可用的 MCP Server。
+ * 用于决定要不要把依赖 MCP 的代理工具（list/read resources、list/get prompts）暴露给模型：
+ * 未连接时这些工具无任何作用，发送其 schema 纯属浪费每轮请求的输入 token。
+ * @returns 已连接返回 true。
+ */
+function hasConnectedMcpServer(): boolean {
+  const mgr = getMcpManager()
+  return !!mgr && mgr.getConnectedServerIds().length > 0
+}
+
+/**
  * 根据当前权限模式返回模型可用的工具集合。
- * plan（只读规划）模式下过滤掉所有写操作工具，从源头杜绝副作用。
+ * - plan（只读规划）模式下过滤掉所有写操作工具，从源头杜绝副作用；
+ * - 未连接任何 MCP Server 时，剔除标记了 requiresMcp 的代理工具，节省每轮请求的工具 schema token。
  * @param permissionMode 当前权限模式。
  * @returns 过滤后的工具列表。
  */
 export function getAvailableTools(permissionMode: string): ToolDefinition[] {
-  return globalToolRegistry.getAvailable(permissionMode)
+  const tools = globalToolRegistry.getAvailable(permissionMode)
+  if (hasConnectedMcpServer()) return tools
+  // 无 MCP 连接：去掉仅在 MCP 场景才有意义的工具，避免白发 schema。
+  return tools.filter((t) => !t.requiresMcp)
 }
 
 /**
