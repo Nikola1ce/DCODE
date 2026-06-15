@@ -3,7 +3,7 @@
 // 制作人：Moriarty_Dox
 
 import { build, context } from 'esbuild'
-import { chmodSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -12,6 +12,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // 输出文件路径：dist/cli.js。
 const outfile = resolve(__dirname, 'dist/cli.js')
+
+/**
+ * 复制运行时静态资源到 dist。
+ * esbuild 只打包 JS，二进制资源（提示音 WAV）需手动随产物复制：
+ * assets/ -> dist/assets/，使运行期可通过 cli.js 同级的 assets/sounds 定位音效文件。
+ */
+function copyAssets() {
+  const srcAssets = resolve(__dirname, 'assets')
+  const destAssets = resolve(__dirname, 'dist/assets')
+  if (existsSync(srcAssets)) {
+    cpSync(srcAssets, destAssets, { recursive: true })
+    console.log('[DCODE] 已复制静态资源 ->', destAssets)
+  }
+}
 
 // 是否处于 watch（监听）模式，便于本地开发时自动重建。
 const isWatch = process.argv.includes('--watch')
@@ -60,13 +74,16 @@ const options = {
  */
 async function run() {
   if (isWatch) {
-    // 监听模式：源码改动后自动重建，便于开发调试。
+    // 监听模式：源码改动后自动重建，便于开发调试。先复制一次资源，保证开发期也能定位音效。
+    copyAssets()
     const ctx = await context(options)
     await ctx.watch()
     console.log('[DCODE] 正在监听源码变更（watch 模式）...')
   } else {
     // 单次构建：完成后给产物加上可执行权限（Windows 下该调用无副作用）。
     await build(options)
+    // 复制静态资源（提示音 WAV 等）到 dist/assets。
+    copyAssets()
     try {
       chmodSync(outfile, 0o755)
     } catch {

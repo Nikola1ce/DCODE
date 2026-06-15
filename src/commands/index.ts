@@ -453,6 +453,25 @@ export const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: 'sound',
+    description: '开关提示音效（on/off；输入发送、权限请求、中断、结束、通知时发声）',
+    run: (ctx) => {
+      const cur = ctx.config.soundEnabled !== false
+      const target = (ctx.args ?? '').trim().toLowerCase()
+      // 支持显式 on/off，无参或其它输入则取反切换。
+      let next: boolean
+      if (target === 'on' || target === '开' || target === 'true') next = true
+      else if (target === 'off' || target === '关' || target === 'false') next = false
+      else next = !cur
+      ctx.applyConfig({ soundEnabled: next })
+      return {
+        message: next
+          ? '提示音效已开启：输入发送、权限请求、异常中断、输出结束、通知时会发出终端响铃。\n（若听不到声音，请检查终端/系统是否启用了响铃 BEL。）'
+          : '提示音效已关闭。',
+      }
+    },
+  },
+  {
     name: 'effort',
     description: '查看或切换推理强度：low | medium | high | max（Thinking 模式下生效）',
     aliases: ['reasoning-effort'],
@@ -1340,6 +1359,7 @@ function renderConfig(config: DCodeConfig): string {
     `  推理强度：${config.reasoningEffort}（${def.supportsThinking ? 'Thinking 模式下生效' : '当前 Provider 不支持'}）`,
     `  思维链预算：${config.thinkingBudget !== undefined ? `${config.thinkingBudget} tokens` : '未设置'}`,
     `  Hooks：${config.hooksEnabled !== false ? '启用' : '禁用'}`,
+    `  提示音效：${config.soundEnabled !== false ? '开' : '关'}`,
     renderProxyHint(config),
     '',
     '切换 Provider：/provider zhipu | deepseek | openai',

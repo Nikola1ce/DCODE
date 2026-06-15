@@ -1,0 +1,8 @@
+# 显式声明二进制资源，避免 git 在跨平台检出时对其做行尾(CRLF/LF)转换而损坏文件。
+# 提示音等音频文件必须按原始字节存取。
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.png binary
+*.gif binary
+*.ico binary

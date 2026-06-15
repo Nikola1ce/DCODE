@@ -26,9 +26,10 @@ const config: DCodeConfig = {
   reasoningEffort: 'high',
   alwaysAllow: [],
   totalCostUsd: 0,
-  onboardingComplete: true,
-  hooksEnabled: false,
-  provider: 'custom',
+    onboardingComplete: true,
+    hooksEnabled: false,
+    soundEnabled: true,
+    provider: 'custom',
 }
 
 function retryableError(): Error & { status: number } {

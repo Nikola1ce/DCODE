@@ -29,6 +29,14 @@ import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../com
 import { getModelPricingStatus } from '../providers/pricing.js'
 import { formatCost } from '../deepseek/pricing.js'
 import { estimateMessagesTokens } from '../core/compact.js'
+import {
+  playInputSent,
+  playInterrupted,
+  playNotification,
+  playPermissionRequest,
+  playTurnComplete,
+  setSoundEnabled,
+} from './sound.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
 import { messagesToItems } from './messagesToItems.js'
@@ -111,6 +119,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
 
   // —— 配置与主题（UI 级，可热更新）——
   const configRef = useRef<DCodeConfig>(config)
+  // 启动时按配置同步音效总开关；soundEnabled 缺省（旧配置无此字段）时默认开启。
+  setSoundEnabled(config.soundEnabled !== false)
   const [themeName, setThemeName] = useState(config.theme)
   const [showThinking, setShowThinking] = useState(config.showThinking)
   const theme = useMemo(() => getTheme(themeName), [themeName])
@@ -242,6 +252,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     // 同步可能影响 UI 的字段。
     if (patch.theme) setThemeName(patch.theme)
     if (patch.showThinking !== undefined) setShowThinking(patch.showThinking)
+    // 音效开关变更：立即同步到运行时模块，使 /sound 即时生效（无需重启）。
+    if (patch.soundEnabled !== undefined) setSoundEnabled(patch.soundEnabled)
     if (patch.model) setModelState(patch.model)
     // Provider 或「模型最大上下文档位」变更会改变生效上下文窗口，递增计数以刷新进度条上限。
     if (patch.provider !== undefined || patch.modelContextOverrides !== undefined) {
@@ -257,6 +269,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           resolve('allow_once')
           return
         }
+        // 权限请求音效：需要用户做出授权决策，把可能切走窗口的用户「叫回来」。
+        playPermissionRequest()
         permissionResolverRef.current = resolve
         // 把「标题 + 预览」一次性落入 Static 历史：完整展示、可上滑查看，且不参与动态区重绘，
         // 从而避免高预览在动态区反复重绘时产生残影（Bug 2）。动态区只保留下方的选择项。
@@ -467,6 +481,17 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             } else if (ev.type === 'compact_start') {
               setStatusText('正在压缩上下文')
               pushSystem('info', '上下文较长，正在自动压缩以释放空间…')
+            } else if (ev.type === 'run_error') {
+              // 异常中断音效：对话出错，提醒用户回来处理。
+              playInterrupted()
+            } else if (ev.type === 'run_end') {
+              // 按结束原因区分音效：
+              //   - aborted：用户中断 → 中断音；
+              //   - max_iterations：达到上限自动停止、需用户决定是否继续 → 通知音；
+              //   - final：正常输出结束 → 完成音。
+              if (ev.reason === 'aborted') playInterrupted()
+              else if (ev.reason === 'max_iterations') playNotification()
+              else playTurnComplete()
             }
           },
           requestPermission,
@@ -546,6 +571,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   /** 处理输入框提交（区分斜杠命令与普通对话）。 */
   const handleSubmit = useCallback(
     async (input: string) => {
+      // 输入发送音效：作为「已收到」的即时反馈。
+      playInputSent()
       // 记录输入历史。
       inputHistoryRef.current.push(input)
       // 展示用户消息。

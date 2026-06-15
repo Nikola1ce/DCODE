@@ -11,6 +11,7 @@ import {
   chmodSync,
   copyFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -129,6 +130,13 @@ async function main() {
   try {
     chmodSync(outfile, 0o755)
   } catch {}
+
+  // 复制运行时静态资源（提示音 WAV）到 staging 的 dist/assets，使打包产物自带音效文件。
+  const srcAssets = join(root, 'assets')
+  if (existsSync(srcAssets)) {
+    cpSync(srcAssets, join(staging, 'dist', 'assets'), { recursive: true })
+    console.log('[DCODE] 已复制静态资源 -> dist/assets')
+  }
 
   copyTemplates(staging)
   writeFileSync(join(staging, 'VERSION.txt'), `DCODE v${version}\n`, 'utf8')

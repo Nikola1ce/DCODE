@@ -20,6 +20,7 @@ const baseConfig: DCodeConfig = {
   totalCostUsd: 0,
   onboardingComplete: true,
   hooksEnabled: false,
+  soundEnabled: true,
   provider: 'custom',
 }
 

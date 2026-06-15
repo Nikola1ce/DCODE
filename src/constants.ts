@@ -225,6 +225,17 @@ export const WEB_FETCH_TIMEOUT_MS = 15_000
 // web_search 请求超时（毫秒）。
 export const WEB_SEARCH_TIMEOUT_MS = 15_000
 
+// 网络读取「整体硬超时」（毫秒）：不依赖底层 AbortSignal 能否中断，到时一定让上层返回。
+// 背景：某些服务器接受连接后 body 慢/挂起/不结束，导致 reader.read() 永久阻塞，
+// 而 controller.abort() 在这种情况下未必能让已挂起的读取 settle —— 表现为工具「一直转圈」。
+// 用 Promise.race 叠加该硬超时作为最终护栏，确保无论如何都能按时失败返回。
+// 取 30s 略大于单请求超时（15s），给正常但偏慢的下载留余量，又远小于让用户以为「卡死」的时长。
+export const NETWORK_HARD_TIMEOUT_MS = 30_000
+
+// 网络读取「停顿（stall）超时」（毫秒）：单次 reader.read() 超过该时长仍无任何新数据到达，
+// 判定为连接挂起并主动中断。用于尽早发现「连接已建立但服务器迟迟不发数据」的僵死下载。
+export const NETWORK_STALL_TIMEOUT_MS = 20_000
+
 // Bing Web Search API v7 端点。
 export const BING_SEARCH_ENDPOINT = 'https://api.bing.microsoft.com/v7.0/search'
 

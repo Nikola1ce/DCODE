@@ -63,6 +63,31 @@ describe('webFetchTool', () => {
     )
     expect(req?.toolName).toBe('web_fetch')
   })
+
+  it('ruleKey 为工具级（不含域名）：总是允许一次后对所有网站生效', () => {
+    const reqA = webFetchTool.checkPermission?.(
+      { url: 'https://a.example.com/x' },
+      { ...mockCtx, permissionMode: 'default' } as any,
+    )
+    const reqB = webFetchTool.checkPermission?.(
+      { url: 'https://b.other.org/y' },
+      { ...mockCtx, permissionMode: 'default' } as any,
+    )
+    // 不同域名应得到相同的工具级 ruleKey，从而共享同一条「总是允许」白名单。
+    expect(reqA?.ruleKey).toBe('web_fetch')
+    expect(reqB?.ruleKey).toBe('web_fetch')
+    // 但 title 仍分别展示各自域名，便于用户辨认访问目标。
+    expect(reqA?.title).toContain('a.example.com')
+    expect(reqB?.title).toContain('b.other.org')
+  })
+
+  it('bypass 模式不请求授权', () => {
+    const req = webFetchTool.checkPermission?.(
+      { url: 'https://example.com' },
+      { ...mockCtx, permissionMode: 'bypass' } as any,
+    )
+    expect(req).toBeNull()
+  })
 })
 
 describe('webSearchTool', () => {
@@ -73,12 +98,29 @@ describe('webSearchTool', () => {
     process.env = { ...envBackup }
   })
 
-  it('未配置 API Key 时返回错误', async () => {
+  it('未配置 API Key 时回退「零 Key」Bing 网页后端（不报未配置）', async () => {
+    // 产品设计：无任何搜索 Key 时应开箱即用，回退抓取 cn.bing.com 网页结果，而非报错。
     delete process.env.SERPAPI_API_KEY
     delete process.env.BING_SEARCH_API_KEY
+    // mock 一个最小可解析的 Bing 网页结果（<li class="b_algo"> 内含标题与摘要）。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          `<html><body>
+            <li class="b_algo"><h2><a href="https://result.test">网页标题</a></h2>
+            <div class="b_caption"><p>网页摘要内容</p></div></li>
+          </body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+      ),
+    )
     const result = await webSearchTool.run({ search_term: 'vitest' }, mockCtx as any)
-    expect(result.isError).toBe(true)
-    expect(result.llmContent).toContain('未配置')
+    // 关键：不应再误报「未配置」。
+    expect(result.llmContent).not.toContain('未配置')
+    // 能解析出结果则更佳（解析容错，至少不应是错误结果）。
+    expect(result.isError).toBeFalsy()
+    expect(result.llmContent).toContain('网页标题')
   })
 
   it('resolveSearchApiKey 优先 SerpAPI', () => {

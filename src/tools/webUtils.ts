@@ -16,6 +16,88 @@ export type UrlValidationResult =
   | { ok: true; url: URL }
   | { ok: false; reason: string }
 
+/** withHardTimeout 的结果：要么按时拿到值，要么超时，要么被用户中断。 */
+export type HardTimeoutResult<T> =
+  | { timedOut: false; value: T }
+  | { timedOut: true; aborted?: boolean }
+
+/**
+ * 给一个 Promise 叠加「不依赖底层取消」的硬超时 + 即时中断护栏。
+ * 与两个分支竞速：
+ *   1) 超时定时器：超时胜出时返回 { timedOut:true } 并调用 onTimeout（尽力释放底层资源，但不等待它）；
+ *   2) abort 信号（可选）：用户中断（Esc）时立即返回 { timedOut:true, aborted:true }，
+ *      不必等到硬超时 —— 这是让中断「秒生效」的关键。
+ * 用途：网络抓取中即便 reader.read()/cancel() 或连接建立本身永久挂起，也能保证上层按时/即时返回，避免 UI 卡住。
+ * @param promise 业务 Promise。
+ * @param timeoutMs 超时毫秒数（<=0 表示不加超时）。
+ * @param onTimeout 超时或中断时的副作用（如 controller.abort()），可选。
+ * @param signal 取消信号（可选）：触发时立即结束等待。
+ * @returns 命中超时/中断返回 { timedOut:true }（中断时 aborted:true），否则 { timedOut:false, value }。
+ */
+export async function withHardTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+  signal?: AbortSignal,
+): Promise<HardTimeoutResult<T>> {
+  if (!(timeoutMs > 0) && !signal) {
+    return { timedOut: false, value: await promise }
+  }
+  // 已经取消：立即返回。
+  if (signal?.aborted) {
+    try {
+      onTimeout?.()
+    } catch {
+      // 忽略释放副作用异常。
+    }
+    return { timedOut: true, aborted: true }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const racers: Array<Promise<HardTimeoutResult<T>>> = [
+    promise.then((value): HardTimeoutResult<T> => ({ timedOut: false, value })),
+  ]
+
+  if (timeoutMs > 0) {
+    racers.push(
+      new Promise<HardTimeoutResult<T>>((resolve) => {
+        timer = setTimeout(() => {
+          try {
+            onTimeout?.()
+          } catch {
+            // 释放副作用失败不应影响超时返回。
+          }
+          resolve({ timedOut: true })
+        }, timeoutMs)
+      }),
+    )
+  }
+
+  if (signal) {
+    racers.push(
+      new Promise<HardTimeoutResult<T>>((resolve) => {
+        onAbort = () => {
+          try {
+            onTimeout?.()
+          } catch {
+            // 忽略。
+          }
+          resolve({ timedOut: true, aborted: true })
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      }),
+    )
+  }
+
+  try {
+    return await Promise.race(racers)
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
 /** 单次 fetch 允许的最大重定向次数。 */
 const MAX_FETCH_REDIRECTS = 5
 

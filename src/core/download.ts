@@ -9,6 +9,8 @@
 //   4) 支持 AbortSignal 取消。
 // 制作人：Moriarty_Dox
 
+import { NETWORK_STALL_TIMEOUT_MS } from '../constants.js'
+
 /** 下载/读取过程中的一次进度快照。 */
 export interface DownloadProgress {
   /** 已接收字节数。 */
@@ -42,6 +44,11 @@ export interface DownloadOptions {
   headers?: Record<string, string>
   /** 进度条展示用的资源名（仅用于上层渲染，可选）。 */
   label?: string
+  /**
+   * 停顿（stall）超时（毫秒）：单次读取超过该时长仍无新数据则判定挂起并中断。
+   * 缺省取 NETWORK_STALL_TIMEOUT_MS；设为 0 或负数可关闭 stall 检测（一般不建议）。
+   */
+  stallTimeoutMs?: number
 }
 
 /** 进度条默认字符宽度（格子数）。 */
@@ -135,6 +142,70 @@ function parseContentLength(res: Response): number | null {
 }
 
 /**
+ * 带「停顿超时 + 即时取消」地读取一个数据块。
+ * 将 reader.read() 与两个竞速分支并行：
+ *   1) stall 定时器：stallTimeoutMs 内无任何结果则判定挂起；
+ *   2) abort 信号：用户中断（Esc）时立即胜出 —— 这是让中断「秒生效」的关键，
+ *      不必等到 stall/硬超时，正在挂起的读取会被立刻跳出。
+ * 任一竞速胜出都会主动 cancel reader 以尽快释放底层连接，并抛出 AbortError。
+ * stallTimeoutMs <= 0 且无 signal 时退化为普通 read。
+ * @param reader 响应体的流读取器。
+ * @param stallTimeoutMs 停顿超时毫秒数。
+ * @param signal 取消信号（可选）。
+ * @returns 读取结果（done/value）。
+ */
+async function readChunkWithStall(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  stallTimeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ done?: boolean; value?: Uint8Array }> {
+  const hasStall = stallTimeoutMs > 0
+  if (!hasStall && !signal) {
+    return reader.read()
+  }
+
+  // 已经取消：无需发起读取，直接抛出。
+  if (signal?.aborted) {
+    void reader.cancel().catch(() => {})
+    throw new DOMExceptionLike('下载已被取消', 'AbortError')
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const racers: Array<Promise<{ done?: boolean; value?: Uint8Array }>> = [reader.read()]
+
+  if (hasStall) {
+    racers.push(
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          void reader.cancel().catch(() => {})
+          reject(new DOMExceptionLike(`下载停顿超时（${stallTimeoutMs}ms 无新数据）`, 'AbortError'))
+        }, stallTimeoutMs)
+      }),
+    )
+  }
+
+  if (signal) {
+    racers.push(
+      new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          void reader.cancel().catch(() => {})
+          reject(new DOMExceptionLike('下载已被取消', 'AbortError'))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      }),
+    )
+  }
+
+  try {
+    return await Promise.race(racers)
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
+/**
  * 基于一个已拿到的 Response，按字节流读取其 body 并实时上报进度，最终返回完整字节。
  * 适用于「已经自行处理好 URL 校验/重定向」的场景（如 web_fetch 的 safeFetch）。
  * 若 Response.body 不可读（无流，如某些 polyfill），降级为一次性 arrayBuffer 并上报单帧进度。
@@ -146,7 +217,13 @@ export async function readResponseWithProgress(
   res: Response,
   options: DownloadOptions = {},
 ): Promise<Uint8Array> {
-  const { onProgress, signal, throttleMs = 120, label } = options
+  const {
+    onProgress,
+    signal,
+    throttleMs = 120,
+    label,
+    stallTimeoutMs = NETWORK_STALL_TIMEOUT_MS,
+  } = options
   const totalBytes = parseContentLength(res)
   const startedAt = Date.now()
 
@@ -191,7 +268,10 @@ export async function readResponseWithProgress(
 
   try {
     for (;;) {
-      const { done, value } = await reader.read()
+      // 关键：单次读取叠加 stall 超时 + abort 即时取消。若服务器接受连接后迟迟不发数据，
+      // 原始的 `await reader.read()` 会永久挂起且 abort 未必能让其 settle —— 表现为「一直转圈」。
+      // 用 Promise.race 让读取与 stall 定时器、abort 信号竞速：超时或用户中断都能立刻跳出循环。
+      const { done, value } = await readChunkWithStall(reader, stallTimeoutMs, signal)
       if (done) break
       if (value && value.byteLength > 0) {
         chunks.push(value)

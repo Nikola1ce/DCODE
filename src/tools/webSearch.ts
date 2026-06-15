@@ -9,12 +9,14 @@ import {
   BING_SEARCH_ENDPOINT,
   ENV_BING_SEARCH_KEY,
   ENV_SERPAPI_KEY,
+  NETWORK_HARD_TIMEOUT_MS,
   PRODUCT_NAME,
   VERSION,
   WEB_SEARCH_TIMEOUT_MS,
 } from '../constants.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import { readResponseWithProgress, renderProgressBar } from '../core/download.js'
+import { withHardTimeout } from './webUtils.js'
 
 // 零 Key 网页搜索端点：Bing 国内站搜索结果页（国内可直连，无需 API Key）。
 // 说明：这是抓取「网页版搜索结果」而非 Bing 付费 Search API；解析其 HTML 结果列表。
@@ -145,15 +147,33 @@ export const webSearchTool: ToolDefinition = {
     try {
       // 发起前先提示「正在搜索」，让实时区立即有反馈（搜索结果到达前的空窗期）。
       ctx.onProgress?.(`⠋ 正在搜索「${term}」…`)
-      let items: SearchResultItem[]
-      if (backend === 'serpapi') {
-        items = await searchViaSerpApi(term, count, apiKey!, controller.signal, ctx.onProgress)
-      } else if (backend === 'bing') {
-        items = await searchViaBing(term, count, apiKey!, controller.signal, ctx.onProgress)
-      } else {
-        // 零 Key 默认后端：抓取 Bing 网页搜索结果并解析。
-        items = await searchViaBingWeb(term, count, controller.signal, ctx.onProgress)
+      // 硬超时护栏：即便底层连接/读取永久挂起，也保证按时返回，避免工具无限转圈。
+      const searched = await withHardTimeout(
+        (async (): Promise<SearchResultItem[]> => {
+          if (backend === 'serpapi') {
+            return searchViaSerpApi(term, count, apiKey!, controller.signal, ctx.onProgress)
+          }
+          if (backend === 'bing') {
+            return searchViaBing(term, count, apiKey!, controller.signal, ctx.onProgress)
+          }
+          // 零 Key 默认后端：抓取 Bing 网页搜索结果并解析。
+          return searchViaBingWeb(term, count, controller.signal, ctx.onProgress)
+        })(),
+        NETWORK_HARD_TIMEOUT_MS,
+        () => controller.abort(),
+        ctx.abortSignal,
+      )
+      if (searched.timedOut) {
+        if (searched.aborted || ctx.abortSignal.aborted) {
+          return { llmContent: '搜索已被用户取消。', isError: true, uiSummary: 'web_search 已取消' }
+        }
+        return {
+          llmContent: `搜索超时：「${term}」在 ${NETWORK_HARD_TIMEOUT_MS}ms 内未完成（连接挂起或响应过慢）。`,
+          isError: true,
+          uiSummary: 'web_search 超时',
+        }
       }
+      const items = searched.value
 
       if (items.length === 0) {
         return {

@@ -37,6 +37,7 @@ function deepseekConfig(overrides: Partial<DCodeConfig> = {}): DCodeConfig {
     totalCostUsd: 0,
     onboardingComplete: true,
     hooksEnabled: false,
+    soundEnabled: true,
     provider: 'deepseek',
     ...overrides,
   }

@@ -65,6 +65,9 @@ export interface DCodeConfig {
   onboardingComplete: boolean
   // 是否启用 Hooks 钩子系统（false 时跳过 Pre/Post 与会话钩子）。
   hooksEnabled: boolean
+  // 是否启用提示音效（终端响铃）：在输入发送、权限请求、异常中断、输出结束、通知等时机发声，
+  // 便于用户切走窗口时也能被提醒回来审核。默认开启；可用 /sound off 关闭。
+  soundEnabled: boolean
   // 当前 LLM Provider（zhipu / deepseek / openai / ollama / custom）。
   provider: ProviderId
   // 各 Provider 的独立覆盖（baseURL、apiKey、defaultModel、proxy）。
@@ -89,6 +92,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   totalCostUsd: 0,
   onboardingComplete: false,
   hooksEnabled: true,
+  soundEnabled: true,
   provider: 'zhipu',
 }
 

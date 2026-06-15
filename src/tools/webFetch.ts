@@ -5,6 +5,7 @@
 
 import {
   MAX_WEB_FETCH_CHARS,
+  NETWORK_HARD_TIMEOUT_MS,
   PRODUCT_NAME,
   VERSION,
   WEB_FETCH_TIMEOUT_MS,
@@ -15,6 +16,7 @@ import {
   safeFetchText,
   truncateWebContent,
   validateFetchUrl,
+  withHardTimeout,
 } from './webUtils.js'
 
 /** web_fetch 入参。 */
@@ -49,11 +51,13 @@ export const webFetchTool: ToolDefinition = {
     if (ctx.permissionMode === 'bypass') return null
     const validated = validateFetchUrl(input.url ?? '')
     const host = validated.ok ? validated.url.hostname : input.url
+    // ruleKey 采用工具级标识（不含域名）：用户选「总是允许」一次后，对所有网站的抓取都放行，
+    // 避免下载/抓取任务里每换一个域名就要重新授权。title 仍展示具体域名，让用户知道访问目标。
     return {
       toolName: 'web_fetch',
       title: `访问网页：${host}`,
       preview: input.url,
-      ruleKey: `web_fetch(${host})`,
+      ruleKey: 'web_fetch',
     }
   },
   /**
@@ -77,18 +81,40 @@ export const webFetchTool: ToolDefinition = {
     try {
       // 带进度抓取：按字节流读取响应体，把「百分比/已下载量/速度」实时上报到 CLI 实时区。
       // 进度条前缀用主机名，便于用户辨认正在下载的资源。
-      const { res, text: raw } = await safeFetchText(validated.url.toString(), {
-        init: {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
-            Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+      // 外层再套「硬超时」护栏：即便底层 DNS/连接/读取/cancel 永久挂起，也保证按时返回，避免工具无限转圈。
+      const fetched = await withHardTimeout(
+        safeFetchText(validated.url.toString(), {
+          init: {
+            signal: controller.signal,
+            headers: {
+              'User-Agent': `${PRODUCT_NAME}/${VERSION}`,
+              Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+            },
           },
-        },
-        signal: controller.signal,
-        label: validated.url.hostname,
-        onProgressText: (line) => ctx.onProgress?.(line),
-      })
+          signal: controller.signal,
+          label: validated.url.hostname,
+          onProgressText: (line) => ctx.onProgress?.(line),
+        }),
+        NETWORK_HARD_TIMEOUT_MS,
+        () => controller.abort(),
+        ctx.abortSignal,
+      )
+
+      if (fetched.timedOut) {
+        // 用户中断（Esc）立即返回「已取消」；否则为真正的超时。
+        if (fetched.aborted || ctx.abortSignal.aborted) {
+          return { llmContent: '抓取已被用户取消。', isError: true, uiSummary: 'web_fetch 已取消' }
+        }
+        return {
+          llmContent:
+            `抓取超时：${validated.url} 在 ${NETWORK_HARD_TIMEOUT_MS}ms 内未完成（连接挂起或响应过慢）。` +
+            `\n提示：若要下载图片等二进制文件，请改用 run_command 执行下载命令` +
+            `（Windows: Invoke-WebRequest -OutFile；类 Unix: curl -L -o）。`,
+          isError: true,
+          uiSummary: 'web_fetch 超时',
+        }
+      }
+      const { res, text: raw } = fetched.value
 
       if (!res.ok) {
         return {
