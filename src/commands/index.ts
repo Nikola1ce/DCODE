@@ -12,10 +12,13 @@ import {
   REASONING_EFFORTS,
   MIN_THINKING_BUDGET,
   MAX_THINKING_BUDGET,
+  MIN_SOUND_VOLUME,
+  MAX_SOUND_VOLUME,
   isSupportedModelName,
   isValidReasoningEffort,
   mapEffortToDeepSeek,
   parseThinkingBudget,
+  parseSoundVolume,
 } from '../constants.js'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
@@ -242,6 +245,54 @@ function renderModelContextInfo(
   return lines.join('\n')
 }
 
+/**
+ * 处理 /sound volume 子命令：查看或设置提示音音量（0–100）。
+ * - 无参数：展示当前音量与用法（含静音说明）；
+ * - 带参数（0–100 的整数，可带 %）：夹紧/校验后持久化，并热更新到运行时音效模块；
+ * - 非法参数：给出错误提示，不修改配置。
+ * 设置 0 等效静音（所有发声跳过）；设置后立即对后续提示音生效，无需重启。
+ * @param ctx 命令上下文。
+ * @param arg volume 之后的剩余参数（已去空白）。
+ * @returns 命令结果（展示信息）。
+ */
+function handleSoundVolumeCommand(
+  ctx: SlashCommandContext,
+  arg: string,
+): SlashCommandResult {
+  const cur = ctx.config.soundVolume ?? MAX_SOUND_VOLUME
+
+  // 无参数：展示当前音量与用法。
+  if (!arg) {
+    const muteNote = cur <= MIN_SOUND_VOLUME ? '（当前为静音）' : ''
+    return {
+      message:
+        `当前提示音音量：${cur}%${muteNote}\n` +
+        `用法：/sound volume <${MIN_SOUND_VOLUME}-${MAX_SOUND_VOLUME}>（如 /sound volume 60）；${MIN_SOUND_VOLUME} 为静音。\n` +
+        '说明：采用感知响度曲线（50 约为 100 的 1/4 响度），档位差异比线性折半更明显；Linux 依赖 PulseAudio。',
+    }
+  }
+
+  // 解析目标音量（接受 0–100 整数，可带 %）。
+  const parsed = parseSoundVolume(arg)
+  if (parsed === undefined) {
+    return {
+      message:
+        `无效的音量值：「${arg}」。\n` +
+        `请输入 ${MIN_SOUND_VOLUME}~${MAX_SOUND_VOLUME} 之间的整数（如 /sound volume 60）。`,
+    }
+  }
+
+  // 写入配置并热更新（applyConfig 会同步到 sound 运行时模块）。
+  ctx.applyConfig({ soundVolume: parsed })
+  const tail =
+    parsed <= MIN_SOUND_VOLUME
+      ? '（已静音：所有提示音将不再发声）'
+      : ctx.config.soundEnabled === false
+        ? '（注意：提示音效当前为关闭状态，可用 /sound on 开启）'
+        : ''
+  return { message: `已将提示音音量设为 ${parsed}%。${tail}` }
+}
+
 // 全部内置命令定义。
 export const COMMANDS: SlashCommand[] = [
   {
@@ -454,20 +505,34 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'sound',
-    description: '开关提示音效（on/off；输入发送、权限请求、中断、结束、通知时发声）',
+    description: '开关提示音效或调音量（on/off | volume <0-100>）',
     run: (ctx) => {
+      const raw = (ctx.args ?? '').trim()
+      const lower = raw.toLowerCase()
+
+      // 子命令：/sound volume [0-100] —— 查看或设置提示音音量。
+      const volMatch = /^(volume|vol|v)\b(.*)$/i.exec(lower)
+      if (volMatch) {
+        return handleSoundVolumeCommand(ctx, volMatch[2].trim())
+      }
+
       const cur = ctx.config.soundEnabled !== false
-      const target = (ctx.args ?? '').trim().toLowerCase()
-      // 支持显式 on/off，无参或其它输入则取反切换。
+      // 无参或其它输入则取反切换；支持显式 on/off（含中文「开/关」与 true/false）。
       let next: boolean
-      if (target === 'on' || target === '开' || target === 'true') next = true
-      else if (target === 'off' || target === '关' || target === 'false') next = false
+      if (lower === 'on' || lower === '开' || lower === 'true') next = true
+      else if (lower === 'off' || lower === '关' || lower === 'false') next = false
       else next = !cur
       ctx.applyConfig({ soundEnabled: next })
+      if (!next) {
+        return { message: '提示音效已关闭。' }
+      }
+      // 开启时附带提示当前音量，并说明如何调节。
+      const vol = ctx.config.soundVolume ?? MAX_SOUND_VOLUME
       return {
-        message: next
-          ? '提示音效已开启：输入发送、权限请求、异常中断、输出结束、通知时会发出终端响铃。\n（若听不到声音，请检查终端/系统是否启用了响铃 BEL。）'
-          : '提示音效已关闭。',
+        message:
+          '提示音效已开启：输入发送、权限请求、异常中断、输出结束、通知时会发声。\n' +
+          `当前音量：${vol}%（用 /sound volume <0-${MAX_SOUND_VOLUME}> 调整；0 为静音）。\n` +
+          '（若听不到声音，请检查终端/系统音量；回退的 BEL 蜂鸣音量由终端控制。）',
       }
     },
   },
@@ -1106,6 +1171,25 @@ function getCommandArgSuggestions(
     }))
   }
 
+  // /sound：开关 + 音量子选项（on/off 切换；volume 子命令及若干常用音量档位的快捷补全）。
+  if (cmdName === 'sound') {
+    const options = [
+      { name: 'on', description: '开启提示音效' },
+      { name: 'off', description: '关闭提示音效' },
+      { name: 'volume', description: '查看/设置音量（0-100）' },
+      { name: 'volume 0', description: '静音' },
+      { name: 'volume 50', description: '设为 50% 音量' },
+      { name: 'volume 100', description: '设为最大音量' },
+    ]
+    return options
+      .filter((o) => q === '' || o.name.startsWith(q))
+      .map((o) => ({
+        name: o.name,
+        description: o.description,
+        completion: `/sound ${o.name}`,
+      }))
+  }
+
   // /thinking-budget：clear 子选项（具体数值无法穷举，仅提示清除）。
   if (cmdName === 'thinking-budget') {
     const options = [
@@ -1359,7 +1443,7 @@ function renderConfig(config: DCodeConfig): string {
     `  推理强度：${config.reasoningEffort}（${def.supportsThinking ? 'Thinking 模式下生效' : '当前 Provider 不支持'}）`,
     `  思维链预算：${config.thinkingBudget !== undefined ? `${config.thinkingBudget} tokens` : '未设置'}`,
     `  Hooks：${config.hooksEnabled !== false ? '启用' : '禁用'}`,
-    `  提示音效：${config.soundEnabled !== false ? '开' : '关'}`,
+    `  提示音效：${config.soundEnabled !== false ? '开' : '关'}（音量 ${config.soundVolume ?? MAX_SOUND_VOLUME}%）`,
     renderProxyHint(config),
     '',
     '切换 Provider：/provider zhipu | deepseek | openai',

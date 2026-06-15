@@ -36,6 +36,7 @@ import {
   playPermissionRequest,
   playTurnComplete,
   setSoundEnabled,
+  setSoundVolume,
 } from './sound.js'
 import { buildStartupUpdateNotice, checkForUpdate } from '../core/updater.js'
 import { listSessions, loadSessionMessages } from '../core/session.js'
@@ -119,8 +120,12 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
 
   // —— 配置与主题（UI 级，可热更新）——
   const configRef = useRef<DCodeConfig>(config)
-  // 启动时按配置同步音效总开关；soundEnabled 缺省（旧配置无此字段）时默认开启。
-  setSoundEnabled(config.soundEnabled !== false)
+  // 启动时按配置同步音效（仅一次）。切勿在 render 体内反复调用 setSound*——
+  // props.config 是启动快照不会随 /sound 变化；每次重渲染都会把运行时音量/开关打回初始值。
+  useEffect(() => {
+    setSoundEnabled(configRef.current.soundEnabled !== false)
+    setSoundVolume(configRef.current.soundVolume)
+  }, [])
   const [themeName, setThemeName] = useState(config.theme)
   const [showThinking, setShowThinking] = useState(config.showThinking)
   const theme = useMemo(() => getTheme(themeName), [themeName])
@@ -254,6 +259,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     if (patch.showThinking !== undefined) setShowThinking(patch.showThinking)
     // 音效开关变更：立即同步到运行时模块，使 /sound 即时生效（无需重启）。
     if (patch.soundEnabled !== undefined) setSoundEnabled(patch.soundEnabled)
+    // 音量变更：立即同步到运行时模块，使 /sound volume 即时生效。
+    if (patch.soundVolume !== undefined) setSoundVolume(patch.soundVolume)
     if (patch.model) setModelState(patch.model)
     // Provider 或「模型最大上下文档位」变更会改变生效上下文窗口，递增计数以刷新进度条上限。
     if (patch.provider !== undefined || patch.modelContextOverrides !== undefined) {

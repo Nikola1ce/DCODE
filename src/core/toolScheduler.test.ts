@@ -20,6 +20,7 @@ const baseCtx: ToolContext = {
     onboardingComplete: true,
     hooksEnabled: false,
     soundEnabled: true,
+    soundVolume: 100,
     provider: 'custom',
   },
   permissionMode: 'bypass',

@@ -348,3 +348,65 @@ export function parseThinkingBudget(raw: string): number | undefined {
   const n = Number.parseInt(trimmed, 10)
   return isValidThinkingBudget(n) ? n : undefined
 }
+
+// 提示音音量允许的最小值（0 = 静音，等效于不出声）。
+export const MIN_SOUND_VOLUME = 0
+
+// 提示音音量允许的最大值（100 = 原始音量，不做衰减）。
+export const MAX_SOUND_VOLUME = 100
+
+// 提示音默认音量（百分比）：缺省配置或非法值时回退到此值。
+export const DEFAULT_SOUND_VOLUME = 100
+
+/**
+ * 将任意输入夹紧为合法的提示音音量（0–100 的整数）。
+ * 用于「读配置（旧配置可能缺字段或被手改成非法值）」与「/sound volume 设值」两处，
+ * 保证运行时音量永远落在区间内，避免把非法值传给系统播放器。
+ * @param value 待夹紧的值（数字或可转数字的内容；非数字回退默认）。
+ * @returns 落在 [MIN_SOUND_VOLUME, MAX_SOUND_VOLUME] 内的整数。
+ */
+export function clampSoundVolume(value: unknown): number {
+  // 允许传入字符串数字（如配置被手改为 "80"），统一转成 number 再判定。
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return DEFAULT_SOUND_VOLUME
+  // 四舍五入到整数后夹紧，避免出现 80.5 这类小数音量。
+  const rounded = Math.round(n)
+  if (rounded < MIN_SOUND_VOLUME) return MIN_SOUND_VOLUME
+  if (rounded > MAX_SOUND_VOLUME) return MAX_SOUND_VOLUME
+  return rounded
+}
+
+/**
+ * 解析字符串形式的提示音音量（来自 /sound volume 命令参数）。
+ * 仅接受 0–100 的纯整数（可含首尾空白与可选百分号），其余一律视为非法。
+ * 与 clampSoundVolume 的区别：本函数对非法输入返回 undefined（供命令层给出错误提示），
+ * 而非静默夹紧——避免用户把 "abc" 或 "500" 误当作有效设置。
+ * @param raw 原始字符串（如 "80"、"80%"、" 100 "）。
+ * @returns 合法时返回 0–100 的整数，否则返回 undefined。
+ */
+export function parseSoundVolume(raw: string): number | undefined {
+  // 去除首尾空白与可选的结尾百分号（用户可能输入 "80%"）。
+  const trimmed = raw.trim().replace(/%$/, '').trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const n = Number.parseInt(trimmed, 10)
+  if (n < MIN_SOUND_VOLUME || n > MAX_SOUND_VOLUME) return undefined
+  return n
+}
+
+// 感知响度曲线指数：>1 时低档位衰减更狠，使 50 与 100 等档位更易听出差异。
+// 线性 50% 振幅仅约 -6dB，短促提示音上听感接近全音量；2.0 时 50→25% 振幅（约 -12dB）。
+const SOUND_VOLUME_GAIN_EXPONENT = 2
+
+/**
+ * 将用户音量 0–100 映射为播放器线性增益 0.0–1.0（感知响度，而非物理线性）。
+ * 人耳对响度近似对数感知：配置 50 若直接折半振幅（0.5）仅约 -6dB，短促提示音上仍接近全音量；
+ * 采用幂曲线（默认平方）使 50→0.25（约 -12dB）、30→0.09（约 -21dB），档位差异更易分辨。
+ * 100 仍为 1.0（不衰减）；0 为 0（静音）。
+ * @param volume 用户音量 0–100（会先经 clampSoundVolume 夹紧）。
+ * @returns 0.0–1.0 的增益，供 MediaPlayer / afplay / paplay 使用。
+ */
+export function mapSoundVolumeToGain(volume: number): number {
+  const v = clampSoundVolume(volume) / 100
+  if (v <= 0) return 0
+  return Math.pow(v, SOUND_VOLUME_GAIN_EXPONENT)
+}

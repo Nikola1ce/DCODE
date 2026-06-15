@@ -10,21 +10,29 @@
 //   1) 只用系统自带播放器播放 WAV，保证跨 Windows / macOS / Linux 零额外依赖、安装零负担；
 //      （之所以用 WAV 而非 OGG/MP3：Windows 原生仅可靠支持 WAV，OGG 需用户另装播放器。）
 //   2) 全局开关由配置 soundEnabled 控制，关闭后所有发声立即变为空操作；
-//   3) 用 child_process.spawn 异步、detached、unref 触发，绝不阻塞主交互，失败静默吞掉；
-//   4) 提供语义化函数（输入发送 / 权限请求 / 异常中断 / 输出结束 / 通知），调用方无需关心文件与平台细节；
-//   5) 找不到音效文件或当前平台不支持时，自动回退到 ASCII BEL 蜂鸣，保证「至少有声」。
+//   3) 音量由配置 soundVolume（0–100）控制：0 视为静音直接跳过；其余经感知响度曲线映射为
+//      播放器增益（平方曲线：50≈25% 振幅，比线性 50% 更易听出与 100 的差异），再按平台衰减——
+//      Windows 用 WPF MediaPlayer.Volume、macOS 用 afplay -v；Linux 用 paplay --volume；
+//   4) 用 child_process.spawn 异步、detached、unref 触发，绝不阻塞主交互，失败静默吞掉；
+//   5) 提供语义化函数（输入发送 / 权限请求 / 异常中断 / 输出结束 / 通知），调用方无需关心文件与平台细节；
+//   6) 找不到音效文件或当前平台不支持时，自动回退到 ASCII BEL 蜂鸣，保证「至少有声」。
 // 制作人：Moriarty_Dox
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_SOUND_VOLUME, clampSoundVolume, mapSoundVolumeToGain } from '../constants.js'
 
 // ASCII 响铃字符（BEL）。作为找不到音效文件 / 平台不支持时的兜底发声。
 const BEL = '\x07'
 
 // 模块级开关：默认开启，由 App 启动时按配置 soundEnabled 同步。
 let soundEnabled = true
+
+// 模块级音量（0–100）：默认最大，由 App 启动时按配置 soundVolume 同步；/sound volume 切换后热更新。
+// 0 表示静音——playSound 会直接跳过，既不发声也不拉起子进程。
+let soundVolume = DEFAULT_SOUND_VOLUME
 
 // 是否处于可发声的 TTY 环境：非 TTY（如管道、重定向、CI）时不发声，避免污染输出与无谓拉起子进程。
 let outputIsTTY = !!process.stdout.isTTY
@@ -50,10 +58,12 @@ const SOUND_FILES: Record<SoundName, string> = {
 }
 
 /**
- * 播放执行器签名：给定 WAV 文件绝对路径，触发一次（异步、不阻塞）播放。
- * 抽象成可注入函数，便于单元测试拦截断言，而不真正发声。
+ * 播放执行器签名：给定 WAV 文件绝对路径与音量（0–100），触发一次（异步、不阻塞）播放。
+ * 抽象成可注入函数，便于单元测试拦截断言（既验证文件、也验证音量），而不真正发声。
+ * @param wavPath WAV 文件绝对路径。
+ * @param volume 期望音量百分比（0–100），由调用方保证已夹紧；执行器据此映射到各平台音量参数。
  */
-export type SoundPlayer = (wavPath: string) => void
+export type SoundPlayer = (wavPath: string, volume: number) => void
 
 /**
  * 解析音效资源目录的绝对路径。
@@ -102,14 +112,17 @@ function getSoundsDir(): string | null {
 }
 
 /**
- * 默认的跨平台播放执行器：按当前操作系统调用系统自带播放器异步播放 WAV。
+ * 默认的跨平台播放执行器：按当前操作系统调用系统自带播放器异步播放 WAV，并按音量衰减。
  * 全程 detached + unref + 忽略 stdio，确保不阻塞主交互、不污染终端、进程退出不被挂起。
  * 任意失败（找不到播放器、spawn 抛错）都静默吞掉，绝不影响主流程。
  * @param wavPath 待播放的 WAV 文件绝对路径。
+ * @param volume 音量百分比（0–100，调用方已夹紧）；映射到各平台音量参数，100 表示不衰减。
  */
-function defaultPlayer(wavPath: string): void {
+function defaultPlayer(wavPath: string, volume: number): void {
   try {
     const platform = process.platform
+    // 感知响度映射：100→1.0，50→0.25（约 -12dB），比线性 50→0.5（约 -6dB）档位差异更明显。
+    const gain = mapSoundVolumeToGain(volume)
     let command: string
     let args: string[]
     // spawn 选项按平台区分：Windows 在 Ink 全屏 TUI 下不可用 detached（会脱离控制台导致子进程
@@ -117,11 +130,32 @@ function defaultPlayer(wavPath: string): void {
     let options: import('node:child_process').SpawnOptions
 
     if (platform === 'win32') {
-      // Windows：用 PowerShell 的 SoundPlayer 同步播放（在子进程内同步，对主进程仍是异步）。
-      // -NoProfile 加速启动；PlaySync 确保子进程存活到放完，避免提前退出导致没声。
+      // Windows：原生 System.Media.SoundPlayer 不支持调音量，故改用 WPF 的 MediaPlayer，
+      // 它提供 0.0–1.0 的 Volume 属性。需加载 PresentationCore 程序集，并以 file:// URI 打开。
+      // MediaPlayer 是异步加载：先轮询等待时长信息就绪（NaturalDuration.HasTimeSpan，最多 ~3 秒），
+      // 就绪后按「总时长 + 余量」一次性 sleep 到放完再 Close，避免子进程提前退出导致没声或被截断；
+      // 时长始终不就绪（如文件异常）时有 10 秒总兜底，绝不无限挂起。
       // 关键：-WindowStyle Hidden + windowsHide 隐藏窗口，但「不」detached——
-      // 在接管了控制台的 TUI（Ink）里，detached 会让 PowerShell 子进程拿不到音频会话而无声。
+      // 在接管了控制台的 TUI（Ink）里，detached 会让子进程拿不到音频会话而无声。
       command = 'powershell'
+      // PowerShell 单引号转义：内部单引号写成两个单引号。
+      const psPath = wavPath.replace(/'/g, "''")
+      // 音量保留两位小数，避免传入过长浮点串；区域无关（PowerShell 解析 0.85 不受逗号小数点影响）。
+      const psVolume = gain.toFixed(2)
+      const script = [
+        'Add-Type -AssemblyName PresentationCore;',
+        '$p = New-Object System.Windows.Media.MediaPlayer;',
+        `$p.Open([uri]'${psPath}');`,
+        // Open 之后再设 Volume，确保媒体加载后增益生效（部分环境下先设后 Open 会被重置）。
+        `$p.Volume = ${psVolume};`,
+        '$p.Play();',
+        // 轮询等待时长就绪（最多 ~3 秒）。MediaPlayer.Open 是异步的，时长需等加载完成才可读。
+        '$w = 0;',
+        'while (-not $p.NaturalDuration.HasTimeSpan -and $w -lt 3000) { Start-Sleep -Milliseconds 50; $w += 50 }',
+        // 就绪则按总时长 + 150ms 余量等待放完；未就绪（异常）则给一个 1.5 秒兜底，避免长时间空等。
+        'if ($p.NaturalDuration.HasTimeSpan) { Start-Sleep -Milliseconds ([int]$p.NaturalDuration.TimeSpan.TotalMilliseconds + 150) } else { Start-Sleep -Milliseconds 1500 };',
+        '$p.Stop(); $p.Close();',
+      ].join(' ')
       args = [
         '-NoProfile',
         '-ExecutionPolicy',
@@ -129,20 +163,26 @@ function defaultPlayer(wavPath: string): void {
         '-WindowStyle',
         'Hidden',
         '-Command',
-        `(New-Object System.Media.SoundPlayer '${wavPath.replace(/'/g, "''")}').PlaySync();`,
+        script,
       ]
       options = { windowsHide: true, stdio: 'ignore' }
     } else if (platform === 'darwin') {
-      // macOS：afplay 为系统自带音频播放命令，直接吃 WAV。detached 让其独立于父进程播放。
+      // macOS：afplay 为系统自带音频播放命令，-v 接受 0.0–1.0+ 的音量倍率。detached 独立于父进程。
       command = 'afplay'
-      args = [wavPath]
+      args = ['-v', gain.toFixed(2), wavPath]
       options = { detached: true, stdio: 'ignore' }
     } else {
       // Linux / 其它类 Unix：优先 paplay（PulseAudio），其次 aplay（ALSA）。
-      // 用 sh -c 串联回退：paplay 不存在或失败时再试 aplay。
+      // paplay 支持 --volume（0–65536，65536≈100%），据此把 0–100 线性映射；aplay 无音量参数，
+      // 仅作兜底原样播放（此时音量调节不生效，属于 Linux 能力限制）。
       command = 'sh'
       const esc = wavPath.replace(/'/g, `'\\''`)
-      args = ['-c', `paplay '${esc}' 2>/dev/null || aplay -q '${esc}' 2>/dev/null`]
+      // PulseAudio 音量刻度：65536 为 100%。按增益线性换算并取整。
+      const paVolume = Math.round(gain * 65536)
+      args = [
+        '-c',
+        `paplay --volume=${paVolume} '${esc}' 2>/dev/null || aplay -q '${esc}' 2>/dev/null`,
+      ]
       options = { detached: true, stdio: 'ignore' }
     }
 
@@ -187,6 +227,23 @@ export function isSoundEnabled(): boolean {
 }
 
 /**
+ * 设置提示音音量（由配置 soundVolume 驱动；/sound volume 切换后也应调用）。
+ * 入参会被夹紧到 0–100，避免越界值传入系统播放器。
+ * @param volume 目标音量百分比（0–100）；0 表示静音。
+ */
+export function setSoundVolume(volume: number): void {
+  soundVolume = clampSoundVolume(volume)
+}
+
+/**
+ * 查询当前提示音音量（供 /sound 状态展示与测试断言）。
+ * @returns 0–100 的整数音量。
+ */
+export function getSoundVolume(): number {
+  return soundVolume
+}
+
+/**
  * 覆盖「是否 TTY」判定（主要供测试注入；正常运行无需调用）。
  * @param isTty 是否视为 TTY。
  */
@@ -209,12 +266,13 @@ function emitBel(): void {
 
 /**
  * 播放指定语义时机的音效。
- * 守卫：未启用或非 TTY 时直接跳过（既不发声，也不拉起任何子进程）。
- * 流程：定位 WAV 文件 -> 交给当前播放执行器异步播放；文件/目录缺失则回退 BEL 蜂鸣。
+ * 守卫：未启用、非 TTY、或音量为 0（静音）时直接跳过（既不发声，也不拉起任何子进程）。
+ * 流程：定位 WAV 文件 -> 按当前音量交给播放执行器异步播放；文件/目录缺失则回退 BEL 蜂鸣。
  * @param name 语义时机名。
  */
 function playSound(name: SoundName): void {
-  if (!soundEnabled || !outputIsTTY) return
+  // 音量为 0 等效静音：连 BEL 蜂鸣也一并跳过，保证「静音」语义彻底（用户调到 0 即完全安静）。
+  if (!soundEnabled || !outputIsTTY || soundVolume <= 0) return
   const dir = getSoundsDir()
   if (!dir) {
     // 找不到音效目录：退回蜂鸣，保证「至少有声」。
@@ -226,7 +284,7 @@ function playSound(name: SoundName): void {
     emitBel()
     return
   }
-  activePlayer(wavPath)
+  activePlayer(wavPath, soundVolume)
 }
 
 // —— 语义化时机：调用方只需表达「发生了什么」，具体音色/文件由本模块统一定义 —— //

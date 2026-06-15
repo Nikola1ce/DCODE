@@ -19,6 +19,7 @@ import {
   ENV_PROVIDER,
   ENV_REASONING_EFFORT,
   ENV_THINKING_BUDGET,
+  clampSoundVolume,
   isValidReasoningEffort,
   parseThinkingBudget,
   type ReasoningEffort,
@@ -68,6 +69,11 @@ export interface DCodeConfig {
   // 是否启用提示音效（终端响铃）：在输入发送、权限请求、异常中断、输出结束、通知等时机发声，
   // 便于用户切走窗口时也能被提醒回来审核。默认开启；可用 /sound off 关闭。
   soundEnabled: boolean
+  // 提示音播放音量，取值 0–100（百分比），默认 100（最大）。
+  // 仅对「系统播放器」播放的 WAV 生效（Windows MediaPlayer / macOS afplay -v / Linux paplay）；
+  // 回退的 ASCII BEL 蜂鸣由终端控制，无法调音量。0 表示静音（等效于不出声）。
+  // 可用 /sound volume <0-100> 调整。
+  soundVolume: number
   // 当前 LLM Provider（zhipu / deepseek / openai / ollama / custom）。
   provider: ProviderId
   // 各 Provider 的独立覆盖（baseURL、apiKey、defaultModel、proxy）。
@@ -93,6 +99,7 @@ const DEFAULT_CONFIG: DCodeConfig = {
   onboardingComplete: false,
   hooksEnabled: true,
   soundEnabled: true,
+  soundVolume: 100,
   provider: 'zhipu',
 }
 
@@ -161,6 +168,10 @@ export function loadConfig(): DCodeConfig {
   if (process.env[ENV_PROVIDER] && isValidProviderEnv(process.env[ENV_PROVIDER])) {
     merged.provider = process.env[ENV_PROVIDER] as ProviderId
   }
+
+  // 夹紧提示音音量：旧配置可能无此字段（默认值已补），或被手动改成非法值（如 -5 / 500 / "abc"）。
+  // 统一规整到 0–100，避免把越界音量传给系统播放器。
+  merged.soundVolume = clampSoundVolume(merged.soundVolume)
 
   return merged
 }

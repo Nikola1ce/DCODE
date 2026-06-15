@@ -31,6 +31,7 @@ function baseConfig(overrides: Partial<DCodeConfig> = {}): DCodeConfig {
     onboardingComplete: false,
     hooksEnabled: true,
     soundEnabled: true,
+    soundVolume: 100,
     provider: 'deepseek',
     ...overrides,
   }

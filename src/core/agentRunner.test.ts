@@ -21,6 +21,7 @@ const baseConfig: DCodeConfig = {
   onboardingComplete: true,
   hooksEnabled: false,
   soundEnabled: true,
+  soundVolume: 100,
   provider: 'custom',
 }
 
