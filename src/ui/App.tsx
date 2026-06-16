@@ -631,6 +631,16 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     [agent, applyConfig, handleCommandResult, pushItem, pushSystem, runAgent],
   )
 
+  // 全局退出键：Ctrl+D 退出 DCODE（始终生效）。
+  // 背景：应用户需求，Ctrl+C 已改作输入框「复制」（见 InputPrompt）、不再退出；
+  // 退出改用 Ctrl+D（Unix REPL 通用约定）或 /exit 命令。退出后清理由 cli.tsx 的
+  // waitUntilExit 之后统一处理（shutdownHooks/shutdownMcp）。
+  useInput((input, key) => {
+    if (key.ctrl && input === 'd') {
+      exit()
+    }
+  })
+
   // 全局按键：仅在运行中且无弹窗/流程时，用 Esc 中断当前请求。
   useInput(
     (_input, key) => {

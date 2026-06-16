@@ -134,8 +134,8 @@ export function Banner({ model, cwd }: BannerProps): React.ReactElement {
         </Text>
         <Text color={theme.dim}>
           输入问题开始对话；输入 <Text color={theme.accent}>/help</Text> 查看命令；按{' '}
-          <Text color={theme.accent}>Esc</Text> 中断，<Text color={theme.accent}>Ctrl+C</Text>{' '}
-          退出。
+          <Text color={theme.accent}>Esc</Text> 中断，<Text color={theme.accent}>Ctrl+D</Text> 或{' '}
+          <Text color={theme.accent}>/exit</Text> 退出。
         </Text>
       </Box>
     </Box>

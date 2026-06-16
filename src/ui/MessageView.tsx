@@ -9,6 +9,7 @@ import type { DisplayItem, SystemTone } from './types.js'
 import { useTheme, type Theme } from './theme.js'
 import { Banner } from './Banner.js'
 import { classifyDiffPreviewLine } from '../tools/diff.js'
+import { renderMarkdownBlock } from './markdown.js'
 
 // 单条展示项的入参。
 interface MessageViewProps {
@@ -63,7 +64,8 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
                 {'● '}
               </Text>
               <Box flexDirection="column">
-                <Text color={theme.text}>{item.text.trim()}</Text>
+                {/* 助手正文按 Markdown 渲染：消除裸 ** / ` / # 等标记，保留加粗/标题/列表等视觉层次 */}
+                {renderMarkdownBlock(item.text.trim(), theme, item.id)}
               </Box>
             </Box>
           ) : null}
@@ -105,6 +107,7 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
         )
       }
       // 正文分块：首块带「● 」项目符，续块用两空格缩进对齐到正文列。
+      // 正文按 Markdown 渲染：消除裸 ** / ` / # 等标记，保留加粗/标题/列表等视觉层次。
       return (
         <Box>
           {item.head ? (
@@ -114,9 +117,7 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
           ) : (
             <Text>{'  '}</Text>
           )}
-          <Box flexDirection="column">
-            <Text color={theme.text}>{item.text}</Text>
-          </Box>
+          <Box flexDirection="column">{renderMarkdownBlock(item.text, theme, item.id)}</Box>
         </Box>
       )
     }

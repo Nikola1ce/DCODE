@@ -463,7 +463,9 @@ async function main(): Promise<void> {
       needLogin={needLogin}
       checkUpdateOnStart
     />,
-    { stdout: createNonClearingStdout(process.stdout) },
+    // exitOnCtrlC:false —— 关闭 Ink 默认的「Ctrl+C 立即退出」：
+    // 应用户需求，Ctrl+C 改作「复制」（见 InputPrompt），退出改用 Ctrl+D 或 /exit 命令。
+    { stdout: createNonClearingStdout(process.stdout), exitOnCtrlC: false },
   )
   await app.waitUntilExit()
   await shutdownHooks(cwd, agent.getSessionId())
