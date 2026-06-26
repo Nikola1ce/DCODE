@@ -9,7 +9,7 @@ import type { DisplayItem, SystemTone } from './types.js'
 import { useTheme, type Theme } from './theme.js'
 import { Banner } from './Banner.js'
 import { classifyDiffPreviewLine } from '../tools/diff.js'
-import { renderMarkdownBlock } from './markdown.js'
+import { renderMarkdownBlock, sanitizeIncompleteMarkdownTail } from './markdown.js'
 
 // 单条展示项的入参。
 interface MessageViewProps {
@@ -117,7 +117,9 @@ export function MessageView({ item, showThinking }: MessageViewProps): React.Rea
           ) : (
             <Text>{'  '}</Text>
           )}
-          <Box flexDirection="column">{renderMarkdownBlock(item.text, theme, item.id)}</Box>
+          <Box flexDirection="column">
+            {renderMarkdownBlock(sanitizeIncompleteMarkdownTail(item.text), theme, item.id)}
+          </Box>
         </Box>
       )
     }

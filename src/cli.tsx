@@ -6,6 +6,7 @@
 // 安装后通过 dcode 命令启动。
 // 制作人：Moriarty_Dox
 
+import { spawnSync } from 'node:child_process'
 import React from 'react'
 import { render } from 'ink'
 import { existsSync } from 'node:fs'
@@ -249,9 +250,26 @@ function createNonClearingStdout(real: NodeJS.WriteStream): NodeJS.WriteStream {
 }
 
 /**
+ * 在 Windows 交互终端上尽量切换到 UTF-8 代码页，避免中文/框线字符乱码。
+ * 通过 .bat 启动时已 chcp 65001；直接 `dcode` / `node dist/cli.js` 时此处兜底。
+ */
+function ensureWindowsConsoleUtf8(): void {
+  if (process.platform !== 'win32' || !process.stdout.isTTY) return
+  try {
+    spawnSync('cmd.exe', ['/d', '/s', '/c', 'chcp 65001 >nul'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch {
+    // 非 TTY 或权限受限时忽略。
+  }
+}
+
+/**
  * CLI 主流程。
  */
 async function main(): Promise<void> {
+  ensureWindowsConsoleUtf8()
   const opts = parseArgs(process.argv.slice(2))
   // IDE 服务端模式下 stdout 是「纯协议通道」，绝不能写入 trace 文本，否则会破坏 NDJSON 帧。
   // 其余模式正常安装 stdout trace（trace 默认仍走 stderr/文件，此处仅为可观测性入口）。

@@ -131,12 +131,16 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
     expect(source).not.toMatch(/scrollTop|scrollTo|scrollIntoView|requestAnimationFrame|setInterval|\.focus\(/)
   })
 
-  it('streaming text and reasoning are not rendered in the dynamic Ink region', () => {
+  it('streaming text tail is rendered with bounded height in dynamic region', () => {
     const source = getAppSource()
-    expect(source).not.toContain('tailByVisualRows(liveReasoning')
-    expect(source).not.toContain('tailByVisualRows(liveText')
+    expect(source).toMatch(/tailByVisualRows\(\s*liveText/)
     expect(source).not.toMatch(/<Text color=\{theme\.text\}>\s*\{liveText\}\s*<\/Text>/)
-    expect(source).not.toMatch(/<Text color=\{theme\.dim\}>\s*\{liveReasoning\}\s*<\/Text>/)
+  })
+
+  it('App listens to stdout resize for terminal dimension updates', () => {
+    const source = getAppSource()
+    expect(source).toMatch(/stream\.on\('resize'/)
+    expect(source).toMatch(/setTerminalSize/)
   })
 
   it('tailByVisualRows keeps long unbroken output within the requested viewport rows', () => {
@@ -156,11 +160,11 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
     expect(source).toMatch(/stdout:\s*createNonClearingStdout\(process\.stdout\)/)
   })
 
-  it('App 的限高逻辑读取真实 process.stdout 行列数（不受 Ink 代理影响）', () => {
+  it('App 的限高逻辑基于真实终端尺寸（resize 监听 + 初始 process.stdout）', () => {
     const source = getAppSource()
-    // termRows/termCols 必须来自真实 process.stdout，而非被放大的 Ink 代理。
-    expect(source).toMatch(/realStdout\.rows/)
     expect(source).toMatch(/process\.stdout as unknown as/)
+    expect(source).toMatch(/stream\.on\('resize'/)
+    expect(source).toMatch(/termRows = terminalSize\.rows/)
   })
 
   it('PermissionPrompt 只渲染动态区选择项，不渲染标题/预览（避免高预览反复重绘残影）', () => {

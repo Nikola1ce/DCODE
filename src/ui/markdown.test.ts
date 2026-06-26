@@ -4,7 +4,7 @@
 // 制作人：Moriarty_Dox
 
 import { describe, expect, it } from 'vitest'
-import { parseInlineMarkdown, mdLineToPlainText } from './markdown.js'
+import { parseInlineMarkdown, mdLineToPlainText, sanitizeIncompleteMarkdownTail } from './markdown.js'
 
 /** 把 token 序列还原为纯文本（用于断言「标记符号已被剥离、内容无损」）。 */
 function plain(line: string): string {
@@ -87,6 +87,21 @@ describe('parseInlineMarkdown', () => {
 
   it('空字符串返回空 token 数组', () => {
     expect(parseInlineMarkdown('')).toEqual([])
+  })
+})
+
+describe('sanitizeIncompleteMarkdownTail（流式 chunk 尾部清理）', () => {
+  it('去掉未闭合的 **，保留后续正文', () => {
+    expect(sanitizeIncompleteMarkdownTail('这是 **加粗')).toBe('这是 加粗')
+    expect(plain(sanitizeIncompleteMarkdownTail('这是 **加粗'))).toBe('这是 加粗')
+  })
+
+  it('完整闭合的 ** 不受影响', () => {
+    expect(sanitizeIncompleteMarkdownTail('这是 **加粗** 文本')).toBe('这是 **加粗** 文本')
+  })
+
+  it('去掉行尾未成对的反引号', () => {
+    expect(sanitizeIncompleteMarkdownTail('调用 `foo')).toBe('调用 foo')
   })
 })
 

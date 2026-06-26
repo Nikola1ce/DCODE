@@ -134,8 +134,23 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   // 故此处限高逻辑必须直接读真实 process.stdout 的行列数，而非 Ink 提供的代理。
   const { stdout } = useStdout()
   const realStdout = process.stdout as unknown as { rows?: number; columns?: number }
-  const termRows = realStdout.rows ?? 24
-  const termCols = realStdout.columns ?? 80
+  // 监听 resize：部分终端调整窗口大小时 process.stdout.rows/columns 会变，需触发重渲染以更新限高。
+  const [terminalSize, setTerminalSize] = useState(() => ({
+    rows: realStdout.rows ?? 24,
+    cols: realStdout.columns ?? 80,
+  }))
+  useEffect(() => {
+    const stream = process.stdout
+    const onResize = (): void => {
+      setTerminalSize({ rows: stream.rows ?? 24, cols: stream.columns ?? 80 })
+    }
+    stream.on('resize', onResize)
+    return () => {
+      stream.off('resize', onResize)
+    }
+  }, [])
+  const termRows = terminalSize.rows
+  const termCols = terminalSize.cols
   // 随主题同步终端窗口底色（亮色主题切换为浅灰底，避免黑字不可见）。
   useTerminalBackground(themeName, stdout)
 
@@ -150,6 +165,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   // 说明：实时区只保留「正在输入的最后一行（未完成尾巴）」；已完成的整行会被逐块
   // 提交到 Static 历史，使输出像普通命令输出一样流入滚动区、终端跟随到底部。
   const [liveText, setLiveText] = useState('')
+  const [liveTextHead, setLiveTextHead] = useState(true)
   const [liveReasoning, setLiveReasoning] = useState('')
   // 流式分块提交器：每轮对话新建一个，负责把已完成整行落 Static、维护未完成尾巴与首块状态。
   const committerRef = useRef<StreamCommitter | null>(null)
@@ -388,6 +404,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       const committer = new StreamCommitter(showThinking)
       committerRef.current = committer
       setLiveText('')
+      setLiveTextHead(true)
       setLiveReasoning('')
       // 幂等去重：同一轮 run 中每个事件只应被处理一次。若 AgentRunner 内部重试
       // 或同一事件被二次 yield（本轮不应发生，但防御性处理），跳过已处理过的。
@@ -441,6 +458,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               pushStreamChunks(chunks)
               setLiveReasoning('')
               setLiveText(committer.liveText)
+              setLiveTextHead(!committer.textHeadDone)
               setStatusText('正在回答')
             } else if (ev.type === 'assistant_message') {
               // 覆盖「只思考、无正文」的情形：此时仍要折叠出一行思考摘要。
@@ -452,6 +470,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               }, traceContext)
               pushStreamChunks(chunks)
               setLiveText('')
+              setLiveTextHead(true)
               setLiveReasoning('')
             } else if (ev.type === 'tool_start') {
               toolSummaryRef.current.set(ev.id, ev.summary)
@@ -524,6 +543,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         clearToolProgressTimer()
         setRunningTool(null)
         setLiveText('')
+        setLiveTextHead(true)
         setLiveReasoning('')
         // 本轮结束（含异常/中断/压缩后）统一以最新历史为准刷新上下文进度条。
         refreshContextTokens()
@@ -724,6 +744,29 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
                   </Text>
                 </Box>
               ) : null}
+            </Box>
+          ) : null}
+
+          {/* 正文流式尾巴：尚未换行/软切分提交的未完成片段，限 1~2 视觉行显示。
+              已完成行已逐块落入 Static；此处只补实时打字感，且高度受控以免触发 Ink 帧泄漏。 */}
+          {liveText.trim() && !runningTool && !liveReasoning.trim() ? (
+            <Box marginBottom={1}>
+              {liveTextHead ? (
+                <Text color={theme.primary} bold>
+                  {'● '}
+                </Text>
+              ) : (
+                <Text>{'  '}</Text>
+              )}
+              <Box flexDirection="column">
+                <Text color={theme.text}>
+                  {tailByVisualRows(
+                    liveText,
+                    Math.max(1, Math.min(2, termRows - 8)),
+                    wrapCols,
+                  )}
+                </Text>
+              </Box>
             </Box>
           ) : null}
 

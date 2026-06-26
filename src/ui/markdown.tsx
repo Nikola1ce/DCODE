@@ -302,6 +302,39 @@ export function mdLineToPlainText(line: string): string {
 }
 
 /**
+ * 去掉行尾「未闭合」的 Markdown 定界符（流式分块时常见）。
+ * 避免 chunk 边界把 `**`、`` ` `` 等裸露在终端里；完整闭合后下一 chunk 会正常解析。
+ * @param line 单行文本。
+ * @returns 清理后的行。
+ */
+export function sanitizeIncompleteMarkdownTail(line: string): string {
+  let s = line
+  for (const delim of ['**', '__', '~~'] as const) {
+    let count = 0
+    let i = 0
+    let lastUnpaired = -1
+    while (i <= s.length - delim.length) {
+      if (s.startsWith(delim, i)) {
+        count++
+        lastUnpaired = count % 2 === 1 ? i : -1
+        i += delim.length
+      } else {
+        i++
+      }
+    }
+    if (count % 2 === 1 && lastUnpaired >= 0) {
+      s = s.slice(0, lastUnpaired) + s.slice(lastUnpaired + delim.length)
+    }
+  }
+  const tickCount = (s.match(/`/g) ?? []).length
+  if (tickCount % 2 === 1) {
+    const last = s.lastIndexOf('`')
+    s = s.slice(0, last) + s.slice(last + 1)
+  }
+  return s
+}
+
+/**
  * 把一段（可能多行）Markdown 文本渲染为按行排列的 Ink 元素数组。
  * 每行独立成行；空行渲染为占位空行（保留段落间距）。
  * @param text 多行文本。

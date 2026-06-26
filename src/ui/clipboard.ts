@@ -89,8 +89,8 @@ const defaultBackend: ClipboardBackend = {
   async write(text: string): Promise<boolean> {
     const platform = process.platform
     if (platform === 'win32') {
-      // Windows 自带 clip.exe，从 stdin 读取并写入剪贴板。
-      return pipeToStdin('clip', [], text)
+      // Windows clip.exe：stdin 前加 UTF-8 BOM，确保中文等多字节字符正确写入剪贴板。
+      return pipeToStdin('clip', [], `\uFEFF${text}`)
     }
     if (platform === 'darwin') {
       return pipeToStdin('pbcopy', [], text)
