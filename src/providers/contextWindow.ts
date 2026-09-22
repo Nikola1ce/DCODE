@@ -56,6 +56,8 @@ const FALLBACK_CONTEXT = CTX_64K
 // （来源：DeepSeek API Docs / 官方 HuggingFace README，V4-Pro 与 V4-Flash 均为 1M）。
 // 旧别名 deepseek-chat / deepseek-reasoner 现路由到 V4-Flash（2026-07-24 UTC 后下线），同为 1M。
 const DEEPSEEK_CONTEXT: Record<string, number> = {
+  'deepseek-flash': CTX_1M,
+  'deepseek-v4-flash': CTX_1M,
   [DEFAULT_MODEL]: CTX_1M,
   [PRO_MODEL]: CTX_1M,
   'deepseek-chat': CTX_1M,
@@ -69,6 +71,11 @@ const DEEPSEEK_CONTEXT: Record<string, number> = {
 //   - o3 / o3-pro：200K；
 //   - gpt-4.1 系列：1M；gpt-4o 系列：128K。
 const OPENAI_CONTEXT: Record<string, number> = {
+  'gpt-6-astra': CTX_1_05M,
+  'gpt-5.6-sol': CTX_1_05M,
+  'gpt-5.6': CTX_1_05M,
+  'gpt-5.6-terra': CTX_1_05M,
+  'gpt-5.6-luna': CTX_1_05M,
   'gpt-5.5': CTX_1_05M,
   'gpt-5.5-pro': CTX_1_05M,
   'gpt-5.4': CTX_1_05M,
@@ -99,6 +106,8 @@ const OPENAI_CONTEXT: Record<string, number> = {
 //   - glm-4-long：1M（官方超长输入型号）。
 // 注：官方并无「glm-5-air」型号（高性价比轻量档为 glm-4.5-air = 128K），故不登记，避免凭空给出错误窗口。
 const ZHIPU_CONTEXT: Record<string, number> = {
+  'glm-5.3': CTX_1M,
+  'glm-5.2': CTX_1M,
   'glm-5.1': CTX_200K,
   'glm-5': CTX_200K,
   'glm-5-turbo': CTX_200K,
@@ -123,6 +132,8 @@ const ZHIPU_CONTEXT: Record<string, number> = {
 // 以更早触发自动压缩、控制上下文成本（最大档 1M 为默认）。注意：Think Max 推理模式官方建议 ≥384K。
 const DEEPSEEK_V4_OPTIONS = [CTX_128K, CTX_256K, CTX_512K, CTX_1M]
 const DEEPSEEK_OPTIONS: Record<string, number[]> = {
+  'deepseek-flash': DEEPSEEK_V4_OPTIONS,
+  'deepseek-v4-flash': DEEPSEEK_V4_OPTIONS,
   [DEFAULT_MODEL]: DEEPSEEK_V4_OPTIONS,
   [PRO_MODEL]: DEEPSEEK_V4_OPTIONS,
   'deepseek-chat': DEEPSEEK_V4_OPTIONS,

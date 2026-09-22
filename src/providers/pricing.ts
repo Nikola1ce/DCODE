@@ -27,6 +27,11 @@ const DEEPSEEK_PRICING: Record<string, ModelPricing> = {
     inputCacheMiss: 0.435,
     output: 0.87,
   },
+  'deepseek-v4-flash': {
+    inputCacheHit: 0.0028,
+    inputCacheMiss: 0.14,
+    output: 0.28,
+  },
   'deepseek-chat': {
     inputCacheHit: 0.0028,
     inputCacheMiss: 0.14,
@@ -41,6 +46,12 @@ const DEEPSEEK_PRICING: Record<string, ModelPricing> = {
 
 /** OpenAI 简化价目（USD / 1M tokens，参考官方公开价）。 */
 const OPENAI_PRICING: Record<string, ModelPricing> = {
+  // 官方公开价（developers.openai.com/api/docs/models，2026-09）：USD / 1M tokens。
+  'gpt-6-astra': { inputCacheHit: 10, inputCacheMiss: 10, output: 50 },
+  'gpt-5.6-sol': { inputCacheHit: 4, inputCacheMiss: 4, output: 20 },
+  'gpt-5.6': { inputCacheHit: 4, inputCacheMiss: 4, output: 20 },
+  'gpt-5.6-terra': { inputCacheHit: 2, inputCacheMiss: 2, output: 12 },
+  'gpt-5.6-luna': { inputCacheHit: 0.2, inputCacheMiss: 0.2, output: 1.2 },
   'gpt-4o-mini': { inputCacheHit: 0.15, inputCacheMiss: 0.15, output: 0.6 },
   'gpt-4o': { inputCacheHit: 2.5, inputCacheMiss: 2.5, output: 10 },
   'gpt-4.1': { inputCacheHit: 2, inputCacheMiss: 2, output: 8 },
@@ -69,6 +80,9 @@ const OPENAI_PRICING: Record<string, ModelPricing> = {
 
 /** 智谱按量计费价目（USD / 1M tokens，参考 Z.AI 官方公开价）。 */
 const ZHIPU_PRICING: Record<string, ModelPricing> = {
+  // TODO 复核：glm-5.3/5.2 暂按 glm-5.1 档估算，请对照官方价格页改正。
+  'glm-5.3': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
+  'glm-5.2': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
   'glm-5.1': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
   'glm-5': { inputCacheHit: 0.2, inputCacheMiss: 1, output: 3.2 },
   'glm-5-turbo': { inputCacheHit: 0.24, inputCacheMiss: 1.2, output: 4 },

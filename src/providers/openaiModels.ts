@@ -8,6 +8,12 @@
  * 来源：https://developers.openai.com/api/docs/models （2026-06，排除 Deprecated）。
  */
 export const OPENAI_CHAT_MODELS: readonly string[] = [
+  // —— 前沿 GPT-6 / GPT-5.6（developers.openai.com/api/docs/models，2026-09）——
+  'gpt-6-astra',
+  'gpt-5.6-sol',
+  'gpt-5.6',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
   // —— 前沿 GPT-5.5 / 5.4 ——
   'gpt-5.5',
   'gpt-5.5-pro',
@@ -36,6 +42,11 @@ export const OPENAI_CHAT_MODELS: readonly string[] = [
 
 /** 主要模型的简短说明。 */
 const OPENAI_MODEL_HINTS: Readonly<Record<string, string>> = {
+  'gpt-6-astra': '旗舰 · 最强推理与编码',
+  'gpt-5.6-sol': '旗舰 · 复杂专业工作',
+  'gpt-5.6': 'GPT-5.6 别名（Sol）',
+  'gpt-5.6-terra': 'GPT-5.6 · 智能与成本平衡',
+  'gpt-5.6-luna': 'GPT-5.6 · 高性价比高并发',
   'gpt-5.5': '前沿 · 复杂推理与编码',
   'gpt-5.5-pro': '前沿 Pro · 更强精度',
   'gpt-5.4': '前沿 · 专业工作',
@@ -69,7 +80,7 @@ export function openaiModelSupportsCustomTemperature(modelId: string): boolean {
   // o 系列推理模型。
   if (/^o\d/.test(id) || id.startsWith('o1') || id.startsWith('o3')) return false
   // GPT-5 及更新前沿系列（含 gpt-5.5、gpt-5.4-mini 等）。
-  if (/^gpt-5(\.|$|-)/.test(id)) return false
+  if (/^gpt-5(\.|$|-)/.test(id) || /^gpt-6(\.|$|-)/.test(id)) return false
   // Codex 专用模型。
   if (id.includes('codex')) return false
   return true

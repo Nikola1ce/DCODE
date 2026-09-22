@@ -1,4 +1,4 @@
-// DCODE 全局品牌与运行常量。
+﻿// DCODE 全局品牌与运行常量。
 // 该文件集中定义产品名称、版本、作者署名、默认模型、API 端点等不可变常量，
 // 供 UI 横幅、系统提示、配置默认值等多处复用，避免散落硬编码。
 // 制作人：Moriarty_Dox
@@ -21,8 +21,8 @@ export const TAGLINE = 'DCode AI 助手'
 // DeepSeek 官方 OpenAI 兼容 API 基础地址。
 export const DEFAULT_BASE_URL = 'https://api.deepseek.com'
 
-// 默认主对话模型：deepseek-v4-flash（V4 Flash，速度快、成本低，适合日常编程任务）。
-export const DEFAULT_MODEL = 'deepseek-v4-flash'
+// 默认主对话模型：deepseek-flash（DeepSeek-V4.1-Flash；旧名 deepseek-v4-flash 仍兼容）。
+export const DEFAULT_MODEL = 'deepseek-flash'
 
 // 高级模型：deepseek-v4-pro（V4 Pro，推理与编码能力更强，适合复杂任务，单价更高）。
 export const PRO_MODEL = 'deepseek-v4-pro'
@@ -30,9 +30,8 @@ export const PRO_MODEL = 'deepseek-v4-pro'
 // DCODE 支持切换的模型清单，供 /model 命令切换与校验、模型选择器使用。
 export const SUPPORTED_MODELS = [DEFAULT_MODEL, PRO_MODEL] as const
 
-// 旧版兼容别名：deepseek-chat / deepseek-reasoner 计划于 2026/07/24 由官方弃用，
-// 届时自动路由到 v4-flash。这里保留以兼容历史配置文件与历史会话，避免读取报错。
-export const LEGACY_MODELS = ['deepseek-chat', 'deepseek-reasoner'] as const
+// 旧版兼容别名：deepseek-v4-flash / vision-exp 已退役但仍路由到 V4.1-Flash；chat/reasoner 为更早别名。
+export const LEGACY_MODELS = ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-chat', 'deepseek-reasoner'] as const
 
 /**
  * 判断模型名是否可用（含 V4 主模型与旧版兼容别名）。

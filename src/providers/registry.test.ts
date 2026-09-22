@@ -1,4 +1,4 @@
-// Provider 注册表单元测试。
+﻿// Provider 注册表单元测试。
 // 覆盖 Provider 解析、API Key/baseURL 合并、切换补丁与模型校验。
 // 制作人：Moriarty_Dox
 
@@ -182,7 +182,7 @@ describe('providers/registry', () => {
 
   it('getSuggestedModelsForProvider 随 Provider 返回对应模型列表', () => {
     expect(getSuggestedModelsForProvider(baseConfig())).toEqual([
-      'deepseek-v4-flash',
+      'deepseek-flash',
       'deepseek-v4-pro',
     ])
     expect(getSuggestedModelsForProvider(baseConfig({ provider: 'openai' }))).toEqual([

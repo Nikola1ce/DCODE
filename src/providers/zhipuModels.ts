@@ -19,7 +19,9 @@ export const ZHIPU_FREE_MODELS: readonly string[] = [
 /**
  * 智谱按量计费对话模型（按推荐优先级排序：旗舰 → 高性价比）。
  */
-export const ZHIPU_PAID_MODELS: readonly string[] = [
+export const ZHIPU_PAID_MODELS: readonly string[] = [
+  'glm-5.3',
+  'glm-5.2',
   'glm-5.1',
   'glm-5',
   'glm-5-turbo',
@@ -43,7 +45,9 @@ export const ZHIPU_CHAT_MODELS: readonly string[] = [
 ] as const
 
 /** 主要模型的简短说明（/model 菜单 hint，免费项均带 ★ 标记）。 */
-const ZHIPU_MODEL_HINTS: Readonly<Record<string, string>> = {
+const ZHIPU_MODEL_HINTS: Readonly<Record<string, string>> = {
+  'glm-5.3': '按量计费 · 最新旗舰 · 1M · 编程与 Agent',
+  'glm-5.2': '按量计费 · 长程工程交付 · 1M',
   'glm-4-flash': `${ZHIPU_FREE_MODEL_BADGE} · 128K · 工具调用`,
   'glm-4.7-flash': `${ZHIPU_FREE_MODEL_BADGE} · 200K · 编程更强`,
   'glm-5.1': '按量计费 · 旗舰 · 200K · Coding 对齐 Opus 4.6',
