@@ -205,7 +205,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     const status = getModelPricingStatus(getActiveProviderId(configRef.current), model)
     if (status === 'free') return '免费'
     if (status === 'unknown') return '未知'
-    return formatCost(cost)
+    return cost === 0 ? '$0.0000' : formatCost(cost)
   }, [model, cost, contextConfigVersion])
   const [permissionMode, setPermissionModeState] = useState(agent.permissionMode)
   const [todos, setTodos] = useState<TodoItem[]>(agent.getTodos())
@@ -806,6 +806,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         ) : flow === 'model' ? (
           <Select
             title="选择模型"
+            selectedValue={configRef.current.model}
             options={getModelSelectOptions(configRef.current)}
             onSelect={(m) => {
               agent.setModel(m)
@@ -847,6 +848,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         ) : flow === 'theme' ? (
           <Select
             title="选择主题"
+            selectedValue={themeName}
             options={[
               { label: '暗色', value: 'dark' as const },
               { label: '亮色', value: 'light' as const },

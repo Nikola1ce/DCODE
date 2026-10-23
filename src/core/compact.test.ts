@@ -129,6 +129,19 @@ describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => 
 })
 
 describe('compactMessages', () => {
+  it('摘要请求继承取消信号，中断时保留原历史', async () => {
+    const controller = new AbortController()
+    const messages: DeepMessage[] = Array.from({ length: 12 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant', content: `m${i}`,
+    }))
+    const client = new SummaryClient()
+    client.streamChat = async function* (params) {
+      expect(params.abortSignal).toBe(controller.signal)
+      controller.abort()
+      throw new Error('已取消请求')
+    }
+    expect(await compactMessages(client, messages, 'test-model', controller.signal)).toBe(messages)
+  })
   it('压缩摘要写为 system metadata，且旧摘要会被重新折叠', async () => {
     const messages: DeepMessage[] = [
       { role: 'system', content: 'sys' },

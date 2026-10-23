@@ -15,6 +15,11 @@ afterEach(() => {
 })
 
 describe('trace diagnostics', () => {
+  it('关闭追踪时不扫描或计算文本元数据', () => {
+    delete process.env.DCODE_TRACE_DIR
+    const text = { replace: () => { throw new Error('不应扫描全文') } } as unknown as string
+    expect(traceTextFields('text', text)).toEqual({})
+  })
   it('does not write files when DCODE_TRACE_DIR is not set', () => {
     delete process.env.DCODE_TRACE_DIR
     const dir = mkdtempSync(path.join(tmpdir(), 'dcode-trace-off-'))

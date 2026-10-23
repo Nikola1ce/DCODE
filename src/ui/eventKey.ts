@@ -26,6 +26,7 @@ export function makeEventKey(ev: AgentRunEvent): string | null {
   switch (ev.type) {
     case 'text_delta':
     case 'reasoning_delta':
+    case 'tool_progress':
       // 重要：delta 事件不能去重！
       // 每个 delta 都是流式序列中独一无二的内容，同一 iteration 内多个 delta
       // 逐个追加产生完整文本。如果按 iteration 去重，同 iteration 内只有第一个
@@ -48,7 +49,6 @@ export function makeEventKey(ev: AgentRunEvent): string | null {
     case 'compact_start':
     case 'compact_end':
     case 'tool_batch_start':
-    case 'tool_progress':
     case 'iteration_end':
       return `${base}|${ev.type}|${ev.iteration}`
 

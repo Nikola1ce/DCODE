@@ -15,7 +15,7 @@ import {
   resolveProviderApiKey,
   resolveProviderBaseURL,
 } from './registry.js'
-import { OPENAI_CHAT_MODELS } from './openaiModels.js'
+import { DEFAULT_OPENAI_MODEL, OPENAI_CHAT_MODELS } from './openaiModels.js'
 import { ZHIPU_CHAT_MODELS } from './zhipuModels.js'
 
 /** 构造最小可用配置。 */
@@ -57,6 +57,8 @@ describe('providers/registry', () => {
   })
 
   it('isValidProviderId 识别内置 Provider', () => {
+    expect(isValidProviderId('toString')).toBe(false)
+    expect(isValidProviderId('__proto__')).toBe(false)
     expect(isValidProviderId('zhipu')).toBe(true)
     expect(isValidProviderId('deepseek')).toBe(true)
     expect(isValidProviderId('openai')).toBe(true)
@@ -132,7 +134,7 @@ describe('providers/registry', () => {
     )
     expect(patch.provider).toBe('openai')
     expect(patch.baseURL).toBe('https://api.openai.com/v1')
-    expect(patch.model).toBe('gpt-4o-mini')
+    expect(patch.model).toBe(DEFAULT_OPENAI_MODEL)
   })
 
   it('buildProviderSwitchPatch 从 zhipu 切到 openai 时切换模型', () => {
@@ -141,7 +143,7 @@ describe('providers/registry', () => {
       'openai',
     )
     expect(patch.provider).toBe('openai')
-    expect(patch.model).toBe('gpt-4o-mini')
+    expect(patch.model).toBe(DEFAULT_OPENAI_MODEL)
   })
 
   it('buildProviderSwitchPatch 从 zhipu 切到 deepseek 时切换模型', () => {
@@ -207,7 +209,7 @@ describe('providers/registry', () => {
     const opts = getModelSelectOptions(baseConfig({ provider: 'openai', model: 'gpt-4o-mini' }))
     expect(opts.map((o) => o.value)).toContain('gpt-4o-mini')
     expect(opts.map((o) => o.value)).toContain('gpt-5.5')
-    expect(opts.find((o) => o.value === 'gpt-4o-mini')?.hint).toContain('默认')
+    expect(opts.find((o) => o.value === DEFAULT_OPENAI_MODEL)?.hint).toContain('默认')
     expect(opts.find((o) => o.value === 'gpt-5.5')?.hint).toContain('前沿')
   })
 
@@ -220,10 +222,19 @@ describe('providers/registry', () => {
   })
 
   it('DEEPSEEK_BASE_URL 环境变量仅影响 deepseek Provider', () => {
+    savedEnv[ENV_BASE_URL] = process.env[ENV_BASE_URL]
     process.env[ENV_BASE_URL] = 'https://custom-deepseek.example/v1'
     expect(resolveProviderBaseURL(baseConfig({ provider: 'deepseek' }))).toBe(
       'https://custom-deepseek.example/v1',
     )
     expect(resolveProviderBaseURL(baseConfig({ provider: 'zhipu' }))).toBe(DEFAULT_ZHIPU_BASE_URL)
+  })
+
+  it('供应商专属端点环境变量优先于保存的覆盖项', () => {
+    savedEnv.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL
+    process.env.OPENAI_BASE_URL = 'https://env.example/v1'
+    expect(resolveProviderBaseURL(baseConfig({ provider: 'openai', providers: {
+      openai: { baseURL: 'https://saved.example/v1' },
+    } }))).toBe('https://env.example/v1')
   })
 })

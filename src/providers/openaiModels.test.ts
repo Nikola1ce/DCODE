@@ -11,7 +11,9 @@ import {
 describe('openaiModels', () => {
   it('OPENAI_CHAT_MODELS 仅含当前可用模型，不含历史快照', () => {
     expect(OPENAI_CHAT_MODELS).toContain('gpt-5.5')
-    expect(OPENAI_CHAT_MODELS).toContain('gpt-4o-mini')
+    expect(OPENAI_CHAT_MODELS).toContain('gpt-6.1-sol')
+    expect(OPENAI_CHAT_MODELS).toContain('gpt-6-luna')
+    expect(OPENAI_CHAT_MODELS).not.toContain('gpt-4o-mini')
     expect(OPENAI_CHAT_MODELS).not.toContain('gpt-3.5-turbo')
     expect(OPENAI_CHAT_MODELS).not.toContain('gpt-4-0613')
     expect(OPENAI_CHAT_MODELS.length).toBeLessThan(30)

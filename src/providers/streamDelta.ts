@@ -18,6 +18,10 @@ export function applyStreamContentDelta(
     return { next: accumulated, delta: '' }
   }
 
+  // delta.content 已由协议保证是增量。相同字符、缩进、重复代码也必须保留。
+  // 仅未声明格式的旧调用和明确的 snapshot 才使用兼容去重。
+  if (options.snapshot === false) return { next: accumulated + incoming, delta: incoming }
+
   // 累积模式：incoming 为「至今全文」。
   if (accumulated.length > 0 && incoming.startsWith(accumulated)) {
     const delta = incoming.slice(accumulated.length)

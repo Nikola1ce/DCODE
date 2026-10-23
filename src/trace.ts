@@ -39,6 +39,8 @@ export function traceTextInfo(text: string): TraceTextInfo {
 }
 
 export function traceTextFields(prefix: string, text: string): Record<string, unknown> {
+  // 关闭追踪时连哈希/脱敏/显示宽度扫描也跳过，避免逐 token 扫描完整回答。
+  if (!isTraceEnabled()) return {}
   const info = traceTextInfo(text)
   return {
     [`${prefix}Length`]: info.length,

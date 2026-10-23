@@ -7,6 +7,7 @@
 // 制作人：Moriarty_Dox
 
 import { appendFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import OpenAI from 'openai'
 import type {
   ChatCompletionMessageParam,
@@ -28,6 +29,7 @@ import {
 } from '../providers/registry.js'
 import { buildOpenAIClientAgentOptions } from '../providers/proxy.js'
 import { openaiModelSupportsCustomTemperature } from '../providers/openaiModels.js'
+import { streamResponses, usesResponsesApi } from '../providers/responses.js'
 import {
   applyStreamContentDelta,
 } from '../providers/streamDelta.js'
@@ -133,14 +135,6 @@ function isRetryable(err: any): boolean {
 }
 
 /**
- * 简单的延时工具（用于退避等待）。
- * @param ms 毫秒数。
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-/**
  * OpenAI 兼容 LLM 客户端：根据 config.provider 连接对应后端。
  */
 export class OpenAICompatibleClient implements LLMClient {
@@ -159,6 +153,8 @@ export class OpenAICompatibleClient implements LLMClient {
     this.client = new OpenAI({
       apiKey,
       baseURL: resolveProviderBaseURL(config),
+      // 重试由外层统一管理，避免 SDK 默认重试与这里相乘。
+      maxRetries: 0,
       ...buildOpenAIClientAgentOptions(config),
     })
   }
@@ -194,6 +190,14 @@ export class OpenAICompatibleClient implements LLMClient {
     while (true) {
       let emittedVisibleDelta = false
       try {
+        if (abortSignal?.aborted) throw new Error('已取消请求')
+        if (this.providerId === 'openai' && usesResponsesApi(model)) {
+          for await (const event of streamResponses(this.client, { ...params, reasoningEffort })) {
+            if (event.type === 'text' || event.type === 'reasoning') emittedVisibleDelta = true
+            yield event
+          }
+          return
+        }
         const requestBody: Record<string, unknown> = {
           model,
           messages: apiMessages,
@@ -224,6 +228,13 @@ export class OpenAICompatibleClient implements LLMClient {
             }
           }
           requestBody.thinking = thinking
+        }
+        if (this.providerId === 'zhipu' && /^glm-5\.3-flash/i.test(model)) {
+          // 5.3 Flash 仅支持开启思考；隐藏思考展示不应使 API 请求失败。
+          requestBody.thinking = { type: 'enabled', clear_thinking: false }
+          requestBody.tool_stream = true
+          requestBody.reasoning_effort = reasoningEffort === 'medium' ? 'high' : reasoningEffort
+          requestBody.temperature = params.temperature ?? 1
         }
 
         const stream = (await this.client.chat.completions.create(
@@ -277,6 +288,7 @@ export class OpenAICompatibleClient implements LLMClient {
             const { next, delta: reasoningDelta } = applyStreamContentDelta(
               reasoningBuf,
               delta.reasoning_content,
+              { snapshot: false },
             )
             debugStreamEvent({
               kind: 'reasoning_incoming',
@@ -391,7 +403,11 @@ export class OpenAICompatibleClient implements LLMClient {
         if (shouldRetryStreamError(err, attempt, emittedVisibleDelta)) {
           attempt++
           const backoffMs = 500 * 2 ** (attempt - 1)
-          await sleep(backoffMs)
+          try {
+            await delay(backoffMs, undefined, { signal: abortSignal })
+          } catch {
+            throw new Error('已取消请求')
+          }
           continue
         }
         throw normalizeApiError(err, this.providerId)

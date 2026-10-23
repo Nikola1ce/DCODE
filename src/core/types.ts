@@ -6,6 +6,7 @@
 
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import type { DeepSeekUsage } from '../deepseek/pricing.js'
+import type { ResponseOutputItem } from 'openai/resources/responses/responses'
 
 // 消息角色：与 OpenAI Chat Completions 对齐，便于直接转换为 API 请求体。
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
@@ -38,6 +39,8 @@ export interface DeepMessage {
   toolName?: string
   // 仅 assistant（deepseek-reasoner）：思维链内容，仅用于展示，不回传给 API。
   reasoning?: string
+  // Responses API 的完整输出项（含加密推理），用于工具续接与会话恢复。
+  responseOutput?: ResponseOutputItem[]
   // 该 tool 结果是否为错误结果（影响 UI 配色）。
   isError?: boolean
   // 时间戳（毫秒），用于会话回放与排序。

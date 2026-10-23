@@ -27,6 +27,7 @@ import {
 import type { ProviderId, ProviderOverrides } from './providers/types.js'
 import {
   getActiveProviderId,
+  getProviderDefinition,
   resolveProviderApiKey,
   resolveProviderBaseURL,
 } from './providers/registry.js'
@@ -141,7 +142,8 @@ export function loadConfig(): DCodeConfig {
   if (existsSync(path)) {
     try {
       // 解析磁盘上的 JSON 配置；若损坏则忽略并使用默认值。
-      fileConfig = JSON.parse(readFileSync(path, 'utf8')) as Partial<DCodeConfig>
+      const parsed = JSON.parse(readFileSync(path, 'utf8'))
+      fileConfig = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
     } catch {
       fileConfig = {}
     }
@@ -152,7 +154,6 @@ export function loadConfig(): DCodeConfig {
 
   // 环境变量覆盖：便于在不写入磁盘的情况下临时指定密钥/端点/模型。
   if (process.env[ENV_API_KEY]) merged.apiKey = process.env[ENV_API_KEY]
-  if (process.env[ENV_BASE_URL]) merged.baseURL = process.env[ENV_BASE_URL] as string
   if (process.env[ENV_MODEL]) merged.model = process.env[ENV_MODEL] as string
   // 推理强度：仅接受四档合法值，非法值忽略以免写入坏配置。
   const envEffort = process.env[ENV_REASONING_EFFORT]
@@ -166,7 +167,22 @@ export function loadConfig(): DCodeConfig {
     if (parsed !== undefined) merged.thinkingBudget = parsed
   }
   if (process.env[ENV_PROVIDER] && isValidProviderEnv(process.env[ENV_PROVIDER])) {
-    merged.provider = process.env[ENV_PROVIDER] as ProviderId
+    const target = process.env[ENV_PROVIDER] as ProviderId
+    if (target !== merged.provider) {
+      // 同步切换模型与端点，避免把上一家供应商的模型/自定义地址带到新供应商。
+      const definition = getProviderDefinition(target)
+      merged.provider = target
+      merged.baseURL = merged.providers?.[target]?.baseURL ?? definition.defaultBaseURL
+      if (!process.env[ENV_MODEL]) merged.model = merged.providers?.[target]?.defaultModel ?? definition.defaultModel
+    }
+  }
+  if (!fileConfig.model && !process.env[ENV_MODEL]) {
+    const id = getActiveProviderId(merged)
+    merged.model = merged.providers?.[id]?.defaultModel ?? getProviderDefinition(id).defaultModel
+  }
+  // DeepSeek 专用变量不能污染其它供应商的最终地址。
+  if (getActiveProviderId(merged) === 'deepseek' && process.env[ENV_BASE_URL]) {
+    merged.baseURL = process.env[ENV_BASE_URL] as string
   }
 
   // 夹紧提示音音量：旧配置可能无此字段（默认值已补），或被手动改成非法值（如 -5 / 500 / "abc"）。

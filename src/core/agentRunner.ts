@@ -285,6 +285,7 @@ export class AgentRunner {
       this.opts.client,
       messages,
       this.opts.model,
+      this.opts.abortSignal,
     )
     this.opts.setMessages(compacted)
     yield this.event('compact_end', {

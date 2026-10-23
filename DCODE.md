@@ -4,7 +4,7 @@
 
 DCODE 是一个运行在终端中的 AI 编程助手，由 **Moriarty_Dox** 打造。借鉴 Claude Code 整体架构（Agent 主循环 + 工具系统 + 全屏 TUI + 斜杠命令 + 会话/记忆/上下文压缩），支持多供应商 OpenAI 兼容 API。
 
-**默认使用智谱 AI 免费模型**（`glm-4-flash`），只需获取智谱 API Key 即可零成本使用；也可随时切换 DeepSeek / OpenAI / Ollama / Custom Provider。
+**新配置默认使用智谱 AI 免费模型**（`glm-4.7-flash`）；DeepSeek 默认 `deepseek-flash`，OpenAI 默认 `gpt-6-luna`。已有配置保留用户所选模型，可用 `/model` 切换。
 
 GitHub：https://github.com/Nikola1ce/DCODE
 
@@ -154,7 +154,7 @@ DCODE/
 1. **记忆文件**：本项目 DCODE.md 即为项目级记忆，自动注入系统提示；全局记忆在 `~/.dcode/DCODE.md`
 2. **配置**：用户配置在 `~/.dcode/config.json`，环境变量优先级更高
 3. **API Key**：DeepSeek 用 `DEEPSEEK_API_KEY`，智谱用 `ZHIPU_API_KEY`，OpenAI 用 `OPENAI_API_KEY`
-4. **默认模型**：`deepseek-v4-flash`（配置文件默认），智谱默认 `glm-4-flash`
+4. **默认模型**：智谱 `glm-4.7-flash`、DeepSeek `deepseek-flash`、OpenAI `gpt-6-luna`。OpenAI GPT-5+ 经 `providers/responses.ts` 使用 Responses API，需保留 assistant 的 `responseOutput` 以续接工具与加密推理。
 5. **上下文窗口**：不同模型窗口不同，超限时自动压缩（保留最近 6 条消息原文）
 6. **文件检查点**：write_file/edit_file 前自动备份到 `.dcode/checkpoints/`，可用 `/undo` 回滚
 7. **Shell 管理**：后台 Shell 通过 `run_command(background=true)` 启动，用 `bash_output` 轮询

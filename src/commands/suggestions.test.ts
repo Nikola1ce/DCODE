@@ -72,7 +72,7 @@ describe('getSlashSuggestions', () => {
 
   it('/model 完整匹配时展示 DeepSeek 模型子选项', () => {
     const items = getSlashSuggestions('/model', baseConfig({ provider: 'deepseek' }))
-    expect(items.some((i) => i.completion.includes('deepseek-v4-flash'))).toBe(true)
+    expect(items.some((i) => i.completion === `/model ${DEFAULT_MODEL}`)).toBe(true)
     expect(items.some((i) => i.completion.includes('gpt-4o'))).toBe(false)
   })
 
@@ -89,7 +89,7 @@ describe('getSlashSuggestions', () => {
 
   it('/model 在 OpenAI Provider 下展示 OpenAI 模型子选项', () => {
     const items = getSlashSuggestions('/model', baseConfig({ provider: 'openai', model: 'gpt-4o-mini' }))
-    expect(items.some((i) => i.completion === '/model gpt-4o-mini')).toBe(true)
+    expect(items.some((i) => i.completion === '/model gpt-6-luna')).toBe(true)
     expect(items.some((i) => i.completion.includes('deepseek'))).toBe(false)
   })
 

@@ -7,7 +7,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
-DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整体架构（Agent 主循环 + 工具系统 + 全屏 TUI + 斜杠命令 + 会话/记忆/上下文压缩），并支持 **智谱 AI、DeepSeek、OpenAI** 等 OpenAI 兼容 API。**默认使用智谱 AI 的免费模型**（`glm-4-flash`），只需在 [智谱开放平台](https://open.bigmodel.cn/usercenter/apikeys) 获取 API Key 即可**零成本**开始编程对话；也可随时切换至 DeepSeek / OpenAI 等其它 Provider。
+DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整体架构（Agent 主循环 + 工具系统 + 全屏 TUI + 斜杠命令 + 会话/记忆/上下文压缩），支持 **智谱 AI、DeepSeek、OpenAI**。**新配置默认使用智谱 AI 的免费模型 `glm-4.7-flash`**，在 [智谱开放平台](https://open.bigmodel.cn/usercenter/apikeys) 获取 API Key 即可开始；也可切换至 DeepSeek / OpenAI 等其它 Provider。
+
+2026-10-23 更新：补齐 GPT-6.1 Sol、GPT-6 Luna、GLM-5.3 Flash/FlashX；OpenAI GPT-5+ 使用 Responses API，支持完整的工具调用续接。OpenAI 新配置默认 `gpt-6-luna`，已有配置保留用户所选模型，可用 `/model` 切换。修复项、性能测试及验证范围见 [项目审查与升级说明](项目审查与升级说明.md)。
 
 相对 Claude Code，DCODE 已完成 **MCP、子代理、后台 Shell、Web 工具、Hooks、Skills、文件检查点、Git 集成、多 Provider** 等核心能力（详见 [功能对比与路线图](docs/优化计划_DCODE_vs_ClaudeCode.md)）。
 
@@ -55,7 +57,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 ### 核心 Agent 与 Provider
 
 - **多 Provider 支持**：默认 **智谱 AI** + 免费模型 `glm-4-flash` / `glm-4.7-flash`（`/model` 中带 **★**）；另支持 DeepSeek、OpenAI；`/provider` 切换供应商，`/proxy` 配置代理；状态栏与 `/cost` 按 Provider **预估成本**（免费模型显示「免费」）。
-- **DeepSeek V4 原生适配**：`deepseek-v4-flash` / `deepseek-v4-pro`，工具调用与思维链 `reasoning_content`；旧别名 `deepseek-chat` / `deepseek-reasoner` 仍兼容（**2026-07-24 UTC 起官方下线**）。
+- **DeepSeek 原生适配**：`deepseek-flash`（V4.1 Flash）/ `deepseek-v4-pro`，支持工具调用与思维链；`deepseek-v4-flash` 为兼容别名。已下线的 `deepseek-chat` / `deepseek-reasoner` 请改用 `deepseek-flash`。
 - **流式输出**：边生成边显示，支持 `Esc` 中断；兼容各 Provider 的累计全文、局部段落重放、短列表前缀重放等 chunk 归一化，避免回答复读。
 - **上下文自动压缩（阈值随模型动态变化）**：压缩触发阈值 = **当前生效模型最大上下文长度 × 90%**，随模型/Provider 切换自动调整，不再用固定值；压缩摘要以 `system` summary metadata 注入，`/compact` 可手动触发。状态栏内置**上下文用量进度条**（已用/上限 + 百分比，临近上限变色提醒）。
 - **多档最大上下文长度选择**：对支持多档上限的模型（如智谱 `glm-4-long` 的 128K/200K/1M、本地后端等），`/model context [档位]` 可在候选档位间切换；选择会持久化并同时影响进度条上限与压缩阈值（其余模型为官方单一最大值）。
@@ -335,7 +337,7 @@ powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
 ## 配置 API Key 与 LLM Provider
 
 > **推荐新手路径（完全免费）**  
-> DCODE **默认 Provider 为智谱 AI**，默认模型为 **`glm-4-flash`（永久免费）**。你只需：
+> DCODE **默认 Provider 为智谱 AI**，新配置默认模型为 **`glm-4.7-flash`（免费）**。你只需：
 > 1. 打开 [智谱 AI 开放平台 · API Keys](https://open.bigmodel.cn/usercenter/apikeys) 注册/登录  
 > 2. 创建 API Key 并复制保存  
 > 3. 运行 `dcode`，按提示 `/login` 粘贴 Key，或设置环境变量 `ZHIPU_API_KEY`  
@@ -346,9 +348,9 @@ powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
 
 | Provider | 环境变量 | 默认模型 | 说明 |
 | --- | --- | --- | --- |
-| **智谱 AI**（**默认**） | `ZHIPU_API_KEY` | `glm-4-flash` | **免费模型可用**；Key 在 [open.bigmodel.cn](https://open.bigmodel.cn/usercenter/apikeys) 获取 |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | [platform.deepseek.com](https://platform.deepseek.com) |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com](https://platform.openai.com/api-keys)；国内通常需配置 `/proxy` |
+| **智谱 AI**（**默认**） | `ZHIPU_API_KEY` | `glm-4.7-flash` | **免费模型可用**；Key 在 [open.bigmodel.cn](https://open.bigmodel.cn/usercenter/apikeys) 获取 |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-flash` | [platform.deepseek.com](https://platform.deepseek.com) |
+| OpenAI | `OPENAI_API_KEY` | `gpt-6-luna` | [platform.openai.com](https://platform.openai.com/api-keys)；国内通常需配置 `/proxy` |
 
 运行中切换：`/provider zhipu`、`/provider deepseek`、`/provider openai`。切换后会自动改用该 Provider 的默认模型（若当前模型不属于目标供应商）。`DEEPSEEK_BASE_URL` 环境变量**仅**在 Provider 为 `deepseek` 时覆盖端点。查看状态：`/config`、`/provider`。
 
@@ -625,7 +627,7 @@ echo "检查 package.json 的依赖是否有已知安全问题" | dcode -p
 ## 使用
 
 ```bash
-# 启动交互式界面（默认智谱 glm-4-flash 免费模型）
+# 启动交互式界面（新配置默认智谱 glm-4.7-flash 免费模型）
 dcode
 
 # 指定模型启动

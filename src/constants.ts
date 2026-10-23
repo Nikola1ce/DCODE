@@ -267,7 +267,7 @@ export const ENV_OPENAI_BASE_URL = 'OPENAI_BASE_URL'
 export const ENV_ZHIPU_API_KEY = 'ZHIPU_API_KEY'
 export const ENV_ZHIPU_BASE_URL = 'ZHIPU_BASE_URL'
 export const DEFAULT_ZHIPU_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4'
-export const DEFAULT_ZHIPU_MODEL = 'glm-4-flash'
+export const DEFAULT_ZHIPU_MODEL = 'glm-4.7-flash'
 
 // Ollama Provider 环境变量。
 export const ENV_OLLAMA_BASE_URL = 'OLLAMA_BASE_URL'

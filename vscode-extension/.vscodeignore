@@ -7,6 +7,7 @@ esbuild.mjs
 prepackage.mjs
 tsconfig.json
 **/*.map
+dist/cli.js
 **/*.ts
 .gitignore
 **/tsconfig.json

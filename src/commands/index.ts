@@ -1408,7 +1408,7 @@ function renderCost(agent: Agent): string {
       `未知（该模型未配置定价，无法估算）` +
       `${u.inputTokens + u.outputTokens > 0 ? `；累计用量 输入 ${u.inputTokens} / 输出 ${u.outputTokens} token` : ''}`
   } else {
-    costLine = formatCost(u.costUsd)
+    costLine = u.costUsd === 0 ? '$0.0000' : formatCost(u.costUsd)
   }
   return [
     '本次会话用量统计：',

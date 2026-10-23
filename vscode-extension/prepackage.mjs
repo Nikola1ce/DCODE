@@ -7,7 +7,7 @@
 // 制作人：Moriarty_Dox
 
 import { execSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { buildSync } from 'esbuild'
@@ -35,15 +35,15 @@ function main() {
 
   // 2) 构建主项目内核并拷贝 dist/cli.js 到扩展 dist/。
   const kernelDist = resolve(repoRoot, 'dist', 'cli.js')
-  if (!existsSync(kernelDist)) {
-    run('npm run build', repoRoot)
-  }
+  // dist 存在不代表与源码一致；始终重建，否则更新模型后可能仍发布旧内核。
+  run('npm run build', repoRoot)
   if (!existsSync(kernelDist)) {
     throw new Error(`未找到内核产物：${kernelDist}（请先在主项目执行 npm run build）`)
   }
   const extDist = resolve(extRoot, 'dist')
   if (!existsSync(extDist)) mkdirSync(extDist, { recursive: true })
-  const targetKernel = resolve(extDist, 'cli.js')
+  // 扩展自身是 CommonJS，ESM 内核必须使用 .mjs，兼容 Node 18/20。
+  const targetKernel = resolve(extDist, 'cli.mjs')
   // 内核体积优化：主项目 build.mjs 出于「错误栈可读 / keepNames」考虑不做压缩，
   // 这里仅对「打进 .vsix 的内核副本」单独做一次 minify（不影响主项目 CLI 产物），
   // 实测可把 cli.js 从约 3.5MB 压到约 1.8MB，明显减小扩展包体积。
@@ -72,6 +72,9 @@ function main() {
     copyFileSync(kernelDist, targetKernel)
     console.log(`[prepackage] 已拷贝内核 -> ${targetKernel}`)
   }
+
+  const kernelAssets = resolve(repoRoot, 'dist', 'assets')
+  if (existsSync(kernelAssets)) cpSync(kernelAssets, resolve(extDist, 'assets'), { recursive: true })
 
   // 3) 拷贝 LICENSE（存在才拷）。
   const license = resolve(repoRoot, 'LICENSE')

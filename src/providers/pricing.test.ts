@@ -20,6 +20,24 @@ const sampleUsage = {
 }
 
 describe('providers/pricing', () => {
+  it('GPT-6.1 按 OpenAI cached_tokens 计算缓存优惠', () => {
+    const cost = calcCostForProvider('openai', 'gpt-6.1-sol', {
+      prompt_tokens: 1000, completion_tokens: 100, prompt_tokens_details: { cached_tokens: 800 },
+    })
+    expect(cost).toBeCloseTo((800 * 0.1 + 200 * 2 + 100 * 10) / 1_000_000)
+  })
+  it('GPT-6 长输入按官方倍率估算，272K 边界不提前加价', () => {
+    const atLimit = calcCostForProvider('openai', 'gpt-6-luna', { prompt_tokens: 272_000, completion_tokens: 100 })
+    const above = calcCostForProvider('openai', 'gpt-6-luna', { prompt_tokens: 272_001, completion_tokens: 100 })
+    expect(atLimit).toBeCloseTo((272_000 * 0.1 + 100 * 0.5) / 1_000_000)
+    expect(above).toBeCloseTo((272_001 * 0.2 + 100 * 0.75) / 1_000_000)
+  })
+  it('缓存写入按单独费率计价，不重复计算未缓存输入', () => {
+    expect(calcCostForProvider('openai', 'gpt-6.1-sol', {
+      prompt_tokens: 1000, completion_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 400, cache_write_tokens: 300 },
+    })).toBeCloseTo((400 * 0.1 + 300 * 2.5 + 300 * 2 + 100 * 10) / 1_000_000)
+  })
   it('zhipu glm-4-flash 免费', () => {
     expect(isFreeModelForProvider('zhipu', 'glm-4-flash')).toBe(true)
     expect(calcCostForProvider('zhipu', 'glm-4-flash', sampleUsage)).toBe(0)
@@ -75,9 +93,9 @@ describe('定价表与可选模型清单一致性（回归保护）', () => {
 })
 
 describe('getModelPricingStatus（区分免费/有价/未知）', () => {
-  it('本地后端（ollama/custom）恒为 free', () => {
+  it('本地 Ollama 免费，自定义后端价格未知', () => {
     expect(getModelPricingStatus('ollama', 'any')).toBe('free')
-    expect(getModelPricingStatus('custom', 'any')).toBe('free')
+    expect(getModelPricingStatus('custom', 'any')).toBe('unknown')
   })
 
   it('DeepSeek 任意模型视为 priced（未知模型回退默认价仍可估算）', () => {

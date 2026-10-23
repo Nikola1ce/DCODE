@@ -12,26 +12,22 @@ import { ZHIPU_FREE_MODELS, ZHIPU_PAID_MODELS } from './zhipuModels.js'
 interface ModelPricing {
   inputCacheHit: number
   inputCacheMiss: number
+  inputCacheWrite?: number
   output: number
 }
 
+// DeepSeek 2026-10-23 高峰价；低峰价为一半，采用高峰价做保守预算估算。
+// 来源：https://api-docs.deepseek.com/quick_start/pricing/
+const DEEPSEEK_FLASH_PRICE: ModelPricing = { inputCacheHit: 0.006, inputCacheMiss: 0.3, output: 1.2 }
 /** DeepSeek 价目表。 */
 const DEEPSEEK_PRICING: Record<string, ModelPricing> = {
-  [DEFAULT_MODEL]: {
-    inputCacheHit: 0.0028,
-    inputCacheMiss: 0.14,
-    output: 0.28,
-  },
+  [DEFAULT_MODEL]: DEEPSEEK_FLASH_PRICE,
   [PRO_MODEL]: {
-    inputCacheHit: 0.003625,
-    inputCacheMiss: 0.435,
-    output: 0.87,
+    inputCacheHit: 0.044,
+    inputCacheMiss: 1.32,
+    output: 3.96,
   },
-  'deepseek-v4-flash': {
-    inputCacheHit: 0.0028,
-    inputCacheMiss: 0.14,
-    output: 0.28,
-  },
+  'deepseek-v4-flash': DEEPSEEK_FLASH_PRICE,
   'deepseek-chat': {
     inputCacheHit: 0.0028,
     inputCacheMiss: 0.14,
@@ -47,7 +43,9 @@ const DEEPSEEK_PRICING: Record<string, ModelPricing> = {
 /** OpenAI 简化价目（USD / 1M tokens，参考官方公开价）。 */
 const OPENAI_PRICING: Record<string, ModelPricing> = {
   // 官方公开价（developers.openai.com/api/docs/models，2026-09）：USD / 1M tokens。
-  'gpt-6-astra': { inputCacheHit: 10, inputCacheMiss: 10, output: 50 },
+  'gpt-6-astra': { inputCacheHit: 1, inputCacheMiss: 10, inputCacheWrite: 12.5, output: 50 },
+  'gpt-6.1-sol': { inputCacheHit: 0.1, inputCacheMiss: 2, inputCacheWrite: 2.5, output: 10 },
+  'gpt-6-luna': { inputCacheHit: 0.01, inputCacheMiss: 0.1, inputCacheWrite: 0.125, output: 0.5 },
   'gpt-5.6-sol': { inputCacheHit: 4, inputCacheMiss: 4, output: 20 },
   'gpt-5.6': { inputCacheHit: 4, inputCacheMiss: 4, output: 20 },
   'gpt-5.6-terra': { inputCacheHit: 2, inputCacheMiss: 2, output: 12 },
@@ -78,11 +76,18 @@ const OPENAI_PRICING: Record<string, ModelPricing> = {
   'o3-pro': { inputCacheHit: 20, inputCacheMiss: 20, output: 80 },
 }
 
-/** 智谱按量计费价目（USD / 1M tokens，参考 Z.AI 官方公开价）。 */
+// 国产端点按人民币计费；统一美元展示使用固定预算换算（1 USD = 7.2 CNY），
+// 这不是实时汇率，实际扣费以智谱账单为准。来源：docs.bigmodel.cn/cn/guide/start/pricing
+function cnyPrice(input: number, cached: number, output: number): ModelPricing {
+  return { inputCacheMiss: input / 7.2, inputCacheHit: cached / 7.2, output: output / 7.2 }
+}
+
+/** 智谱按量计费预算（USD / 1M tokens）。 */
 const ZHIPU_PRICING: Record<string, ModelPricing> = {
-  // TODO 复核：glm-5.3/5.2 暂按 glm-5.1 档估算，请对照官方价格页改正。
-  'glm-5.3': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
-  'glm-5.2': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
+  'glm-5.3': cnyPrice(8, 2, 28),
+  'glm-5.3-flash': cnyPrice(0.8, 0.23, 2.8),
+  'glm-5.3-flashx': cnyPrice(2, 0.57, 7),
+  'glm-5.2': cnyPrice(8, 2, 28),
   'glm-5.1': { inputCacheHit: 0.26, inputCacheMiss: 1.4, output: 4.4 },
   'glm-5': { inputCacheHit: 0.2, inputCacheMiss: 1, output: 3.2 },
   'glm-5-turbo': { inputCacheHit: 0.24, inputCacheMiss: 1.2, output: 4 },
@@ -109,7 +114,7 @@ const ZHIPU_FREE_MODEL_SET = new Set<string>(ZHIPU_FREE_MODELS)
  * @returns 免费返回 true。
  */
 export function isFreeModelForProvider(providerId: ProviderId, model: string): boolean {
-  if (providerId === 'ollama' || providerId === 'custom') return true
+  if (providerId === 'ollama') return true
   if (providerId === 'zhipu') {
     return ZHIPU_FREE_MODEL_SET.has(model)
   }
@@ -139,10 +144,10 @@ export function getModelPricingStatus(
 ): ModelPricingStatus {
   if (isFreeModelForProvider(providerId, model)) return 'free'
   if (providerId === 'deepseek') return 'priced' // 未知模型回退默认价，仍可估算。
-  if (providerId === 'openai') return model in OPENAI_PRICING ? 'priced' : 'unknown'
-  if (providerId === 'zhipu') return model in ZHIPU_PRICING ? 'priced' : 'unknown'
-  // 理论上 ollama/custom 已在 isFreeModelForProvider 命中，这里兜底为 free。
-  return 'free'
+  if (providerId === 'openai') return Object.hasOwn(OPENAI_PRICING, model) ? 'priced' : 'unknown'
+  if (providerId === 'zhipu') return Object.hasOwn(ZHIPU_PRICING, model) ? 'priced' : 'unknown'
+  // 自定义端点可能收费，不能凭 Provider 名称推断免费。
+  return 'unknown'
 }
 
 /**
@@ -153,12 +158,14 @@ export function getModelPricingStatus(
  */
 function calcCostFromPricing(pricing: ModelPricing, usage: DeepSeekUsage): number {
   const promptTokens = usage.prompt_tokens ?? 0
-  const cacheHit = usage.prompt_cache_hit_tokens ?? 0
+  const cacheHit = usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0
   const cacheMiss = usage.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - cacheHit)
+  const cacheWrite = Math.min(cacheMiss, Math.max(0, usage.prompt_cache_write_tokens ?? usage.prompt_tokens_details?.cache_write_tokens ?? 0))
   const outputTokens = usage.completion_tokens ?? 0
   return (
     (cacheHit * pricing.inputCacheHit +
-      cacheMiss * pricing.inputCacheMiss +
+      (cacheMiss - cacheWrite) * pricing.inputCacheMiss +
+      cacheWrite * (pricing.inputCacheWrite ?? pricing.inputCacheMiss) +
       outputTokens * pricing.output) /
     1_000_000
   )
@@ -184,12 +191,20 @@ export function calcCostForProvider(
   }
 
   if (providerId === 'openai') {
+    if (!Object.hasOwn(OPENAI_PRICING, model)) return 0
     const pricing = OPENAI_PRICING[model]
     if (!pricing) return 0
+    if (/^gpt-6(?:[.-]|$)/.test(model) && (usage.prompt_tokens ?? 0) > 272_000) {
+      return calcCostFromPricing({ inputCacheHit: pricing.inputCacheHit * 2,
+        inputCacheMiss: pricing.inputCacheMiss * 2,
+        inputCacheWrite: pricing.inputCacheWrite === undefined ? undefined : pricing.inputCacheWrite * 2,
+        output: pricing.output * 1.5 }, usage)
+    }
     return calcCostFromPricing(pricing, usage)
   }
 
   if (providerId === 'zhipu') {
+    if (!Object.hasOwn(ZHIPU_PRICING, model)) return 0
     const pricing = ZHIPU_PRICING[model]
     if (!pricing) return 0
     return calcCostFromPricing(pricing, usage)

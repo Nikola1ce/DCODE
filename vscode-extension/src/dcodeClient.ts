@@ -415,14 +415,14 @@ export class DcodeClient {
     const explicit = configured || fromEnv
     if (explicit) {
       // 若指向一个 .js 文件，用 node 执行；否则当作可执行命令直接调用。
-      if (explicit.endsWith('.js')) {
+      if (/\.[cm]?js$/i.test(explicit)) {
         return { command: resolveNodeExecutable(), args: [explicit] }
       }
       return { command: explicit, args: [] }
     }
 
     // 2) 随扩展打包的内核兜底：扩展目录下 dist/cli.js（发布时一并拷入）。
-    const bundled = path.join(this.opts.extensionPath, 'dist', 'cli.js')
+    const bundled = path.join(this.opts.extensionPath, 'dist', 'cli.mjs')
     if (existsSync(bundled)) {
       return { command: resolveNodeExecutable(), args: [bundled] }
     }

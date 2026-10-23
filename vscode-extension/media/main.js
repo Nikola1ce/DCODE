@@ -15,6 +15,7 @@
 
   // —— DOM 引用 —— //
   const messagesEl = document.getElementById('messages')
+  const latestBtn = document.getElementById('btn-latest')
   const inputEl = document.getElementById('input')
   const sendBtn = document.getElementById('btn-send')
   const stopBtn = document.getElementById('btn-stop')
@@ -46,6 +47,17 @@
   let activeRequestId = null
   // 当前轮次的助手消息 DOM 上下文：{ requestId, bodyEl, rawText, reasoningEl, reasoningText, toolEls: Map }
   let currentTurn = null
+  let followOutput = true
+  let scrollFrame = null
+  messagesEl.addEventListener('scroll', () => {
+    followOutput = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop < 48
+    latestBtn.classList.toggle('hidden', followOutput)
+  }, { passive: true })
+  latestBtn.addEventListener('click', () => {
+    followOutput = true
+    latestBtn.classList.add('hidden')
+    scrollToBottom()
+  })
   // 当前待发送的上下文附件列表（通过「+ 文件/+ 文件夹」按钮或资源管理器右键加入，发送后清空）。
   // 每项形如 { kind:'file'|'selection', path, startLine?, endLine?, snippet?, languageId? }
   let pendingAttachments = []
@@ -530,6 +542,9 @@
   function onCommandResult(msg) {
     if (msg.cleared) {
       // 命令清空了上下文：清屏并复位。
+      cancelTurnRender()
+      followOutput = true
+      latestBtn.classList.add('hidden')
       messagesEl.innerHTML = ''
       currentTurn = null
       activeRequestId = null
@@ -750,6 +765,9 @@
         finishTurn({ requestId: msg.requestId, reason: 'error' })
         break
       case 'cleared':
+        cancelTurnRender()
+        followOutput = true
+        latestBtn.classList.add('hidden')
         messagesEl.innerHTML = ''
         currentTurn = null
         activeRequestId = null
@@ -1078,6 +1096,8 @@
    * @param {Array} [attachments] 随消息携带的上下文附件（展示为 chips）。
    */
   function appendUserMessage(text, attachments) {
+    followOutput = true
+    latestBtn.classList.add('hidden')
     const wrap = document.createElement('div')
     wrap.className = 'msg user'
     let html = '<div class="msg-role">你</div>'
@@ -1101,6 +1121,7 @@
    * @param {string} requestId 轮次 id。
    */
   function beginAssistantTurn(requestId) {
+    if (currentTurn) flushTurnRender(currentTurn)
     const wrap = document.createElement('div')
     wrap.className = 'msg assistant'
     wrap.innerHTML = '<div class="msg-role">DCODE</div>'
@@ -1116,6 +1137,9 @@
       reasoningEl: null,
       reasoningText: '',
       toolEls: new Map(),
+      renderTimer: null,
+      textDirty: false,
+      reasoningDirty: false,
     }
     scrollToBottom()
   }
@@ -1141,8 +1165,33 @@
   function appendText(requestId, delta) {
     const turn = ensureTurn(requestId)
     turn.rawText += delta
-    turn.bodyEl.innerHTML = renderMarkdown(turn.rawText)
+    turn.textDirty = true
+    scheduleTurnRender(turn)
+  }
+
+  // 合并短时间内的 token，避免每个 token 都解析全文 Markdown 并替换 DOM。
+  function scheduleTurnRender(turn) {
+    if (turn.renderTimer !== null) return
+    turn.renderTimer = setTimeout(() => flushTurnRender(turn), 50)
+  }
+
+  function flushTurnRender(turn) {
+    if (turn.renderTimer !== null) clearTimeout(turn.renderTimer)
+    turn.renderTimer = null
+    if (!turn.wrapEl.isConnected) return
+    if (turn.textDirty) {
+      turn.bodyEl.innerHTML = renderMarkdown(turn.rawText)
+      turn.textDirty = false
+    }
+    if (turn.reasoningDirty && turn.reasoningEl) {
+      turn.reasoningEl.textContent = turn.reasoningText
+      turn.reasoningDirty = false
+    }
     scrollToBottom()
+  }
+
+  function cancelTurnRender() {
+    if (currentTurn && currentTurn.renderTimer !== null) clearTimeout(currentTurn.renderTimer)
   }
 
   /**
@@ -1166,8 +1215,8 @@
       turn.reasoningEl = content
     }
     turn.reasoningText += delta
-    turn.reasoningEl.textContent = turn.reasoningText
-    scrollToBottom()
+    turn.reasoningDirty = true
+    scheduleTurnRender(turn)
   }
 
   // —— 渲染：工具卡片 —— //
@@ -1302,7 +1351,10 @@
    */
   function finishTurn(msg) {
     const turn = currentTurn
+    // 延迟到达的旧轮次结束事件不能清空正在输出的新轮次。
+    if (turn && msg.requestId && turn.requestId !== msg.requestId) return
     if (turn && turn.requestId === msg.requestId) {
+      flushTurnRender(turn)
       turn.bodyEl.classList.remove('cursor-blink')
       // 折叠思维链（结束后默认收起，避免占屏）。
       if (turn.reasoningEl) {
@@ -1336,7 +1388,7 @@
     if (typeof msg.costUsd === 'number' && msg.costUsd > 0) {
       parts.push('约 $' + msg.costUsd.toFixed(4))
     } else if (typeof msg.costUsd === 'number') {
-      parts.push('免费')
+      parts.push('预估 $0.0000')
     }
     if (msg.usage && typeof msg.usage.totalTokens === 'number') {
       parts.push(msg.usage.totalTokens + ' tokens')
@@ -1405,7 +1457,15 @@
 
   /** 滚动消息区到底部。 */
   function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight
+    if (!followOutput) {
+      latestBtn.classList.remove('hidden')
+      return
+    }
+    if (scrollFrame !== null) return
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = null
+      if (followOutput) messagesEl.scrollTop = messagesEl.scrollHeight
+    })
   }
 
   // —— 极简安全 Markdown 渲染 —— //

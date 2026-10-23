@@ -1,15 +1,19 @@
-// OpenAI Chat Completions 官方模型清单。
+// OpenAI 文本模型清单（GPT-5+ 通过 Responses API 调用）。
 // 仅收录 OpenAI 文档中当前对外提供、未标记 Deprecated 的文本对话模型；
 // 不含历史快照 id（如 gpt-4-0613）与已下线型号。
 // 制作人：Moriarty_Dox
 
 /**
- * 当前可用的 OpenAI Chat Completions 模型（按推荐优先级排序）。
- * 来源：https://developers.openai.com/api/docs/models （2026-06，排除 Deprecated）。
+ * 当前可用的 OpenAI 文本模型（按推荐优先级排序）。
+ * 来源：https://developers.openai.com/api/docs/models/all （2026-10-23）。
  */
+export const DEFAULT_OPENAI_MODEL = 'gpt-6-luna'
+
 export const OPENAI_CHAT_MODELS: readonly string[] = [
   // —— 前沿 GPT-6 / GPT-5.6（developers.openai.com/api/docs/models，2026-09）——
   'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6',
   'gpt-5.6-terra',
@@ -20,13 +24,9 @@ export const OPENAI_CHAT_MODELS: readonly string[] = [
   'gpt-5.4',
   'gpt-5.4-pro',
   'gpt-5.4-mini',
-  'gpt-5.4-nano',
   // —— GPT-5 系列 ——
-  'gpt-5.3-codex',
   'gpt-5.2',
   'gpt-5.2-pro',
-  'gpt-5.1',
-  'gpt-5.1-mini',
   'gpt-5',
   'gpt-5-mini',
   'gpt-5-nano',
@@ -34,15 +34,13 @@ export const OPENAI_CHAT_MODELS: readonly string[] = [
   // —— o 系列推理 ——
   'o3-pro',
   'o3',
-  // —— GPT-4.1 / 4o ——
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4o-mini',
 ] as const
 
 /** 主要模型的简短说明。 */
 const OPENAI_MODEL_HINTS: Readonly<Record<string, string>> = {
   'gpt-6-astra': '旗舰 · 最强推理与编码',
+  'gpt-6.1-sol': '最新 Sol · 复杂编码与专业任务',
+  'gpt-6-luna': '高性价比 · 低延迟 · 1.05M 上下文',
   'gpt-5.6-sol': '旗舰 · 复杂专业工作',
   'gpt-5.6': 'GPT-5.6 别名（Sol）',
   'gpt-5.6-terra': 'GPT-5.6 · 智能与成本平衡',

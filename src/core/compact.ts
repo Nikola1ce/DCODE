@@ -119,6 +119,7 @@ export async function compactMessages(
   client: LLMClient,
   messages: DeepMessage[],
   model: string,
+  abortSignal?: AbortSignal,
 ): Promise<DeepMessage[]> {
   // 拆出真正的系统提示（始终保留在最前）。旧摘要会作为历史输入重新压缩，
   // 避免多次 compact 后堆叠多条 summary system 消息。
@@ -177,6 +178,7 @@ export async function compactMessages(
       model,
       temperature: 0.2,
       thinking: 'disabled',
+      abortSignal,
     })) {
       if (ev.type === 'text') summary += ev.delta
       if (ev.type === 'done') summary = ev.message.content || summary

@@ -150,7 +150,7 @@ export function StatusLine({
   return (
     <Box marginTop={busy ? 0 : 0}>
       {busy ? (
-        <Box>
+        <Box flexWrap="wrap">
           {animate ? (
             <Spinner />
           ) : (
@@ -162,7 +162,7 @@ export function StatusLine({
           </Text>
         </Box>
       ) : (
-        <Box>
+        <Box flexWrap="wrap">
           <Text color={theme.dim}>
             {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {costLabel ?? formatCost(costUsd)}
           </Text>

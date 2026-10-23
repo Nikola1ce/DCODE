@@ -666,6 +666,7 @@ export class DcodePanelProvider implements vscode.WebviewViewProvider {
       <div id="picker-list"></div>
     </div>
     <div id="messages"></div>
+    <button id="btn-latest" class="hidden" aria-label="回到最新消息">↓ 回到最新消息</button>
     <div id="composer">
       <div id="attachments" class="hidden"></div>
       <div id="composer-input-wrap">

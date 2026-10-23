@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { webFetchTool } from './webFetch.js'
 import { resolveSearchApiKey, webSearchTool } from './webSearch.js'
 
+// safeFetch 新增了 DNS 校验；mock fetch 之外也隔离 DNS，避免离线测试访问外网。
+vi.mock('node:dns/promises', () => ({ lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]) }))
+
 const mockCtx = {
   cwd: process.cwd(),
   config: {} as any,

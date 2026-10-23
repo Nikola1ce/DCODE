@@ -19,6 +19,9 @@ export interface DeepSeekUsage {
   prompt_cache_hit_tokens?: number
   // DeepSeek 扩展：未命中缓存的输入 token 数。
   prompt_cache_miss_tokens?: number
+  // OpenAI Chat Completions 的缓存用量字段。
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
+  prompt_cache_write_tokens?: number
 }
 
 // 累计用量统计（跨多轮请求聚合）。
@@ -70,7 +73,7 @@ export function accumulateUsage(
   usage: DeepSeekUsage,
   providerId: ProviderId = 'deepseek',
 ): UsageTotals {
-  const cacheHit = usage.prompt_cache_hit_tokens ?? 0
+  const cacheHit = usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0
   return {
     inputTokens: totals.inputTokens + (usage.prompt_tokens ?? 0),
     outputTokens: totals.outputTokens + (usage.completion_tokens ?? 0),

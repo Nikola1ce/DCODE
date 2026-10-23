@@ -23,7 +23,7 @@ import {
 } from '../constants.js'
 import type { DCodeConfig } from '../config.js'
 import type { ProviderDefinition, ProviderId, ProviderOverrides } from './types.js'
-import { OPENAI_CHAT_MODELS, getOpenAIModelHint } from './openaiModels.js'
+import { DEFAULT_OPENAI_MODEL, OPENAI_CHAT_MODELS, getOpenAIModelHint } from './openaiModels.js'
 import { ZHIPU_CHAT_MODELS, formatZhipuModelLabel, getZhipuModelHint } from './zhipuModels.js'
 import { renderProxyHint } from './proxy.js'
 import { modelHasContextChoices } from './contextWindow.js'
@@ -57,7 +57,7 @@ export const BUILTIN_PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     id: 'openai',
     name: 'OpenAI',
     defaultBaseURL: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
+    defaultModel: DEFAULT_OPENAI_MODEL,
     apiKeyEnv: ENV_OPENAI_API_KEY,
     supportsThinking: false,
     requiresApiKey: true,
@@ -109,7 +109,7 @@ export function getProviderDefinition(id: ProviderId): ProviderDefinition {
  * @returns 合法返回 true。
  */
 export function isValidProviderId(value: string): value is ProviderId {
-  return value in BUILTIN_PROVIDERS
+  return Object.hasOwn(BUILTIN_PROVIDERS, value)
 }
 
 /**
@@ -180,9 +180,6 @@ export function resolveProviderBaseURL(config: DCodeConfig): string {
   }
 
   const def = getProviderDefinition(id)
-  const override = getProviderOverrides(config, id).baseURL
-  if (override) return override
-
   // Provider 专属环境变量。
   if (id === 'openai' && process.env[ENV_OPENAI_BASE_URL]) {
     return process.env[ENV_OPENAI_BASE_URL]
@@ -193,6 +190,9 @@ export function resolveProviderBaseURL(config: DCodeConfig): string {
   if (id === 'ollama' && process.env[ENV_OLLAMA_BASE_URL]) {
     return process.env[ENV_OLLAMA_BASE_URL]
   }
+
+  const override = getProviderOverrides(config, id).baseURL
+  if (override) return override
 
   // 顶层 baseURL：若仍是其它 Provider 的默认端点，视为未切换的残留配置，忽略。
   if (config.baseURL) {
@@ -249,6 +249,11 @@ export function getModelSelectOptions(config: DCodeConfig): ModelSelectOption[] 
   const id = getActiveProviderId(config)
   const def = getProviderDefinition(id)
   const models = getSuggestedModelsForProvider(config)
+  // 手动填写或旧版本保存的模型仍可在菜单中定位。
+  const belongsToOtherProvider = Object.values(BUILTIN_PROVIDERS).some(
+    (provider) => provider.id !== id && provider.suggestedModels?.includes(config.model),
+  )
+  if (config.model && !models.includes(config.model) && !belongsToOtherProvider) models.unshift(config.model)
 
   // 为多档上下文模型在 hint 末尾追加「· 多档上下文」标记，提示切换后可 /model context 调整。
   const withContextBadge = (model: string, hint?: string): string | undefined => {

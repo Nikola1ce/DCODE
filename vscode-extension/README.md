@@ -38,7 +38,7 @@ npm run package        # 生成 dcode-vscode.vsix（已内置 dcode 内核，无
 - 命令行：`code --install-extension dcode-vscode.vsix`
 - 或 GUI：扩展面板右上角「…」→「从 VSIX 安装…」→ 选择 `dcode-vscode.vsix`
 
-> `npm run package` 会自动构建扩展、构建主项目内核并把 `dist/cli.js` 一并打进 `.vsix`，因此安装后无需再全局安装 `dcode`。仍需配置 API Key（见下文）。
+> `npm run package` 会自动构建扩展、重新构建主项目内核，并以 `dist/cli.mjs` 连同运行资源打进 `.vsix`，因此安装后无需再全局安装 `dcode`。仍需配置 API Key（见下文）。
 
 **方式二：开发调试（F5）**
 
@@ -58,7 +58,7 @@ npm run build          # 或 npm run watch
 - 一个可用的 DCODE 后台内核（三选一，按优先级自动探测）：
   1. 设置 `dcode.cliPath` 指向 `dcode` 可执行文件或内核 `cli.js`；
   2. 环境变量 `DCODE_CLI_PATH`；
-  3. 随扩展打包的 `dist/cli.js`，或全局安装的 `dcode` 命令。
+  3. 随扩展打包的 `dist/cli.mjs`，或全局安装的 `dcode` 命令。
 - 已配置 LLM API Key（默认智谱 AI 免费模型）。可在终端运行 `dcode` 后用 `/login` 配置，或设置相应环境变量（如 `ZHIPU_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）。配置存于 `~/.dcode/config.json`，扩展会自动复用。
 
 ## 功能
