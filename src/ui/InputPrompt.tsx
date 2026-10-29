@@ -17,8 +17,8 @@
 // 不依赖第三方输入组件，便于定制。
 // 制作人：Moriarty_Dox
 
-import React, { useCallback, useRef, useState } from 'react'
-import { Box, Text, useInput, type Key } from 'ink'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Box, Text, useInput, useStdout, type Key } from 'ink'
 import { useTheme } from './theme.js'
 import type { DCodeConfig } from '../config.js'
 import { getSlashSuggestions } from '../commands/index.js'
@@ -42,6 +42,7 @@ import {
   valueChanged,
 } from './inputEditor.js'
 import { readClipboard, writeClipboard } from './clipboard.js'
+import { charCols, sliceTailByCols, strCols } from './textLayout.js'
 
 // 组件入参。
 interface InputPromptProps {
@@ -53,6 +54,8 @@ interface InputPromptProps {
   history: string[]
   // 读取最新配置（用于 /model 等 Provider 感知补全）。
   getConfig: () => DCodeConfig
+  // 输入行与补全菜单共用的总行数。
+  maxRows?: number
 }
 
 // 撤销/重做栈的最大深度（防止长时间输入导致快照无限增长）。
@@ -68,8 +71,16 @@ export function InputPrompt({
   isActive,
   history,
   getConfig,
+  maxRows = 13,
 }: InputPromptProps): React.ReactElement {
   const theme = useTheme()
+  const { stdout } = useStdout()
+  const [columns, setColumns] = useState(stdout.columns || 80)
+  useEffect(() => {
+    const resize = () => setColumns(stdout.columns || 80)
+    stdout.on('resize', resize)
+    return () => { stdout.off('resize', resize) }
+  }, [stdout])
   // 输入文本 + 光标 + 选区合并存储：所有写操作都基于上一状态做“函数式更新”，从根本上避免读到旧值。
   const [buf, setBuf] = useState<EditorState>(emptyState())
   const { value, cursor, selection } = buf
@@ -96,7 +107,7 @@ export function InputPrompt({
   const suggestions = value.startsWith('/') ? getSlashSuggestions(value, getConfig()) : []
   const inCommandMode = value.startsWith('/') && suggestions.length > 0
   // 菜单是否展开：激活、有候选且未被手动关闭。
-  const menuOpen = isActive && suggestions.length > 0 && !menuDismissed
+  const menuOpen = isActive && maxRows > 1 && suggestions.length > 0 && !menuDismissed
   // 有效高亮索引：对候选数量取模（含负数归一），保证落在合法范围内。
   const effIndex =
     suggestions.length > 0
@@ -392,32 +403,51 @@ export function InputPrompt({
   // 斜杠命令用强调色提示。
   const isCommand = value.trimStart().startsWith('/')
   const fg = isCommand ? theme.accent : theme.text
+  // 只裁剪显示窗口，不修改编辑值；光标左右移动时窗口随之平移。
+  // 换行/制表符在单行输入区显示为空格，提交时仍保留原始文本。
+  const displayValue = value.replace(/[\r\n\t\v\f]/g, ' ')
+  const inputCols = Math.max(1, columns - 2)
+  const cursorChar = [...displayValue.slice(cursor)][0] || ' '
+  const caret = strCols(cursorChar) <= inputCols ? cursorChar : ' '
+  const before = sliceTailByCols(displayValue.slice(0, cursor), inputCols - strCols(caret))
+  let remaining = inputCols - strCols(before) - strCols(caret)
+  let after = ''
+  for (const ch of displayValue.slice(cursor + cursorChar.length)) {
+    const width = charCols(ch.codePointAt(0) ?? 0)
+    if (width > remaining) break
+    after += ch
+    remaining -= width
+  }
+  const windowStart = cursor - before.length
+  const shown = before + (cursor < value.length ? caret : '') + after
+  const selectionStart = selection ? Math.max(0, selection.start - windowStart) : 0
+  const selectionEnd = selection ? Math.max(0, selection.end - windowStart) : 0
 
   return (
     <Box flexDirection="column">
       {/* 命令补全菜单：仅在命令模式且有候选时，于输入框上方展开 */}
-      {menuOpen ? <CommandMenu items={suggestions} selectedIndex={effIndex} /> : null}
+      {menuOpen ? <CommandMenu items={suggestions} selectedIndex={effIndex} maxRows={Math.max(0, maxRows - 1)} /> : null}
 
       {/* 输入行：提示符 + 输入内容（含选区高亮 / 模拟光标） */}
-      <Box>
-        <Text color={theme.primary} bold>
-          {'❯ '}
+      <Box height={1} overflowY="hidden" flexShrink={0}>
+        <Text wrap="truncate">
+          <Text color={theme.primary} bold>{columns > 2 ? '❯ ' : ''}</Text>
+          {selection ? (
+            // 有选区：选中区间整体反色高亮；光标隐于活动端（选区已足够指示位置）。
+            <>
+              <Text color={fg}>{shown.slice(0, selectionStart)}</Text>
+              <Text inverse>{shown.slice(selectionStart, selectionEnd)}</Text>
+              <Text color={fg}>{shown.slice(selectionEnd)}</Text>
+            </>
+          ) : (
+            // 无选区：光标位置的字符反色（末尾时用空格占位），其余正常着色。
+            <>
+              <Text color={fg}>{before}</Text>
+              <Text inverse>{caret}</Text>
+              <Text color={fg}>{after}</Text>
+            </>
+          )}
         </Text>
-        {selection ? (
-          // 有选区：选中区间整体反色高亮；光标隐于活动端（选区已足够指示位置）。
-          <>
-            <Text color={fg}>{value.slice(0, selection.start)}</Text>
-            <Text inverse>{value.slice(selection.start, selection.end)}</Text>
-            <Text color={fg}>{value.slice(selection.end)}</Text>
-          </>
-        ) : (
-          // 无选区：光标位置的字符反色（末尾时用空格占位），其余正常着色。
-          <>
-            <Text color={fg}>{value.slice(0, cursor)}</Text>
-            <Text inverse>{value.slice(cursor, cursor + 1) || ' '}</Text>
-            <Text color={fg}>{value.slice(cursor + 1)}</Text>
-          </>
-        )}
       </Box>
     </Box>
   )

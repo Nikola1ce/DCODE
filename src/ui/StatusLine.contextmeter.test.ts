@@ -2,10 +2,26 @@
 // 校验 token 数以 k / m 单位显示、保留合适小数位并去除尾随 0。
 // 制作人：Moriarty_Dox
 
-import { describe, expect, it } from 'vitest'
-import { formatTokenCount } from './StatusLine.js'
+import React from 'react'
+import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, render } from 'ink-testing-library'
+import { formatTokenCount, StatusLine } from './StatusLine.js'
+
+afterEach(cleanup)
 
 describe('ui/StatusLine formatTokenCount', () => {
+  it('紧凑状态栏优先显示上下文，长模型名不会挤掉占用与压缩阈值', async () => {
+    const view = render(React.createElement(StatusLine, {
+      busy: false, compact: true, model: '很长的自定义模型名字'.repeat(10),
+      permissionMode: 'default', costUsd: 0, contextTokens: 150000, contextLimit: 1000000, compactThreshold: 300000,
+    }))
+    Object.defineProperty(view.stdout, 'columns', { configurable: true, value: 60 })
+    view.stdout.emit('resize')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(view.lastFrame()).toContain('150k/1m')
+    expect(view.lastFrame()).toContain('300k 压缩')
+    expect(view.lastFrame()?.split('\n')).toHaveLength(1)
+  })
   it('小于 1000 显示整数', () => {
     expect(formatTokenCount(0)).toBe('0')
     expect(formatTokenCount(1)).toBe('1')

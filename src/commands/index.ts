@@ -85,7 +85,7 @@ import { isZhipuFreeModel, ZHIPU_FREE_MODEL_BADGE } from '../providers/zhipuMode
 import {
   contextOverrideKey,
   formatContextWindowLabel,
-  getCompactThreshold,
+  describeCompactThreshold,
   getModelContextOptions,
   parseContextWindowInput,
   renderModelSwitchContextHint,
@@ -172,7 +172,7 @@ function handleModelContextCommand(
       message:
         `模型 ${model} 的最大上下文长度固定为 ${formatContextWindowLabel(current)}` +
         `（${current.toLocaleString()} tokens），不支持切换。\n` +
-        `自动压缩阈值：${getCompactThreshold(current).toLocaleString()} tokens（窗口的 90%）。`,
+        `自动压缩阈值：${describeCompactThreshold(current)}。`,
     }
   }
 
@@ -204,7 +204,7 @@ function handleModelContextCommand(
     message:
       `已将模型 ${model} 的最大上下文长度设为 ${formatContextWindowLabel(parsed)}` +
       `（${parsed.toLocaleString()} tokens）。\n` +
-      `自动压缩阈值随之变为 ${getCompactThreshold(parsed).toLocaleString()} tokens（窗口的 90%）。`,
+      `自动压缩阈值随之变为 ${describeCompactThreshold(parsed)}。`,
   }
 }
 
@@ -228,7 +228,7 @@ function renderModelContextInfo(
     `  当前最大上下文长度：${formatContextWindowLabel(current)}（${current.toLocaleString()} tokens）`,
   )
   lines.push(
-    `  自动压缩阈值：${getCompactThreshold(current).toLocaleString()} tokens（窗口的 90%）`,
+    `  自动压缩阈值：${describeCompactThreshold(current)}`,
   )
   if (options.length > 1) {
     const labels = options

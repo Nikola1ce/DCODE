@@ -59,6 +59,8 @@ export interface SpawnShellOptions {
 export interface GetOutputOptions {
   /** true 时仅返回自上次 tail 查询以来的增量输出。 */
   tail?: boolean
+  /** 仅取消等待，不终止后台任务。 */
+  abortSignal?: AbortSignal
 }
 
 /** bash_output 查询结果。 */
@@ -142,21 +144,25 @@ export class ShellManager {
     const appendOutput = (text: string) => {
       // 累积输出设硬上限，防止长时间任务导致 Node 进程 OOM。
       const maxStored = MAX_SHELL_OUTPUT_CHARS * 4
-      if (record.output.length < maxStored) {
-        const room = maxStored - record.output.length
-        record.output += text.slice(0, room)
+      record.output += text
+      const removed = Math.max(0, record.output.length - maxStored)
+      if (removed > 0) {
+        record.output = record.output.slice(removed)
+        this.readOffsets.set(id, Math.max(0, (this.readOffsets.get(id) ?? 0) - removed))
       }
       opts.onOutput?.(text)
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
-    child.stderr?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (text: string) => appendOutput(text))
+    child.stderr?.on('data', (text: string) => appendOutput(text))
 
     const timer = setTimeout(() => {
       if (record.status === 'running') {
         record.status = 'timeout'
         record.endedAt = Date.now()
-        child.kill('SIGKILL')
+        terminateShellProcess(child)
         this.cleanupProcess(id)
       }
     }, timeoutMs)
@@ -207,14 +213,17 @@ export class ShellManager {
     }
 
     if (blockUntilMs > 0 && record.status === 'running') {
-      await waitForShellDone(record, blockUntilMs)
+      await waitForShellDone(record, blockUntilMs, options?.abortSignal)
     }
+    // 调用方取消后会丢弃快照，不应推进 tail 游标而吞掉未读日志。
+    if (options?.abortSignal?.aborted) return formatShellSnapshot(record)
 
     const tail = options?.tail ?? false
     if (tail) {
       const offset = this.readOffsets.get(id) ?? 0
-      const incremental = record.output.slice(offset)
-      this.readOffsets.set(id, record.output.length)
+      // 分页消费，避免一次截断展示后把未展示的日志也标记为已读。
+      const incremental = record.output.slice(offset, offset + MAX_SHELL_OUTPUT_CHARS)
+      this.readOffsets.set(id, offset + incremental.length)
       return formatShellSnapshot(record, { tailMode: true, incrementalOutput: incremental })
     }
 
@@ -240,7 +249,7 @@ export class ShellManager {
 
     const child = this.processes.get(id)
     if (child) {
-      child.kill('SIGKILL')
+      terminateShellProcess(child)
     }
     record.status = 'killed'
     record.endedAt = Date.now()
@@ -276,14 +285,18 @@ export class ShellManager {
       const age = now - (rec.endedAt ?? rec.createdAt)
       if (age > MAX_BACKGROUND_SHELL_RUNTIME_MS * 2) {
         this.records.delete(id)
+        this.readOffsets.delete(id)
       }
     }
 
-    if (this.records.size <= MAX_BACKGROUND_SHELL_RECORDS) return
-
-    const finished = all.filter(([, r]) => r.status !== 'running')
-    for (const [id] of finished.slice(MAX_BACKGROUND_SHELL_RECORDS)) {
+    // 为即将插入的新记录留一个位置；运行中的记录永不驱逐。
+    const finished = [...this.records.entries()]
+      .filter(([, r]) => r.status !== 'running')
+      .sort((a, b) => a[1].createdAt - b[1].createdAt)
+    for (const [id] of finished) {
+      if (this.records.size < MAX_BACKGROUND_SHELL_RECORDS) break
       this.records.delete(id)
+      this.readOffsets.delete(id)
     }
   }
 }
@@ -308,7 +321,27 @@ export function spawnShellProcess(command: string, cwd: string): ChildProcess {
     cwd,
     env: createSafeChildEnv(),
     windowsHide: true,
+    // Unix 独立进程组，取消时连同命令派生的子进程一起终止。
+    detached: !isWindows,
   })
+}
+
+/** 只终止当前 Shell 的进程树，防止子进程继续运行并占住输出管道。 */
+export function terminateShellProcess(child: ChildProcess): void {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true, stdio: 'ignore',
+    })
+    const fallback = () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    }
+    killer.once('error', fallback)
+    killer.once('close', (code) => { if (code !== 0) fallback() })
+  } else {
+    try { process.kill(-child.pid, 'SIGKILL') }
+    catch { child.kill('SIGKILL') }
+  }
 }
 
 /**
@@ -316,21 +349,28 @@ export function spawnShellProcess(command: string, cwd: string): ChildProcess {
  * @param record Shell 记录。
  * @param maxWaitMs 最大等待毫秒数。
  */
-function waitForShellDone(record: ShellRecord, maxWaitMs: number): Promise<void> {
-  if (record.status !== 'running') return Promise.resolve()
+function waitForShellDone(record: ShellRecord, maxWaitMs: number, signal?: AbortSignal): Promise<void> {
+  if (record.status !== 'running' || signal?.aborted) return Promise.resolve()
 
   return new Promise((resolve) => {
     const start = Date.now()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+    signal?.addEventListener('abort', finish, { once: true })
     const check = () => {
       if (record.status !== 'running') {
-        resolve()
+        finish()
         return
       }
       if (Date.now() - start >= maxWaitMs) {
-        resolve()
+        finish()
         return
       }
-      setTimeout(check, 200)
+      timer = setTimeout(check, Math.min(200, maxWaitMs - (Date.now() - start)))
     }
     check()
   })
@@ -355,7 +395,10 @@ function formatShellSnapshot(
     const shown = inc ? truncate(inc, MAX_SHELL_OUTPUT_CHARS) : ''
     outputSection = shown ? `新增输出：\n${shown}` : '（无新增输出）'
   } else {
-    const output = truncate(record.output.trim(), MAX_SHELL_OUTPUT_CHARS)
+    const text = record.output.trim()
+    const output = text.length > MAX_SHELL_OUTPUT_CHARS
+      ? `[已省略较早输出，显示最近 ${MAX_SHELL_OUTPUT_CHARS} 字符]\n${text.slice(-MAX_SHELL_OUTPUT_CHARS)}`
+      : text
     outputSection = `输出：\n${output || '（尚无输出）'}`
   }
 

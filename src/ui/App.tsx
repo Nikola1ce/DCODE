@@ -22,13 +22,13 @@ import {
   getProviderLoginMeta,
 } from '../providers/registry.js'
 import {
+  getCompactThreshold,
   renderModelSwitchContextHint,
   resolveContextWindow,
 } from '../providers/contextWindow.js'
 import { isSlashCommand, runSlashCommand, type SlashCommandResult } from '../commands/index.js'
 import { getModelPricingStatus } from '../providers/pricing.js'
 import { formatCost } from '../deepseek/pricing.js'
-import { estimateMessagesTokens } from '../core/compact.js'
 import {
   playInputSent,
   playInterrupted,
@@ -52,7 +52,7 @@ import { Select } from './Select.js'
 import { StatusLine, Spinner } from './StatusLine.js'
 import { TodoPanel } from './TodoPanel.js'
 import { BackgroundShellPanel } from './BackgroundShellPanel.js'
-import { tailByVisualRows } from './textLayout.js'
+import { tailByVisualRows, wrappedRows } from './textLayout.js'
 import { StreamCommitter, type StreamChunk, type ThinkingSummary } from './streamCommit.js'
 import { appendToolProgress } from './toolProgress.js'
 import type { DisplayItem } from './types.js'
@@ -160,6 +160,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       ? initialItems
       : [{ id: nextId(), kind: 'banner', model: agent.getModel(), cwd: agent.cwd }],
   )
+  // Static 内部仅按已提交的条目数量推进；整份历史替换时须开启新的提交序列。
+  const [historyVersion, setHistoryVersion] = useState(0)
 
   // —— 实时区：流式文本/思维链、运行中的工具 ——
   // 说明：实时区只保留「正在输入的最后一行（未完成尾巴）」；已完成的整行会被逐块
@@ -182,7 +184,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   const [cost, setCost] = useState(agent.usage.costUsd)
   // 当前会话已使用的上下文 token（估算值），用于状态栏上下文进度条；初始按现有历史估算。
   const [contextTokens, setContextTokens] = useState(() =>
-    estimateMessagesTokens(agent.getMessages()),
+    agent.getContextTokens(),
   )
   const [model, setModelState] = useState(agent.getModel())
   // 上下文相关配置（Provider / 用户选定的最大上下文档位）的变更计数：
@@ -245,7 +247,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
    * 在每轮对话结束、压缩、清空等会改变消息历史的时机调用，保证显示与实际一致。
    */
   const refreshContextTokens = useCallback(() => {
-    setContextTokens(estimateMessagesTokens(agent.getMessages()))
+    setContextTokens(agent.getContextTokens())
   }, [agent])
 
   // 启动后异步检测新版本（使用缓存，不阻塞 TUI 首屏）。
@@ -282,7 +284,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
     if (patch.provider !== undefined || patch.modelContextOverrides !== undefined) {
       setContextConfigVersion((v) => v + 1)
     }
-  }, [agent])
+    refreshContextTokens()
+  }, [agent, refreshContextTokens])
 
   /** 请求用户授权：命中白名单自动放行，否则弹窗等待决策。 */
   const requestPermission = useCallback(
@@ -435,9 +438,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             if (key !== null) processedKeys.add(key)
             committer.setTraceContext(traceContext)
 
-            // 同步处理旧版回调（向后兼容，onEvent 与旧回调不会同时存在，
-            // 因为 agent.runTurn 的实现是先调 handleRunEventForCompatibility 再调 onEvent，
-            // 故旧回调不会被执行；但此处主动检查以保证 onEvent 被注册时能完整覆盖）。
+            // TUI 只注册 onEvent，避免同时注册旧版回调而重复消费同一增量。
             if (ev.type === 'reasoning_delta') {
               // 思维链不再逐块落 Static：仅更新动态区滚动预览（Claude Code 风格）。
               committer.onReasoning(ev.delta)
@@ -461,6 +462,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               setLiveTextHead(!committer.textHeadDone)
               setStatusText('正在回答')
             } else if (ev.type === 'assistant_message') {
+              refreshContextTokens()
               // 覆盖「只思考、无正文」的情形：此时仍要折叠出一行思考摘要。
               pushThinkingSummary(committer.takeThinkingSummary())
               const chunks = committer.onDone()
@@ -500,13 +502,23 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               })
               setRunningTool(null)
               setTodos(agent.getTodos())
+            } else if (ev.type === 'tool_message' || ev.type === 'llm_start') {
+              refreshContextTokens()
             } else if (ev.type === 'llm_done') {
               setCost(agent.usage.costUsd)
-              // 每次模型应答完成后，历史已追加新消息，同步刷新上下文占用进度条。
-              refreshContextTokens()
             } else if (ev.type === 'compact_start') {
               setStatusText('正在压缩上下文')
-              pushSystem('info', '上下文较长，正在自动压缩以释放空间…')
+              if (ev.usedTokens !== undefined) setContextTokens(ev.usedTokens)
+              const details = ev.usedTokens !== undefined && ev.threshold !== undefined && ev.contextWindow !== undefined
+                ? `估算 ${ev.usedTokens.toLocaleString()} / ${ev.contextWindow.toLocaleString()} tokens，达到压缩阈值 ${ev.threshold.toLocaleString()}。`
+                : ''
+              pushSystem('info', `${details}正在自动压缩上下文…`)
+            } else if (ev.type === 'compact_end') {
+              refreshContextTokens()
+              setStatusText('正在思考')
+              if (ev.applied === false && !ac.signal.aborted) {
+                pushSystem('warning', '未获得有效的压缩结果，已保留原历史；本轮不再重复尝试压缩。')
+              }
             } else if (ev.type === 'run_error') {
               // 异常中断音效：对话出错，提醒用户回来处理。
               playInterrupted()
@@ -536,6 +548,14 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
         })
         pushStreamChunks(chunks)
       } finally {
+        // 达到迭代上限或主动中断时可能没有 assistant_message；收尾提示和
+        // 已显示的正文尾巴也必须进入历史，不能随实时区一起被清空。
+        pushThinkingSummary(committer.takeThinkingSummary())
+        pushStreamChunks(committer.onDone())
+        const permissionResolve = permissionResolverRef.current
+        permissionResolverRef.current = null
+        permissionResolve?.('deny')
+        setPermissionReq(null)
         setBusy(false)
         setStatusText('')
         abortRef.current = null
@@ -568,6 +588,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
       if (result.cleared) {
         // 清空历史但保留欢迎横幅。
         setItems([{ id: nextId(), kind: 'banner', model: agent.getModel(), cwd: agent.cwd }])
+        setHistoryVersion((v) => v + 1)
         setTodos([])
         // 历史被清空（/clear），上下文进度条同步归位到仅剩 system 提示的占用。
         refreshContextTokens()
@@ -675,27 +696,49 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
   // 输入框是否激活：非运行、无弹窗、无流程时才接受输入。
   const inputActive = !busy && !permissionReq && !flow
 
-  // —— 动态区（非 Static）限高：按「视觉行」预算 ——
-  // 现在动态区只承载「正在输入的最后一行（未完成尾巴）」：已完成行会逐块落入 Static，
-  // 因此动态区天然很矮、终端会随 Static 增长自动跟随到底部。
-  // 这里仍按视觉行（计入自动换行 + CJK 全角宽度）对尾巴限高，作为「超长无换行单行」的
-  // 安全网，防止其撑高动态区再次触发 Ink 5.2.1 的帧泄漏/视口不跟随。
-  // 正文区左侧有「● 」缩进，按 termCols-2 估算更保守。
-  const wrapCols = Math.max(20, termCols - 2)
-  // 稳定的输出区域 key：权限弹窗出现时整个 App 会重新渲染，
-  // 但主输出区（Static + 实时区）被包在独立 Box 中，Ink 只需要重绘底部弹窗，
-  // 不会触发 Static 的视口重置，从而避免滚动位置被强制回到顶部。
+  // Ink 会逐帧擦除整个动态区；各块单独限高仍可能叠加溢出，旧帧便会残留到滚动历史。
+  // 统一扣除交互区、单行摘要和光标换行，再把剩余高度分配给当前流式预览。
+  const compactPanels = busy || termRows < 16 || termCols < 20
+  // 空闲时为输入及补全菜单预留空间；流程弹窗独占动态区。
+  const interactionRows = permissionReq ? 5 : busy ? 1 : 2 + Math.min(8, Math.floor(termRows / 3))
+  const panelBudget = flow ? 0 : Math.max(0, termRows - 1 - interactionRows - (busy ? 1 : 0))
+  const todoBudget = todos.length > 0 ? Math.ceil(panelBudget / 2) : 0
+  const shellBudget = panelBudget - todoBudget
+  const showTodoPanel = todoBudget > 0
+  const showShellPanel = shellBudget > 0
+  // 展开面板的边框、标题、隐藏计数和底部间距至多占 5 行。
+  const compactTodo = compactPanels || todoBudget < 6
+  const compactShell = compactPanels || shellBudget < 6
+  const todoVisible = Math.max(1, Math.min(12, todoBudget - 5))
+  const shellVisible = Math.max(1, Math.min(5, shellBudget - 5))
+  // Shell 自行轮询，按最坏高度预留，新增后台任务也不会挤出视口。
+  const panelRows = (showTodoPanel ? compactTodo ? 1 : Math.min(todos.length, todoVisible) + 5 : 0)
+    + (showShellPanel ? compactShell ? 1 : shellVisible + 5 : 0)
+  const inputRows = Math.max(1, termRows - 2 - panelRows)
+  const liveRows = Math.max(0, termRows - 1 - interactionRows - panelRows)
+  const liveGap = liveRows >= 3 ? 1 : 0
+  const wrapCols = Math.max(1, termCols - 2)
+  const reasoningRows = Math.max(0, Math.min(5, liveRows - 1 - liveGap))
+  const progressRows = Math.max(0, Math.min(4, liveRows - 1 - liveGap))
+  const textRows = Math.max(0, Math.min(2, liveRows - liveGap))
+  const reasoningPreview = tailByVisualRows(liveReasoning, reasoningRows, wrapCols)
+  const progressPreview = tailByVisualRows(runningTool?.progress ?? '', progressRows, wrapCols)
+  const textPreview = tailByVisualRows(liveText, textRows, wrapCols)
+  // Ink 的英文按词折行可能比列宽估算多一行，用裁剪容器兜底；短预览不额外填充空行。
+  const previewHeight = (text: string, maxRows: number) => Math.min(
+    maxRows,
+    text.split('\n').reduce((rows, line) => rows + wrappedRows(line, wrapCols), 0),
+  )
+  // key 保持 Static 挂载稳定；Ink 仍会统一擦写所有非 Static 内容。
   const outputKey = 'main-output'
 
   return (
     <ThemeContext.Provider value={theme}>
       <Box flexDirection="column" width="100%">
-        {/* 主输出区域：稳定的独立容器。
-            权限弹窗出现时，App 整体重新渲染，但这个 Box 本身不变化，
-            Ink 只需要在底部追加弹窗，Static 视口不受影响。 */}
+        {/* 主输出区域保持挂载，切换权限弹窗时不重新提交 Static 历史。 */}
         <Box key={outputKey} flexDirection="column">
           {/* 历史区：已完成的展示项，使用 Static 避免重复渲染 */}
-          <Static items={items}>
+          <Static key={historyVersion} items={items}>
             {(item) => (
               <MessageView key={item.id} item={item} showThinking={showThinking} />
             )}
@@ -704,44 +747,35 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           {/* 思考实时预览区（Claude Code 风格）：思考进行中时，动态区显示「✻ 思考中…」+
               暗色斜体的滚动预览（仅尾部若干视觉行）。思考结束后该区清空，历史区只折叠出一行
               「✻ 已思考（N 秒）」。仅当有思考预览且未在执行工具时显示，避免与工具进度叠加。 */}
-          {showThinking && liveReasoning.trim() && !runningTool ? (
-            <Box flexDirection="column" marginBottom={1}>
-              <Box>
-                <Spinner />
-                <Text color={theme.dim} italic>
-                  {' 思考中…'}
-                </Text>
-              </Box>
-              <Box marginLeft={2}>
-                <Text color={theme.dim} italic>
-                  {tailByVisualRows(
-                    liveReasoning,
-                    Math.max(2, Math.min(5, termRows - 8)),
-                    wrapCols,
-                  )}
-                </Text>
-              </Box>
+          {liveRows > 0 && showThinking && liveReasoning.trim() && !runningTool ? (
+            <Box flexDirection="column" marginBottom={liveGap} flexShrink={0}>
+              <Text color={theme.dim} italic wrap="truncate">
+                <Spinner />{' 思考中…'}
+              </Text>
+              {reasoningPreview ? (
+                <Box marginLeft={2} height={previewHeight(reasoningPreview, reasoningRows)} overflowY="hidden" flexShrink={0}>
+                  <Text color={theme.dim} italic>{reasoningPreview}</Text>
+                </Box>
+              ) : null}
             </Box>
           ) : null}
 
           {/* 实时区：运行中的工具及其进度。
               权限弹窗期间工具在等待授权，spinner 改为静态帧——避免 80ms 定时重绘叠加
               较高动态区时产生滚动残影（此时动态区应保持静止，便于用户自由拖动滚动条）。 */}
-          {runningTool ? (
-            <Box flexDirection="column" marginBottom={1}>
-              <Box>
+          {liveRows > 0 && runningTool ? (
+            <Box flexDirection="column" marginBottom={liveGap} flexShrink={0}>
+              <Text color={theme.tool} wrap="truncate">
                 {permissionReq ? (
                   <Text color={theme.primary}>⠿</Text>
                 ) : (
                   <Spinner />
                 )}
-                <Text color={theme.tool}> {runningTool.summary}</Text>
-              </Box>
-              {runningTool.progress.trim() ? (
-                <Box marginLeft={2}>
-                  <Text color={theme.dim}>
-                    {tailByVisualRows(runningTool.progress, Math.max(2, Math.min(4, termRows - 8)), wrapCols)}
-                  </Text>
+                {' '}{runningTool.summary.replace(/\s+/g, ' ')}
+              </Text>
+              {progressPreview.trim() ? (
+                <Box marginLeft={2} height={previewHeight(progressPreview, progressRows)} overflowY="hidden" flexShrink={0}>
+                  <Text color={theme.dim}>{progressPreview}</Text>
                 </Box>
               ) : null}
             </Box>
@@ -749,8 +783,8 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
 
           {/* 正文流式尾巴：尚未换行/软切分提交的未完成片段，限 1~2 视觉行显示。
               已完成行已逐块落入 Static；此处只补实时打字感，且高度受控以免触发 Ink 帧泄漏。 */}
-          {liveText.trim() && !runningTool && !liveReasoning.trim() ? (
-            <Box marginBottom={1}>
+          {textPreview.trim() && !runningTool && !liveReasoning.trim() ? (
+            <Box marginBottom={liveGap} flexShrink={0}>
               {liveTextHead ? (
                 <Text color={theme.primary} bold>
                   {'● '}
@@ -758,38 +792,36 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               ) : (
                 <Text>{'  '}</Text>
               )}
-              <Box flexDirection="column">
-                <Text color={theme.text}>
-                  {tailByVisualRows(
-                    liveText,
-                    Math.max(1, Math.min(2, termRows - 8)),
-                    wrapCols,
-                  )}
-                </Text>
+              <Box flexDirection="column" height={previewHeight(textPreview, textRows)} overflowY="hidden">
+                <Text color={theme.text}>{textPreview}</Text>
               </Box>
             </Box>
           ) : null}
 
           {/* 任务清单面板：空闲时窗口化限高，运行中折叠为单行摘要。 */}
-          <TodoPanel
-            todos={todos}
-            compact={busy}
-            maxVisible={Math.max(3, Math.min(12, termRows - 9))}
-          />
+          {showTodoPanel ? (
+            <TodoPanel
+              todos={todos}
+              compact={compactTodo}
+              maxVisible={todoVisible}
+            />
+          ) : null}
 
           {/* 后台 Shell 面板：展示 run_command(background) 启动的长任务。 */}
-          <BackgroundShellPanel
-            compact={busy}
-            maxVisible={Math.max(2, Math.min(5, termRows - 12))}
-          />
+          {showShellPanel ? (
+            <BackgroundShellPanel
+              compact={compactShell}
+              maxVisible={shellVisible}
+            />
+          ) : null}
         </Box>
 
-        {/* 交互区域：权限弹窗优先（遮挡在主输出之上）；无弹窗时渲染输入框/状态栏。
-            注意：此处不用 key，仅靠组件替换切换，不会触发主输出区重渲染。 */}
+        {/* 交互区域：优先显示权限选项，其高度已从流式预览预算中扣除。 */}
         {permissionReq ? (
           <PermissionPrompt onDecision={handleDecision} />
         ) : flow === 'login' ? (
           <LoginPrompt
+            maxRows={termRows - 1}
             {...getProviderLoginMeta(getActiveProviderId(configRef.current))}
             onSubmit={(apiKey) => {
               const id = getActiveProviderId(configRef.current)
@@ -805,6 +837,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           />
         ) : flow === 'model' ? (
           <Select
+            maxRows={termRows - 1}
             title="选择模型"
             selectedValue={configRef.current.model}
             options={getModelSelectOptions(configRef.current)}
@@ -825,6 +858,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           />
         ) : flow === 'resume' ? (
           <Select
+            maxRows={termRows - 1}
             title="恢复历史会话"
             options={buildResumeOptions()}
             onSelect={(id) => {
@@ -836,7 +870,10 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               // 载入历史消息到 Agent，并在界面回放。
               const msgs = loadSessionMessages(id)
               agent.replaceMessages(msgs)
+              refreshContextTokens()
+              setTodos(agent.getTodos())
               const replay = messagesToItems(msgs)
+              setHistoryVersion((v) => v + 1)
               setItems([
                 { id: nextId(), kind: 'banner', model: agent.getModel(), cwd: agent.cwd },
                 ...replay,
@@ -847,6 +884,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           />
         ) : flow === 'theme' ? (
           <Select
+            maxRows={termRows - 1}
             title="选择主题"
             selectedValue={themeName}
             options={[
@@ -865,6 +903,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
           <Box flexDirection="column">
             {inputActive ? (
               <InputPrompt
+                maxRows={inputRows}
                 onSubmit={handleSubmit}
                 isActive={inputActive}
                 history={inputHistoryRef.current}
@@ -873,6 +912,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
             ) : null}
             <StatusLine
               busy={busy}
+              compact
               animate={runningTool === null}
               model={model}
               permissionMode={permissionMode}
@@ -880,6 +920,7 @@ export function App({ agent, config, initialItems, needLogin, checkUpdateOnStart
               costLabel={costLabel}
               contextTokens={contextTokens}
               contextLimit={contextLimit}
+              compactThreshold={getCompactThreshold(contextLimit)}
               statusText={statusText}
             />
           </Box>

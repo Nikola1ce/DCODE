@@ -8,7 +8,8 @@
 //   chunk 级去重已在 streamDelta.ts 处理，delta 级去重会破坏正常流式输出。
 // - tool_message / tool_start / tool_end：有唯一标识字段（toolCallId/id），
 //   可以安全去重。
-// - assistant_message：有 message.timestamp，可去重。
+// - assistant_message：每个 iteration 只有一条，以 iteration 去重。
+//   消息时间戳可缺失，也可能跨 iteration 同毫秒，不能作为消息标识。
 // - 其他事件类型（llm_start、compact_start 等）：每个 iteration 只出现一次，
 //   但在同一 run 中不同 iteration 可能重复，可以用 iteration 辅助区分。
 //
@@ -42,7 +43,7 @@ export function makeEventKey(ev: AgentRunEvent): string | null {
       return `${base}|${ev.type}|${ev.id}`
 
     case 'assistant_message':
-      return `${base}|assistant_message|${ev.message?.timestamp ?? 0}`
+      return `${base}|assistant_message|${ev.iteration}`
 
     case 'llm_start':
     case 'llm_done':

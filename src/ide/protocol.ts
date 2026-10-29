@@ -10,6 +10,7 @@
 // 制作人：Moriarty_Dox
 
 import type { PermissionDecision, PermissionRequest } from '../core/types.js'
+import { StringDecoder } from 'node:string_decoder'
 
 // 当前协议版本号。客户端连接后服务端会在 ready 消息里回传此值，
 // 两端大版本不一致时客户端可据此给出升级提示（向后兼容的小改动不提升大版本）。
@@ -427,6 +428,7 @@ export function decodeMessage<T = ClientMessage | ServerMessage>(
 export function createLineDecoder<T = ClientMessage | ServerMessage>() {
   // 跨 chunk 的未完成行缓冲。
   let buffer = ''
+  const utf8 = new StringDecoder('utf8')
   return {
     /**
      * 喂入一段原始数据，返回本次新解析出的消息（可能为空）。
@@ -434,7 +436,8 @@ export function createLineDecoder<T = ClientMessage | ServerMessage>() {
      * @returns 本次切分出的完整消息数组。
      */
     push(chunk: Buffer | string): T[] {
-      buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+      // Buffer 可能恰好切在中文/emoji 的多字节字符中间，保留未完成字节到下一块。
+      buffer += typeof chunk === 'string' ? utf8.end() + chunk : utf8.write(chunk)
       const out: T[] = []
       let idx: number
       // 循环提取所有以 \n 结尾的完整行，剩余半行留在 buffer 等待后续 chunk。

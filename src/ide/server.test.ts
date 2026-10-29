@@ -8,7 +8,7 @@
 //   - shutdown 关闭。
 
 import { PassThrough } from 'node:stream'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { IdeServer } from './server.js'
 import {
   createLineDecoder,
@@ -140,6 +140,71 @@ describe('IdeServer 握手与基础', () => {
 })
 
 describe('IdeServer prompt 事件转发', () => {
+  it('run_error 后再次抛错只发送一个终止错误', async () => {
+    const agent = new FakeAgent()
+    agent.turnImpl = async (_input, handlers) => {
+      handlers.onEvent?.({ type: 'run_error', runId: 'r', turnId: 't', timestamp: 1, error: '连接中断' })
+      throw new Error('连接中断')
+    }
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    ctx.send({ type: 'prompt', requestId: 'error', text: '测试' })
+    await ctx.waitFor('turn_error')
+    expect(ctx.received.filter((m) => m.type === 'turn_error')).toHaveLength(1)
+    expect(ctx.received.some((m) => m.type === 'turn_done')).toBe(false)
+  })
+
+  it('缺少 run_end 也会发送失败帧，客户端不会永久停在运行中', async () => {
+    const ctx = setup(new FakeAgent())
+    activeServer = ctx.server
+    ctx.send({ type: 'prompt', requestId: 'missing-end', text: '测试' })
+    const error = await ctx.waitFor('turn_error')
+    expect(error).toMatchObject({ requestId: 'missing-end', message: expect.stringContaining('未收到完成事件') })
+  })
+
+  it('完成帧包含本轮各次模型调用之和，而非整个会话累计费用', async () => {
+    const agent = new FakeAgent()
+    agent.usage = { inputTokens: 999, outputTokens: 888, cacheHitTokens: 0, costUsd: 42 }
+    agent.turnImpl = async (_input, handlers) => {
+      const context = { runId: 'r', turnId: 't', timestamp: 1 }
+      for (const iteration of [0, 1]) handlers.onEvent?.({
+        ...context, type: 'llm_done', iteration, message: { role: 'assistant', content: 'ok' },
+        finishReason: 'stop', durationMs: 1, costUsd: 0.25,
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      })
+      const end: AgentRunEvent = { ...context, type: 'run_end', reason: 'final', iterations: 2 }
+      handlers.onEvent?.(end)
+      handlers.onEvent?.(end)
+    }
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    ctx.send({ type: 'prompt', requestId: 'usage', text: '测试' })
+    const done = await ctx.waitFor('turn_done')
+    expect(done).toMatchObject({ costUsd: 0.5, usage: { promptTokens: 20, completionTokens: 40, totalTokens: 60 } })
+    expect(ctx.received.filter((m) => m.type === 'turn_done')).toHaveLength(1)
+  })
+
+  it('收到完成帧后立即提交下一轮不会误报仍在运行', async () => {
+    const agent = new FakeAgent()
+    let turns = 0
+    agent.turnImpl = async (_input, handlers) => {
+      turns++
+      handlers.onEvent?.({ type: 'run_end', runId: 'r', turnId: 't', timestamp: 1, reason: 'final', iterations: 1 })
+    }
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    const decoder = createLineDecoder<ServerMessage>()
+    ctx.output.on('data', (chunk: Buffer) => {
+      for (const msg of decoder.push(chunk)) {
+        if (msg.type === 'turn_done' && msg.requestId === 'first') ctx.send({ type: 'prompt', requestId: 'next', text: '下一轮' })
+      }
+    })
+    ctx.send({ type: 'prompt', requestId: 'first', text: '第一轮' })
+    await vi.waitFor(() => expect(turns).toBe(2))
+    expect(ctx.received.filter((m) => m.type === 'turn_done')).toHaveLength(2)
+    expect(ctx.received.some((m) => m.type === 'turn_error')).toBe(false)
+  })
+
   it('把 text_delta / tool_* / run_end 转换为协议消息并以 turn_done 收尾', async () => {
     const agent = new FakeAgent()
     // 注入一轮：产出文本、一个工具调用、然后结束。
@@ -216,6 +281,22 @@ describe('IdeServer prompt 事件转发', () => {
 })
 
 describe('IdeServer 权限往返', () => {
+  it('取消后才到达的权限请求直接拒绝，不重新进入等待授权', async () => {
+    const agent = new FakeAgent()
+    let decision: PermissionDecision | undefined
+    agent.turnImpl = async (_input, handlers) => {
+      await new Promise<void>((resolve) => handlers.abortSignal.addEventListener('abort', () => resolve(), { once: true }))
+      decision = await handlers.requestPermission({ toolName: 'write_file', title: '写入', ruleKey: 'write' })
+    }
+    const ctx = setup(agent)
+    activeServer = ctx.server
+    ctx.send({ type: 'prompt', requestId: 'cancelled', text: '测试' })
+    ctx.send({ type: 'cancel', requestId: 'cancelled' })
+    const done = await ctx.waitFor('turn_done')
+    expect(done).toMatchObject({ reason: 'aborted' })
+    expect(decision).toBe('deny')
+    expect(ctx.received.some((m) => m.type === 'permission_request')).toBe(false)
+  })
   it('runTurn 内 requestPermission 触发 permission_request，回执后兑现决策', async () => {
     const agent = new FakeAgent()
     let resolvedDecision: PermissionDecision | null = null

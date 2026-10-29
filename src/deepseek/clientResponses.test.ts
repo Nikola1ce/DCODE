@@ -110,14 +110,17 @@ describe('Responses 新模型工具调用', () => {
   })
 
   it('兼容 API 的标准 delta 同样保留重复字符与换行', async () => {
-    sdk.chat.mockResolvedValue(events(...['a', 'a', '\n', '\n'].map((content) => ({ choices: [{ delta: { content } }] }))))
+    sdk.chat.mockResolvedValue(events(
+      ...['a', 'a', '\n', '\n'].map((content) => ({ choices: [{ delta: { content } }] })),
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ))
     const result = await collect(new OpenAICompatibleClient({ ...config, provider: 'custom' }))
     expect(result.at(-1)).toMatchObject({ message: { content: 'aa\n\n' } })
     expect(sdk.responses).not.toHaveBeenCalled()
   })
 
   it('GLM-5.3 Flash 映射 medium，隐藏思考不发送 unsupported disabled', async () => {
-    sdk.chat.mockResolvedValue(events({ choices: [{ delta: { content: '完成' } }] }))
+    sdk.chat.mockResolvedValue(events({ choices: [{ delta: { content: '完成' }, finish_reason: 'stop' }] }))
     await collect(new OpenAICompatibleClient({ ...config, provider: 'zhipu', showThinking: false }), { model: 'glm-5.3-flash' })
     expect(sdk.chat.mock.calls[0][0]).toMatchObject({ thinking: { type: 'enabled', clear_thinking: false },
       reasoning_effort: 'high', tool_stream: true, temperature: 1 })

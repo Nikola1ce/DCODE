@@ -6,14 +6,17 @@
 
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   readdirSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { join, normalize } from 'node:path'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from '../config.js'
 import type { AgentRunEvent, DeepMessage } from './types.js'
@@ -47,6 +50,12 @@ interface EventLine {
   event: AgentRunEvent
 }
 
+// 上下文替换通过快照追加，保留旧日志用于排查，同时让恢复遵循最新状态。
+interface SnapshotLine {
+  type: 'snapshot'
+  messages: DeepMessage[]
+}
+
 /**
  * 计算会话目录路径（~/.dcode/sessions），不存在则创建。
  * @returns 会话目录绝对路径。
@@ -63,6 +72,7 @@ function getSessionsDir(): string {
  * @returns 会话 JSONL 文件绝对路径。
  */
 function getSessionPath(id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('无效的会话 ID。')
   return join(getSessionsDir(), `${id}.jsonl`)
 }
 
@@ -77,6 +87,7 @@ export class SessionRecorder {
   private path: string
   // 是否禁用持久化（无头一次性任务可关闭）。
   private disabled: boolean
+  private appendBoundaryChecked = false
 
   /**
    * 构造函数。
@@ -117,13 +128,7 @@ export class SessionRecorder {
    * @param message 要追加的消息。
    */
   append(message: DeepMessage): void {
-    if (this.disabled) return
-    const line: MessageLine = { type: 'message', message }
-    try {
-      appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
-    } catch {
-      // 写盘失败不应影响主流程。
-    }
+    this.appendLine({ type: 'message', message })
   }
 
   /**
@@ -131,10 +136,34 @@ export class SessionRecorder {
    * @param event AgentRunner 产出的事件。
    */
   appendEvent(event: AgentRunEvent): void {
+    this.appendLine({ type: 'event', version: 1, event })
+  }
+
+  /** 追加当前有效上下文快照；恢复时替换之前的消息，随后追加的新消息仍保留。 */
+  replaceMessages(messages: DeepMessage[]): void {
+    this.appendLine({ type: 'snapshot', messages })
+  }
+
+  private appendLine(line: MessageLine | EventLine | SnapshotLine): void {
     if (this.disabled) return
-    const line: EventLine = { type: 'event', version: 1, event }
     try {
-      appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
+      let separator = ''
+      if (!this.appendBoundaryChecked && existsSync(this.path)) {
+        const size = statSync(this.path).size
+        if (size > 0) {
+          const fd = openSync(this.path, 'r')
+          try {
+            const lastByte = Buffer.alloc(1)
+            readSync(fd, lastByte, 0, 1, size - 1)
+            if (lastByte[0] !== 10) separator = '\n'
+          } finally {
+            closeSync(fd)
+          }
+        }
+      }
+      // 崩溃可能留下半条 JSON；先补分隔符，避免下一条完整消息被粘进坏行。
+      appendFileSync(this.path, separator + JSON.stringify(line) + '\n', 'utf8')
+      this.appendBoundaryChecked = true
     } catch {
       // 写盘失败不应影响主流程。
     }
@@ -149,35 +178,28 @@ export class SessionRecorder {
 export function loadSessionMessages(id: string): DeepMessage[] {
   const path = getSessionPath(id)
   if (!existsSync(path)) return []
-  const messages: DeepMessage[] = []
   try {
-    const lines = readFileSync(path, 'utf8').split('\n')
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const obj = JSON.parse(line)
-      if (obj.type === 'message') messages.push(obj.message)
-    }
+    return repairInterruptedToolResults(readSessionState(readFileSync(path, 'utf8')).messages)
   } catch {
-    // 解析失败返回已成功解析的部分。
+    return []
   }
-  return repairInterruptedToolResults(messages)
 }
 
 export function repairInterruptedToolResults(messages: DeepMessage[]): DeepMessage[] {
-  const seenToolResults = new Set(
-    messages
-      .filter((m) => m.role === 'tool' && m.toolCallId)
-      .map((m) => m.toolCallId as string),
-  )
-  let changed = false
   const out: DeepMessage[] = []
-  for (const m of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    // 工具结果必须紧随发起它的 assistant；孤立/重复结果不能发回 API。
+    if (m.role === 'tool') continue
     out.push(m)
     if (m.role !== 'assistant' || !m.toolCalls?.length) continue
-    for (const call of m.toolCalls) {
-      if (seenToolResults.has(call.id)) continue
-      seenToolResults.add(call.id)
-      changed = true
+    const pending = new Map(m.toolCalls.map((call) => [call.id, call]))
+    while (messages[i + 1]?.role === 'tool') {
+      const result = messages[++i]
+      if (!result.toolCallId || !pending.delete(result.toolCallId)) continue
+      out.push(result)
+    }
+    for (const call of pending.values()) {
       out.push({
         role: 'tool',
         content: '上次工具执行中断，请检查当前工作区状态后再继续。',
@@ -189,7 +211,36 @@ export function repairInterruptedToolResults(messages: DeepMessage[]): DeepMessa
       })
     }
   }
-  return changed ? out : messages
+  return out.length === messages.length && out.every((m, i) => m === messages[i]) ? messages : out
+}
+
+function isMessage(value: unknown): value is DeepMessage {
+  if (!value || typeof value !== 'object') return false
+  const m = value as DeepMessage
+  return ['system', 'user', 'assistant', 'tool'].includes(m.role)
+    && typeof m.content === 'string'
+    && (m.toolCalls === undefined || (Array.isArray(m.toolCalls) && m.toolCalls.every((call) =>
+      call && typeof call.id === 'string' && typeof call.name === 'string' && typeof call.argsJson === 'string')))
+}
+
+function readSessionState(text: string): { meta?: SessionMeta; messages: DeepMessage[] } {
+  let meta: SessionMeta | undefined
+  let messages: DeepMessage[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const obj = JSON.parse(line)
+      if (obj?.type === 'meta' && typeof obj.id === 'string' && typeof obj.cwd === 'string'
+        && typeof obj.createdAt === 'string') meta = obj
+      else if (obj?.type === 'message' && isMessage(obj.message)) messages.push(obj.message)
+      else if (obj?.type === 'snapshot' && Array.isArray(obj.messages) && obj.messages.every(isMessage)) {
+        messages = obj.messages
+      }
+    } catch {
+      // 单条日志损坏不应吞掉后续有效消息，也不应让整个会话从恢复列表消失。
+    }
+  }
+  return { meta, messages }
 }
 
 // 会话摘要信息（用于 /resume 列表展示）。
@@ -222,28 +273,10 @@ export function listSessions(limit = 20): SessionSummary[] {
     const path = join(dir, file)
     try {
       const mtime = statSync(path).mtimeMs
-      const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim())
-      if (lines.length === 0) continue
-
-      const meta = JSON.parse(lines[0]) as SessionMeta
-      if (meta.type !== 'meta') continue
-
-      // 找首条用户消息作为标题预览。
-      let firstUserText = '(无内容)'
-      let messageCount = 0
-      for (let i = 1; i < lines.length; i++) {
-        const obj = JSON.parse(lines[i])
-        if (obj.type === 'message') {
-          messageCount++
-          if (
-            obj.message.role === 'user' &&
-            firstUserText === '(无内容)' &&
-            obj.message.content
-          ) {
-            firstUserText = String(obj.message.content).slice(0, 60)
-          }
-        }
-      }
+      const { meta, messages } = readSessionState(readFileSync(path, 'utf8'))
+      if (!meta || `${meta.id}.jsonl` !== file || !/^[a-zA-Z0-9_-]+$/.test(meta.id)) continue
+      const firstUserText = messages.find((m) => m.role === 'user' && m.content)?.content.slice(0, 60) ?? '(无内容)'
+      const messageCount = messages.length
 
       summaries.push({
         id: meta.id,
@@ -268,9 +301,10 @@ export function listSessions(limit = 20): SessionSummary[] {
  * @returns 会话 id；没有则返回 null。
  */
 export function getLatestSessionId(cwd: string): string | null {
-  const sessions = listSessions(100)
-  const normalizedCwd = normalize(cwd)
+  const sessions = listSessions(Number.POSITIVE_INFINITY)
+  const normalizeCwd = (value: string) => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value)
+  const normalizedCwd = normalizeCwd(cwd)
   // 仅匹配同一工作目录的会话；无匹配时不应回退到其他项目的会话。
-  const sameCwd = sessions.find((s) => normalize(s.cwd) === normalizedCwd)
+  const sameCwd = sessions.find((s) => normalizeCwd(s.cwd) === normalizedCwd)
   return sameCwd?.id ?? null
 }

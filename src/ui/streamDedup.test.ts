@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { StreamCommitter } from './streamCommit.js'
 import { applyStreamContentDelta } from '../providers/streamDelta.js'
 import { makeEventKey, isEventDuplicate } from './eventKey.js'
+import type { AgentRunEvent } from '../core/types.js'
 
 // ============================================================================
 // 辅助：模拟一个简化的流式处理器，追踪"已提交到 Static"的块内容。
@@ -371,10 +372,39 @@ describe('Bug 1 修复验证：makeEventKey 幂等去重键', () => {
     expect(makeEventKey(ev1)).not.toBe(makeEventKey(ev2))
   })
 
-  it('相同 assistant_message 只生成相同 key（按 message.timestamp）', () => {
+  it('同一 iteration 的 assistant_message 重放仍生成相同 key', () => {
     const ev1 = { type: 'assistant_message' as const, runId: 'r1', turnId: 't1', iteration: 0, timestamp: 1, message: { role: 'assistant' as const, content: 'hi', timestamp: 1000 } }
     const ev2 = { type: 'assistant_message' as const, runId: 'r1', turnId: 't1', iteration: 0, timestamp: 2, message: { role: 'assistant' as const, content: 'hi', timestamp: 1000 } }
     expect(makeEventKey(ev1)).toBe(makeEventKey(ev2))
+  })
+
+  it.each([undefined, 1000])('消息时间戳为 %s 时不同 iteration 的尾巴各提交一次', (timestamp) => {
+    const committer = new StreamCommitter(true)
+    const processed = new Set<string>()
+    const committed: string[] = []
+    const context = { runId: 'r1', turnId: 't1', timestamp: 1000 }
+    for (const [iteration, content] of ['工具之前', '最终回答'].entries()) {
+      const done: AgentRunEvent = {
+        ...context, type: 'assistant_message', iteration,
+        message: { role: 'assistant', content, timestamp },
+      }
+      const events: AgentRunEvent[] = [
+        { ...context, type: 'text_delta', iteration, delta: content },
+        done,
+        { ...done, timestamp: 1001 },
+      ]
+      for (const event of events) {
+        const key = makeEventKey(event)
+        if (isEventDuplicate(key, processed)) continue
+        if (key !== null) processed.add(key)
+        const chunks = event.type === 'text_delta'
+          ? committer.onText(event.delta)
+          : committer.onDone()
+        committed.push(...chunks.filter((chunk) => !chunk.spacer).map((chunk) => chunk.text))
+      }
+    }
+    expect(committed).toEqual(['工具之前', '最终回答'])
+    expect(committer.liveText).toBe('')
   })
 
   it('tool_message 按 toolCallId 去重', () => {

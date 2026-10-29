@@ -8,6 +8,7 @@ import { COMPACT_TOKEN_THRESHOLD } from '../constants.js'
 import { getCompactThreshold } from '../providers/contextWindow.js'
 import type { LLMClient } from '../providers/types.js'
 import type { DeepMessage } from './types.js'
+import { trimHistoryForRequest } from './historyTrim.js'
 
 // 压缩时保留的最近消息条数（不参与摘要，原样保留）。
 const KEEP_RECENT = 6
@@ -105,11 +106,23 @@ export function shouldCompact(
   return estimateMessagesTokens(messages) > threshold
 }
 
+/** 是否存在可摘要的旧消息组；大工具组必须完整留在最近历史中。 */
+export function canCompactMessages(messages: DeepMessage[]): boolean {
+  return getCompactPartition(messages) !== null
+}
+
+function getCompactPartition(messages: DeepMessage[]): [DeepMessage[][], DeepMessage[][]] | null {
+  const convo = messages.filter((m) => !(m.role === 'system' && m.metadata?.kind !== 'summary'))
+  if (convo.length <= KEEP_RECENT + 2) return null
+  const partition = partitionGroupsForCompact(splitConversationGroups(convo), KEEP_RECENT)
+  return partition[0].length ? partition : null
+}
+
 /**
  * 对消息历史执行压缩。
  * 流程：分离出 system 消息与最近 KEEP_RECENT 条消息，把中间的历史请模型总结为要点，
- * 然后重组为 [system, 摘要(user), ...最近消息]。
- * 若历史过短或压缩失败，原样返回。
+ * 然后重组为 [system, 摘要(system), ...最近消息]。
+ * 若历史过短、摘要未完整完成、取消或没有释放空间，原样返回。
  * @param client LLM 客户端。
  * @param messages 原始消息历史。
  * @param model 用于摘要的模型名。
@@ -121,28 +134,27 @@ export async function compactMessages(
   model: string,
   abortSignal?: AbortSignal,
 ): Promise<DeepMessage[]> {
+  if (abortSignal?.aborted) return messages
+  // 与 canCompactMessages 共用完整分组判定，调用方可以避免虚假的压缩开始提示。
+  const partition = getCompactPartition(messages)
+  if (!partition) return messages
   // 拆出真正的系统提示（始终保留在最前）。旧摘要会作为历史输入重新压缩，
   // 避免多次 compact 后堆叠多条 summary system 消息。
   const systemMsgs = messages.filter(
     (m) => m.role === 'system' && m.metadata?.kind !== 'summary',
   )
-  const convo = messages.filter(
-    (m) => !(m.role === 'system' && m.metadata?.kind !== 'summary'),
-  )
-
-  // 历史太短没必要压缩。
-  if (convo.length <= KEEP_RECENT + 2) return messages
-
   // 按完整消息组划分，避免 assistant+tool_calls 与 tool 结果被拆到不同段。
-  const groups = splitConversationGroups(convo)
-  const [summarizeGroups, keptGroups] = partitionGroupsForCompact(groups, KEEP_RECENT)
-  if (summarizeGroups.length === 0) return messages
+  const [summarizeGroups, keptGroups] = partition
 
   const toSummarize = summarizeGroups.flat()
   const recent = keptGroups.flat()
 
-  // 将待摘要消息拼成纯文本喂给模型。
-  const transcript = toSummarize
+  // 摘要请求也使用发送视图，避免旧工具巨量原文在压缩请求里重新撑满窗口。
+  // 仅替换摘要输入，保留段与原始历史仍引用完整消息。
+  const summaryInput = trimHistoryForRequest(messages)
+    .filter((m) => !(m.role === 'system' && m.metadata?.kind !== 'summary'))
+    .slice(0, toSummarize.length)
+  const transcript = summaryInput
     .map((m) => {
       if (m.role === 'assistant' && m.toolCalls?.length) {
         const calls = m.toolCalls.map((t) => `调用工具 ${t.name}(${t.argsJson})`).join('；')
@@ -170,8 +182,9 @@ export async function compactMessages(
   ]
 
   try {
-    // 收集模型流式输出，组装为摘要文本。
-    let summary = ''
+    // 只接受完成事件里的完整摘要。增量可能因断流或 token 上限缺失关键结尾，
+    // 不能用已经收到的文本兜底覆盖用户历史。
+    let summary: string | null = null
     for await (const ev of client.streamChat({
       messages: summaryPrompt,
       tools: [],
@@ -180,9 +193,16 @@ export async function compactMessages(
       thinking: 'disabled',
       abortSignal,
     })) {
-      if (ev.type === 'text') summary += ev.delta
-      if (ev.type === 'done') summary = ev.message.content || summary
+      if (abortSignal?.aborted) return messages
+      if (ev.type === 'done') {
+        if (
+          summary !== null || ev.finishReason !== 'stop' ||
+          ev.message.role !== 'assistant' || ev.message.toolCalls?.length
+        ) return messages
+        summary = ev.message.content.trim()
+      }
     }
+    if (abortSignal?.aborted || !summary) return messages
 
     // 组装压缩后的历史。
     const summaryMsg: DeepMessage = {
@@ -191,7 +211,14 @@ export async function compactMessages(
       timestamp: Date.now(),
       metadata: { kind: 'summary', source: 'system' },
     }
-    return [...systemMsgs, summaryMsg, ...recent]
+    const compacted = [...systemMsgs, summaryMsg, ...recent]
+    // 摘要也有提示前缀成本；按实际发送视图比较，避免旧工具原文虽然变短，
+    // 生成的摘要却比原先已瘦身的输入更大，反而挤占上下文。
+    if (
+      estimateMessagesTokens(trimHistoryForRequest(compacted)) >=
+      estimateMessagesTokens(trimHistoryForRequest(messages))
+    ) return messages
+    return compacted
   } catch {
     // 压缩失败则保持原状，保证可用性优先。
     return messages

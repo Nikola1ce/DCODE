@@ -259,7 +259,7 @@ export class OpenAICompatibleClient implements LLMClient {
           { id: string; name: string; args: string }
         >()
         let usage: DeepSeekUsage | undefined
-        let finishReason = 'stop'
+        let finishReason: string | undefined
 
         let providerSeq = 0
         for await (const chunk of stream) {
@@ -374,6 +374,13 @@ export class OpenAICompatibleClient implements LLMClient {
               toolAccum.set(idx, cur)
             }
           }
+        }
+
+        // SDK 在 SSE 正常 EOF（甚至部分取消）时可直接结束迭代。
+        // 只有明确的 finish_reason 才能证明本轮输出结束，不能把断流默认当作 stop。
+        if (abortSignal?.aborted) throw new Error('已取消请求')
+        if (!finishReason) {
+          throw new Error('流式连接提前结束，未收到完成标记（finish_reason）。本轮输出可能不完整，请重试或继续。')
         }
 
         const toolCalls: ToolCall[] = [...toolAccum.entries()]

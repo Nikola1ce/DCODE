@@ -3,6 +3,7 @@
 // UI/headless 继续通过 Agent.runTurn 的兼容适配器消费旧 TurnHandlers。
 
 import { randomUUID } from 'node:crypto'
+import type { ChatCompletionTool } from 'openai/resources/chat/completions'
 import { MAX_AGENT_ITERATIONS } from '../constants.js'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { calcCost } from '../deepseek/pricing.js'
@@ -11,9 +12,10 @@ import {
   getAvailableTools,
   toOpenAITools,
 } from '../tools/index.js'
-import { compactMessages, shouldCompact } from './compact.js'
+import { canCompactMessages, compactMessages } from './compact.js'
+import { estimateRequestTokens } from './contextUsage.js'
 import { trimHistoryForRequest } from './historyTrim.js'
-import { resolveContextWindow } from '../providers/contextWindow.js'
+import { getCompactThreshold, resolveContextWindow } from '../providers/contextWindow.js'
 import { executeToolBatch } from './toolScheduler.js'
 import { traceEvent, traceTextFields } from '../trace.js'
 import type {
@@ -53,6 +55,8 @@ export class AgentRunner {
   private readonly opts: AgentRunnerOptions
   private readonly runId: string
   private readonly turnId: string
+  // 本轮压缩失败或没有收益后不反复消耗请求；下一次用户输入可重新尝试。
+  private compactUnavailable = false
 
   constructor(opts: AgentRunnerOptions) {
     this.opts = opts
@@ -86,10 +90,13 @@ export class AgentRunner {
         return
       }
 
-      yield* this.compactIfNeeded(iter)
-
       const availableTools = this.resolveAvailableTools()
       const apiTools = toOpenAITools(availableTools)
+      yield* this.compactIfNeeded(iter, apiTools)
+      if (this.opts.abortSignal.aborted) {
+        yield this.event('run_end', { timestamp: Date.now(), iterations: iter, reason: 'aborted' })
+        return
+      }
       yield this.event('llm_start', {
         timestamp: Date.now(),
         iteration: iter,
@@ -99,6 +106,8 @@ export class AgentRunner {
 
       let assistantMsg: DeepMessage | null = null
       let finishReason = 'stop'
+      let streamedText = ''
+      let streamedReasoning = ''
       const llmStartedAt = Date.now()
       // 发送前对历史副本做「瘦身」：截断滚出最近窗口的超大旧工具结果，降低每轮输入 token。
       // 纯函数变换，不修改 this.messages，磁盘会话记录与 /resume 仍保留完整原文。
@@ -118,12 +127,14 @@ export class AgentRunner {
           },
         })) {
           if (ev.type === 'reasoning') {
+            streamedReasoning += ev.delta
             yield this.event('reasoning_delta', {
               timestamp: Date.now(),
               iteration: iter,
               delta: ev.delta,
             })
           } else if (ev.type === 'text') {
+            streamedText += ev.delta
             yield this.event('text_delta', {
               timestamp: Date.now(),
               iteration: iter,
@@ -147,22 +158,33 @@ export class AgentRunner {
             })
           }
         }
+        // 流结束不代表回答完成：代理网关可能直接关闭连接，或模型达到输出上限。
+        // 必须先校验终态，再把工具调用写入历史并执行，避免留下无法配对的 tool_calls。
+        if (this.opts.abortSignal.aborted) {
+          yield* this.preservePartialMessage(assistantMsg, streamedText, streamedReasoning, iter)
+          yield this.event('run_end', {
+            timestamp: Date.now(), iterations: iter + 1, reason: 'aborted',
+          })
+          return
+        }
+        if (!assistantMsg) throw new Error('模型连接提前结束，未收到完成事件。请重试或输入“继续”。')
+        const completionError = getCompletionError(assistantMsg, finishReason)
+        if (completionError) throw new Error(completionError)
       } catch (e: any) {
+        // 已经显示的正文也进入可恢复历史；丢弃未确认完整的工具调用及 Responses 输出项。
+        yield* this.preservePartialMessage(assistantMsg, streamedText, streamedReasoning, iter)
+        if (this.opts.abortSignal.aborted) {
+          yield this.event('run_end', {
+            timestamp: Date.now(), iterations: iter + 1, reason: 'aborted',
+          })
+          return
+        }
         yield this.event('run_error', {
           timestamp: Date.now(),
           iteration: iter,
           error: e?.message ?? String(e),
         })
         throw e
-      }
-
-      if (!assistantMsg) {
-        yield this.event('run_end', {
-          timestamp: Date.now(),
-          iterations: iter + 1,
-          reason: this.opts.abortSignal.aborted ? 'aborted' : 'final',
-        })
-        return
       }
 
       assistantMsg.metadata = {
@@ -266,7 +288,28 @@ export class AgentRunner {
     })
   }
 
-  private async *compactIfNeeded(iteration: number): AsyncGenerator<AgentRunEvent> {
+  private *preservePartialMessage(
+    message: DeepMessage | null,
+    streamedText: string,
+    streamedReasoning: string,
+    iteration: number,
+  ): Generator<AgentRunEvent> {
+    const content = message?.content || streamedText
+    if (!content.trim()) return
+    const partial: DeepMessage = {
+      role: 'assistant',
+      content,
+      reasoning: message?.reasoning || streamedReasoning || undefined,
+      timestamp: Date.now(),
+      metadata: { source: 'model' },
+    }
+    this.opts.appendMessage(partial)
+    yield this.event('assistant_message', {
+      timestamp: Date.now(), iteration, message: partial,
+    })
+  }
+
+  private async *compactIfNeeded(iteration: number, tools: ChatCompletionTool[]): AsyncGenerator<AgentRunEvent> {
     const messages = this.opts.getMessages()
     // 压缩阈值随「当前生效模型最大上下文长度 × 90%」动态变化：
     // 解析当前 Provider + 模型 + 用户选定档位（modelContextOverrides）得到生效窗口，再据此判断是否压缩。
@@ -275,11 +318,15 @@ export class AgentRunner {
       this.opts.model,
       this.opts.config.modelContextOverrides,
     )
-    if (!shouldCompact(messages, contextWindow)) return
+    const usedTokens = estimateRequestTokens(messages, tools)
+    const threshold = getCompactThreshold(contextWindow)
+    if (this.compactUnavailable || usedTokens <= threshold || !canCompactMessages(messages)) return
+    const beforeCount = messages.length
     yield this.event('compact_start', {
       timestamp: Date.now(),
       iteration,
       messageCount: messages.length,
+      usedTokens, threshold, contextWindow,
     })
     const compacted = await compactMessages(
       this.opts.client,
@@ -287,12 +334,15 @@ export class AgentRunner {
       this.opts.model,
       this.opts.abortSignal,
     )
-    this.opts.setMessages(compacted)
+    const applied = compacted !== messages
+    if (applied) this.opts.setMessages(compacted)
+    else this.compactUnavailable = true
     yield this.event('compact_end', {
       timestamp: Date.now(),
       iteration,
-      beforeCount: messages.length,
+      beforeCount,
       afterCount: compacted.length,
+      applied,
     })
   }
 
@@ -338,6 +388,23 @@ export class AgentRunner {
     traceRunnerEvent(event)
     return event
   }
+}
+
+function getCompletionError(message: DeepMessage, finishReason: string): string | null {
+  if (finishReason === 'length') {
+    return '模型达到本次输出长度上限，回答或工具参数尚未完成。未执行本次工具调用，可输入“继续”重试。'
+  }
+  if (finishReason === 'content_filter') {
+    return '模型输出被供应商内容过滤器中止（content_filter），本轮未完成。请调整请求后重试。'
+  }
+  if (finishReason !== 'stop' && finishReason !== 'tool_calls') {
+    return `模型返回非正常结束原因（${finishReason || 'unknown'}），本轮未完成。请重试。`
+  }
+  if (!message.toolCalls?.length) {
+    if (finishReason === 'tool_calls') return '模型声明要调用工具，但未返回工具调用。本轮未完成，请重试。'
+    if (!message.content.trim()) return '模型未返回正文或工具调用，本轮未完成。请重试或调整模型。'
+  }
+  return null
 }
 
 function traceRunnerEvent(event: AgentRunEvent): void {

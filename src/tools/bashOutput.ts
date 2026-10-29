@@ -50,14 +50,16 @@ export const bashOutputTool: ToolDefinition = {
    * @param input 入参。
    * @returns 工具结果。
    */
-  run: async (input: BashOutputInput): Promise<ToolResult> => {
+  run: async (input: BashOutputInput, ctx): Promise<ToolResult> => {
+    if (ctx.abortSignal.aborted) return { llmContent: '操作已取消。', isError: true }
     const id = input.shell_id?.trim()
     if (!id) {
       return { llmContent: '错误：shell_id 不能为空。', isError: true }
     }
 
     const blockMs = input.block_until_ms ?? DEFAULT_BASH_OUTPUT_BLOCK_MS
-    const snap = await shellManager.getOutput(id, blockMs, { tail: input.tail })
+    const snap = await shellManager.getOutput(id, blockMs, { tail: input.tail, abortSignal: ctx.abortSignal })
+    if (ctx.abortSignal.aborted) return { llmContent: '等待后台输出已取消，后台任务仍可继续查询。', isError: true }
 
     return {
       llmContent: snap.formatted,

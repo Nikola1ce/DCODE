@@ -18,7 +18,7 @@ export interface HeadlessOptions {
  * @param agent Agent 实例。
  * @param prompt 用户任务文本。
  * @param options 执行选项。
- * @returns 退出码（0 成功，1 失败）。
+ * @returns 退出码（0 成功，1 失败，130 用户中断）。
  */
 export async function runHeadless(
   agent: Agent,
@@ -34,14 +34,18 @@ export async function runHeadless(
     return 'deny'
   }
 
-  // 无头模式不响应键盘中断信号到 abort（保持简单）；仍提供一个未触发的控制器。
+  // SIGINT 与 Agent 的 aborted 终态都属于中断，不能作为成功交付给脚本/CI。
   const ac = new AbortController()
+  let interrupted = false
   // 支持 Ctrl+C 中断。
   const onSigint = () => ac.abort()
   process.on('SIGINT', onSigint)
 
   try {
     await agent.runTurn(prompt, {
+      onEvent: (event) => {
+        if (event.type === 'run_end' && event.reason === 'aborted') interrupted = true
+      },
       // 正文直接流式打印到 stdout。
       onText: (d) => process.stdout.write(d),
       // 工具调用信息打印到 stderr，不污染 stdout 的结果。
@@ -65,8 +69,16 @@ export async function runHeadless(
     }
     const cpHint = getCheckpointExitHint(agent.cwd)
     if (cpHint) process.stderr.write(cpHint + '\n')
+    if (interrupted || ac.signal.aborted) {
+      process.stderr.write('[已中断]\n')
+      return 130
+    }
     return 0
   } catch (e: any) {
+    if (interrupted || ac.signal.aborted) {
+      process.stderr.write('\n[已中断]\n')
+      return 130
+    }
     process.stderr.write(`\n错误：${e?.message ?? String(e)}\n`)
     return 1
   } finally {

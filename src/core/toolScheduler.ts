@@ -116,11 +116,18 @@ async function executeOne(
     const startedAt = Date.now()
     const localCtx: ToolContext = {
       ...opts.baseCtx,
+      abortSignal: opts.abortSignal,
       onProgress: (text) =>
         opts.callbacks?.onToolProgress?.({ id: call.id, text }),
     }
 
-    const executed = await executeToolCall(call, localCtx)
+    // 工具集合也是执行边界，不能仅用于生成 schema / 决定并行策略。
+    const executed: ExecutedToolResult = tool
+      ? await executeToolCall(call, localCtx)
+      : { toolCallId: call.id, toolName: call.name, result: {
+        llmContent: `错误：工具 "${call.name}" 在当前运行中不可用。请只使用已提供的工具。`,
+        isError: true,
+      } }
     opts.callbacks?.onToolEnd?.({
       id: call.id,
       name: call.name,

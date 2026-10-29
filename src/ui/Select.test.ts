@@ -9,6 +9,22 @@ import { makeEventKey } from './eventKey.js'
 afterEach(cleanup)
 const tick = () => new Promise((resolve) => setTimeout(resolve, 30))
 describe('Select', () => {
+  it('显式高度预算优先于 Ink 代理尺寸，窄窗口翻页后仍显示当前选项', async () => {
+    const onSelect = vi.fn()
+    const options = Array.from({ length: 24 }, (_, i) => ({ value: `m${i}`, label: `模型-${i}`, hint: '模型说明' }))
+    const view = render(React.createElement(Select<string>, { maxRows: 5, title: '选择模型', options, selectedValue: 'm17', onSelect, onCancel() {} }))
+    Object.defineProperty(view.stdout, 'columns', { configurable: true, value: 24 })
+    view.stdout.emit('resize')
+    await tick()
+    expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(5)
+    expect(view.lastFrame()).toContain('模型-17')
+    view.stdin.write('\u001b[6~')
+    await tick()
+    expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(5)
+    view.stdin.write('\r')
+    await tick()
+    expect(onSelect).toHaveBeenCalledWith('m20')
+  })
   it('空菜单回车不抛异常，Esc 仍可退出', async () => {
     const onSelect = vi.fn(), onCancel = vi.fn()
     const view = render(React.createElement(Select<string>, { title: '模型', options: [], onSelect, onCancel }))

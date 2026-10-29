@@ -18,6 +18,8 @@ export interface SelectOption<T> {
 
 // 组件入参。
 interface SelectProps<T> {
+  // 父级按真实终端尺寸分配的动态区高度，避免使用“不清屏”代理放大的 rows。
+  maxRows?: number
   // 标题。
   title: string
   // 选项列表。
@@ -36,6 +38,7 @@ interface SelectProps<T> {
  * @returns 菜单 JSX。
  */
 export function Select<T>({
+  maxRows,
   title,
   options,
   selectedValue,
@@ -53,7 +56,9 @@ export function Select<T>({
     return () => { stdout.off('resize', resize) }
   }, [stdout])
   const activeIndex = Math.min(index, Math.max(0, options.length - 1))
-  const pageSize = Math.max(1, Math.min(8, rows - 10))
+  const budget = maxRows ?? Math.max(3, rows - 1)
+  const compact = budget < 9
+  const pageSize = Math.max(1, Math.min(8, budget - (compact ? 2 : 7)))
   const start = Math.floor(activeIndex / pageSize) * pageSize
   const visible = options.slice(start, start + pageSize)
 
@@ -99,15 +104,15 @@ export function Select<T>({
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
+      borderStyle={compact ? undefined : 'round'}
       borderColor={theme.primary}
-      paddingX={1}
+      paddingX={compact ? 0 : 1}
     >
-      <Text color={theme.primary} bold>
+      <Text color={theme.primary} bold wrap="truncate">
         {title}{options.length ? ` · ${activeIndex + 1}/${options.length}` : ''}
       </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {!options.length ? <Text color={theme.dim}>暂无可选项，按 Esc 返回</Text> : null}
+      <Box flexDirection="column" marginTop={compact ? 0 : 1}>
+        {!options.length ? <Text color={theme.dim} wrap="truncate">暂无可选项，按 Esc 返回</Text> : null}
         {visible.map((opt, i) => {
           const selected = start + i === activeIndex
           return (
@@ -120,8 +125,8 @@ export function Select<T>({
           )
         })}
       </Box>
-      {options[activeIndex]?.hint ? <Text color={theme.dim} wrap="truncate-end">{options[activeIndex].hint}</Text> : null}
-      <Box marginTop={1}>
+      {!compact && options[activeIndex]?.hint ? <Text color={theme.dim} wrap="truncate-end">{options[activeIndex].hint}</Text> : null}
+      <Box marginTop={compact ? 0 : 1}>
         <Text color={theme.dim} wrap="truncate-end">↑/↓ 选择 · PgUp/PgDn 翻页 · 数字选本页 · Enter 确认 · Esc 返回</Text>
       </Box>
     </Box>

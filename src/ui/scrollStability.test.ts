@@ -58,7 +58,7 @@ describe('Bug 2 修复验证：滚动容器结构稳定性', () => {
     expect(mainBoxStart).toBeLessThan(mainBoxEnd)
 
     const mainBoxContent = source.slice(mainBoxStart, mainBoxEnd + 6)
-    expect(mainBoxContent).toContain('<Static items={items}>')
+    expect(mainBoxContent).toContain('<Static key={historyVersion} items={items}>')
     expect(mainBoxContent).toContain('<TodoPanel')
     expect(mainBoxContent).toContain('<BackgroundShellPanel')
   })

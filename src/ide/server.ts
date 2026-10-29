@@ -155,6 +155,7 @@ export class IdeServer {
    * @param msg 已解码的客户端消息。
    */
   private async handleClientMessage(msg: ClientMessage): Promise<void> {
+    if (this.closed) return
     try {
       switch (msg.type) {
         case 'prompt':
@@ -241,6 +242,7 @@ export class IdeServer {
     // 累计本轮成本（来自每次 llm_done 的 costUsd）。
     let costUsd = 0
     let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined
+    let terminal: Extract<ServerMessage, { type: 'turn_done' | 'turn_error' }> | undefined
 
     try {
       await this.agent.runTurn(finalText, {
@@ -248,29 +250,41 @@ export class IdeServer {
         // 权限请求：转为 IPC 往返，等待客户端弹窗决策。
         requestPermission: (req) => this.requestPermissionViaIpc(requestId, req),
         // 直接消费结构化事件，逐一转换为协议消息（比旧回调更完整）。
-        onEvent: (ev) => this.forwardRunEvent(requestId, ev, (c, u) => {
-          costUsd += c
-          if (u) usage = u
-        }),
+        onEvent: (ev) => {
+          if (terminal) return
+          if (ev.type === 'run_end') {
+            terminal = { type: 'turn_done', requestId, reason: ev.reason, costUsd, usage }
+          } else if (ev.type === 'run_error') {
+            terminal = { type: 'turn_error', requestId, message: ev.error }
+          } else {
+            this.forwardRunEvent(requestId, ev, (c, u) => {
+              costUsd += c
+              if (u) usage = {
+                promptTokens: (usage?.promptTokens ?? 0) + (u.promptTokens ?? 0),
+                completionTokens: (usage?.completionTokens ?? 0) + (u.completionTokens ?? 0),
+                totalTokens: (usage?.totalTokens ?? 0) + (u.totalTokens ?? 0),
+              }
+            })
+          }
+        },
       })
-      // runTurn 内部已通过 run_end 事件驱动 forwardRunEvent 发送 turn_done；
-      // 但 run_end 是在 onEvent 中处理的，这里无需重复发送。仅兜底：若未发送过结束帧则补发。
-      if (this.activeRequestId === requestId && !ac.signal.aborted) {
-        // 正常情况下 turn_done 已在 run_end 分支发出，这里不再补发，避免重复。
+      if (!terminal) {
+        terminal = ac.signal.aborted
+          ? { type: 'turn_done', requestId, reason: 'aborted', costUsd, usage }
+          : { type: 'turn_error', requestId, message: '代理运行结束，但未收到完成事件；本轮输出可能不完整。' }
       }
     } catch (e: any) {
-      this.send({
-        type: 'turn_error',
-        requestId,
-        message: e?.message ?? String(e),
-      })
+      // Runner 可先发送 run_error 再抛同一异常，整个轮次只能有一个结束帧。
+      terminal = ac.signal.aborted
+        ? { type: 'turn_done', requestId, reason: 'aborted', costUsd, usage }
+        : { type: 'turn_error', requestId, message: e?.message ?? String(e) }
     } finally {
       // 清理本轮状态；若有未回执的权限请求，按拒绝处理避免悬挂。
-      void costUsd
-      void usage
       this.failPendingPermissions()
       this.activeRequestId = null
       this.activeAbort = null
+      // 先释放串行槽，再通知客户端结束，收到结束帧后立即发下一轮也不会误报忙碌。
+      if (terminal) this.send(terminal)
     }
   }
 
@@ -334,24 +348,6 @@ export class IdeServer {
           onUsage(ev.costUsd ?? 0)
         }
         break
-      case 'run_end':
-        // 一轮结束：发送 turn_done（携带累计成本/用量需在外部聚合，这里读取 agent.usage 兜底）。
-        this.send({
-          type: 'turn_done',
-          requestId,
-          reason: ev.reason,
-          costUsd: this.agent.usage.costUsd,
-          usage: {
-            promptTokens: this.agent.usage.inputTokens,
-            completionTokens: this.agent.usage.outputTokens,
-            totalTokens:
-              this.agent.usage.inputTokens + this.agent.usage.outputTokens,
-          },
-        })
-        break
-      case 'run_error':
-        this.send({ type: 'turn_error', requestId, message: ev.error })
-        break
       default:
         // 其余事件（run_start/turn_start/llm_start/compact_* 等）当前客户端无需感知，忽略。
         break
@@ -368,6 +364,9 @@ export class IdeServer {
     requestId: string,
     req: PermissionRequest,
   ): Promise<PermissionDecision> {
+    if (this.closed || this.activeRequestId !== requestId || this.activeAbort?.signal.aborted) {
+      return Promise.resolve('deny')
+    }
     return new Promise<PermissionDecision>((resolve) => {
       const permissionId = randomUUID()
       this.pendingPermissions.set(permissionId, resolve)

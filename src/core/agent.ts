@@ -13,6 +13,8 @@ import type { DeepSeekUsage, UsageTotals } from '../deepseek/pricing.js'
 import { accumulateUsage, emptyUsageTotals } from '../deepseek/pricing.js'
 import { buildSystemPrompt } from './systemPrompt.js'
 import { compactMessages } from './compact.js'
+import { estimateRequestTokens } from './contextUsage.js'
+import { getAvailableTools, toOpenAITools } from '../tools/index.js'
 import type { SkillDefinition } from './skills.js'
 import { loadSkillByName } from './skills.js'
 import {
@@ -101,7 +103,11 @@ export class Agent {
 
     // 初始化消息历史：若有历史则沿用，否则以 system 提示开场。
     if (opts.initialMessages && opts.initialMessages.length > 0) {
-      this.messages = opts.initialMessages
+      this.messages = [...opts.initialMessages]
+      // 普通会话日志通常只有 user/assistant；恢复时仍须补齐工具与工作区系统指令。
+      if (!this.messages.some((m) => m.role === 'system' && m.metadata?.kind !== 'summary')) {
+        this.refreshSystemPrompt()
+      }
     } else {
       this.messages = [
         {
@@ -121,6 +127,11 @@ export class Agent {
   /** 获取当前模型名。 */
   getModel(): string {
     return this.config.model
+  }
+
+  /** 与运行器共用发送视图和工具定义估算，避免状态栏与自动压缩各算一套。 */
+  getContextTokens(): number {
+    return estimateRequestTokens(this.messages, toOpenAITools(getAvailableTools(this.permissionMode)))
   }
 
   /**
@@ -313,7 +324,7 @@ export class Agent {
    * @param messages 要载入的历史消息（通常来自磁盘，可能不含 system）。
    */
   replaceMessages(messages: DeepMessage[]): void {
-    const hasSystem = messages.some((m) => m.role === 'system')
+    const hasSystem = messages.some((m) => m.role === 'system' && m.metadata?.kind !== 'summary')
     if (hasSystem) {
       this.messages = [...messages]
     } else {
@@ -330,12 +341,15 @@ export class Agent {
       }
       this.messages = [sys, ...messages]
     }
+    this.todos = []
+    this.recorder?.replaceMessages(this.messages)
   }
 
   /** 重置对话（保留 system），用于 /clear。 */
   clear(): void {
     this.messages = this.messages.filter((m) => m.role === 'system').slice(0, 1)
     this.todos = []
+    this.recorder?.replaceMessages(this.messages)
   }
 
   /**
@@ -352,7 +366,7 @@ export class Agent {
         extraDirs: this.extraDirs,
       }),
     }
-    if (this.messages[0]?.role === 'system') this.messages[0] = sys
+    if (this.messages[0]?.role === 'system' && this.messages[0].metadata?.kind !== 'summary') this.messages[0] = sys
     else this.messages.unshift(sys)
   }
 
@@ -362,11 +376,14 @@ export class Agent {
    */
   async compactNow(): Promise<string> {
     const before = this.messages.length
-    this.messages = await compactMessages(
+    const compacted = await compactMessages(
       this.client,
       this.messages,
       this.config.model,
     )
+    if (compacted === this.messages) return '未应用压缩：没有可压缩的旧历史，或摘要未完成、未节省上下文。原历史已保留。'
+    this.messages = compacted
+    this.recorder?.replaceMessages(this.messages)
     return `已压缩上下文：消息条数 ${before} → ${this.messages.length}。`
   }
 
@@ -389,6 +406,7 @@ export class Agent {
       getMessages: () => this.messages,
       setMessages: (messages) => {
         this.messages = messages
+        this.recorder?.replaceMessages(messages)
       },
       appendMessage: (message) => {
         this.messages.push(message)
@@ -403,8 +421,8 @@ export class Agent {
 
     for await (const event of runner.run()) {
       this.recorder?.appendEvent(event)
-      handlers.onEvent?.(event)
       this.handleRunEventForCompatibility(event, handlers)
+      handlers.onEvent?.(event)
     }
   }
 

@@ -6,6 +6,7 @@
 import type { ChatCompletionTool } from 'openai/resources/chat/completions'
 import type {
   PermissionDecision,
+  PermissionRequest,
   ToolCall,
   ToolContext,
   ToolDefinition,
@@ -132,6 +133,11 @@ export async function executeToolCall(
   call: ToolCall,
   ctx: ToolContext,
 ): Promise<ExecutedToolResult> {
+  const cancelled = (): ExecutedToolResult => ({
+    toolCallId: call.id, toolName: call.name,
+    result: { llmContent: '操作已取消。', isError: true },
+  })
+  if (ctx.abortSignal.aborted) return cancelled()
   const tool = getTool(call.name)
   // 未知工具：直接返回错误，提示模型使用已注册工具。
   if (!tool) {
@@ -205,9 +211,11 @@ export async function executeToolCall(
 
   // 权限门控：若工具声明需要授权，则发起权限请求。
   try {
+    if (ctx.abortSignal.aborted) return cancelled()
     const permReq = tool.checkPermission?.(input, ctx) ?? null
     if (permReq) {
-      const decision: PermissionDecision = await ctx.requestPermission(permReq)
+      const decision = await requestPermissionUntilAbort(permReq, ctx)
+      if (ctx.abortSignal.aborted) return cancelled()
       if (decision === 'deny') {
         return {
           toolCallId: call.id,
@@ -230,6 +238,7 @@ export async function executeToolCall(
 
   // 真正执行工具，捕获运行期异常；PostToolUse 钩子可校验或改写结果。
   try {
+    if (ctx.abortSignal.aborted) return cancelled()
     let result = await tool.run(input, ctx)
     if (hookMgr && ctx.config.hooksEnabled !== false) {
       try {
@@ -257,4 +266,16 @@ export async function executeToolCall(
       result: { llmContent: `工具执行出错：${e.message}`, isError: true },
     }
   }
+}
+
+/** 授权等待可被取消；晚到的允许结果不能再触发工具执行。 */
+function requestPermissionUntilAbort(req: PermissionRequest, ctx: ToolContext): Promise<PermissionDecision> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve('deny')
+    if (ctx.abortSignal.aborted) return onAbort()
+    ctx.abortSignal.addEventListener('abort', onAbort, { once: true })
+    Promise.resolve().then(() => ctx.abortSignal.aborted ? 'deny' as const : ctx.requestPermission(req))
+      .then(resolve, reject)
+      .finally(() => ctx.abortSignal.removeEventListener('abort', onAbort))
+  })
 }

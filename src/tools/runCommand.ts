@@ -9,9 +9,8 @@
 // 制作人：Moriarty_Dox
 
 import { DEFAULT_COMMAND_TIMEOUT_MS } from '../constants.js'
-import { shellManager, spawnShellProcess } from '../core/shellManager.js'
+import { shellManager, spawnShellProcess, terminateShellProcess } from '../core/shellManager.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { truncate } from './util.js'
 
 // run_command 的入参结构。
 interface RunCommandInput {
@@ -27,7 +26,7 @@ interface RunCommandInput {
 
 // 命令输出回传给模型的最大字符数。
 const MAX_OUTPUT_CHARS = 30000
-// 子进程运行期间内存中允许累积的最大输出字符数（超出后丢弃后续增量）。
+// 保留最近的输出，长测试的最终结果不能被开头日志挤掉。
 const MAX_IN_MEMORY_OUTPUT_CHARS = MAX_OUTPUT_CHARS * 4
 
 // 一组明显危险的命令模式，命中时在授权标题中加红色警示词。
@@ -89,12 +88,12 @@ export const runCommandTool: ToolDefinition = {
    * @returns 工具结果。
    */
   run: async (input: RunCommandInput, ctx): Promise<ToolResult> => {
+    if (ctx.abortSignal.aborted) return { llmContent: '操作已取消。', isError: true }
     if (input.background) {
       const shellId = shellManager.spawnBackground({
         command: input.command,
         cwd: ctx.cwd,
         description: input.description,
-        onOutput: (text) => ctx.onProgress?.(text),
       })
       return {
         llmContent:
@@ -131,29 +130,23 @@ async function runForegroundCommand(
 
     const timer = setTimeout(() => {
       killedByTimeout = true
-      child.kill('SIGKILL')
+      terminateShellProcess(child)
     }, timeoutMs)
 
     const onAbort = () => {
       killedByAbort = true
-      child.kill('SIGKILL')
+      terminateShellProcess(child)
     }
     ctx.abortSignal.addEventListener('abort', onAbort, { once: true })
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString()
-      if (output.length < MAX_IN_MEMORY_OUTPUT_CHARS) {
-        const room = MAX_IN_MEMORY_OUTPUT_CHARS - output.length
-        output += text.slice(0, room)
-      }
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (text: string) => {
+      output = (output + text).slice(-MAX_IN_MEMORY_OUTPUT_CHARS)
       ctx.onProgress?.(text)
     })
-    child.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString()
-      if (output.length < MAX_IN_MEMORY_OUTPUT_CHARS) {
-        const room = MAX_IN_MEMORY_OUTPUT_CHARS - output.length
-        output += text.slice(0, room)
-      }
+    child.stderr?.on('data', (text: string) => {
+      output = (output + text).slice(-MAX_IN_MEMORY_OUTPUT_CHARS)
       ctx.onProgress?.(text)
     })
 
@@ -161,7 +154,10 @@ async function runForegroundCommand(
       clearTimeout(timer)
       ctx.abortSignal.removeEventListener('abort', onAbort)
 
-      const trimmed = truncate(output.trim(), MAX_OUTPUT_CHARS)
+      const text = output.trim()
+      const trimmed = text.length > MAX_OUTPUT_CHARS
+        ? `[已省略较早输出，显示最近 ${MAX_OUTPUT_CHARS} 字符]\n${text.slice(-MAX_OUTPUT_CHARS)}`
+        : text
 
       if (killedByAbort) {
         resolvePromise({

@@ -290,20 +290,24 @@ export function contextOverrideKey(providerId: ProviderId, model: string): strin
 /**
  * 根据「当前生效的最大上下文长度」计算自动压缩触发阈值。
  * 基础阈值 = floor(contextWindow × COMPACT_THRESHOLD_RATIO)，预留约 10% 余量给本轮新输出与摘要生成。
- * 在此基础上再叠加一个「绝对 token 上限」作为成本护栏（见 resolveCompactMaxAbsThreshold）：
- * 对超大窗口模型（如 1M 的 DeepSeek V4），避免历史膨胀到几十万 token 才压缩、导致每轮输入成本飙升；
- * 小窗口模型本就低于该上限，不受影响。最终阈值 = min(基础阈值, 绝对上限)。
- * 用户可用环境变量 DCODE_COMPACT_MAX_TOKENS 调整或关闭（设为 0/负数）封顶。
+ * 只有用户显式设置 DCODE_COMPACT_MAX_TOKENS 时才叠加绝对上限；默认不提前封顶。
  * @param contextWindow 当前生效的上下文窗口 token 数。
  * @returns 压缩触发阈值（token 数，正整数）。
  */
 export function getCompactThreshold(contextWindow: number): number {
-  const safe = contextWindow > 0 ? contextWindow : FALLBACK_CONTEXT
+  const safe = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : FALLBACK_CONTEXT
   const ratioThreshold = Math.max(1, Math.floor(safe * COMPACT_THRESHOLD_RATIO))
   const absCap = resolveCompactMaxAbsThreshold()
   // absCap <= 0 表示用户显式关闭封顶，退回纯比率阈值。
   if (absCap <= 0) return ratioThreshold
   return Math.max(1, Math.min(ratioThreshold, absCap))
+}
+
+/** 描述真正生效的压缩阈值，显式成本上限不能伪装成窗口的 90%。 */
+export function describeCompactThreshold(contextWindow: number): string {
+  const threshold = getCompactThreshold(contextWindow)
+  const capped = threshold < Math.floor(contextWindow * COMPACT_THRESHOLD_RATIO)
+  return `${threshold.toLocaleString()} tokens（${capped ? '由 DCODE_COMPACT_MAX_TOKENS 设置' : '窗口的 90%'}）`
 }
 
 /**
@@ -315,8 +319,8 @@ export function getCompactThreshold(contextWindow: number): number {
 export function formatContextWindowLabel(n: number): string {
   const v = Math.max(0, Math.floor(n))
   if (v >= 1_000_000 && v % 1_000_000 === 0) return `${v / 1_000_000}M`
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
-  if (v >= 1000) return `${Math.round(v / 1000)}K`
+  if (v >= 1_000_000) return `${v / 1_000_000}M`
+  if (v >= 1000) return `${v / 1000}K`
   return String(v)
 }
 
@@ -335,7 +339,8 @@ export function parseContextWindowInput(raw: string): number | undefined {
   if (!Number.isFinite(num) || num <= 0) return undefined
   const unit = m[2]
   const mult = unit === 'm' ? 1_000_000 : unit === 'k' ? 1000 : 1
-  return Math.floor(num * mult)
+  const tokens = Math.floor(num * mult)
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined
 }
 
 /**
@@ -360,6 +365,6 @@ export function renderModelSwitchContextHint(
   const labels = options.map((o) => formatContextWindowLabel(o)).join(' / ')
   return (
     `该模型支持多档最大上下文长度（${labels}），当前 ${formatContextWindowLabel(current)}。\n` +
-    `可用 /model context <档位> 调整（影响自动压缩阈值＝窗口×90%）。`
+    `可用 /model context <档位> 调整；当前自动压缩阈值为 ${describeCompactThreshold(current)}。`
   )
 }

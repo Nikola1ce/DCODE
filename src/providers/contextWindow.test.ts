@@ -4,9 +4,8 @@
 // 这些是「随模型切换的动态压缩阈值 + 多档上下文长度选择」功能的核心，必须有回归保护。
 // 制作人：Moriarty_Dox
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  COMPACT_MAX_ABS_THRESHOLD,
   COMPACT_THRESHOLD_RATIO,
   DEFAULT_MODEL,
   ENV_COMPACT_MAX_TOKENS,
@@ -14,6 +13,7 @@ import {
 } from '../constants.js'
 import {
   contextOverrideKey,
+  describeCompactThreshold,
   formatContextWindowLabel,
   getCompactThreshold,
   getModelContextOptions,
@@ -182,24 +182,34 @@ describe('resolveContextWindow（解析当前生效窗口）', () => {
   })
 })
 
-describe('getCompactThreshold（压缩阈值 = min(窗口×比率, 绝对上限)）', () => {
+describe('getCompactThreshold（默认按窗口，显式上限优先）', () => {
   // 每个用例后清理环境变量，避免相互污染。
-  afterEach(() => {
-    delete process.env[ENV_COMPACT_MAX_TOKENS]
-  })
+  beforeEach(() => vi.stubEnv(ENV_COMPACT_MAX_TOKENS, ''))
+  afterEach(() => vi.unstubAllEnvs())
 
   it('小窗口（低于绝对上限）仍按 COMPACT_THRESHOLD_RATIO 计算并向下取整', () => {
     // 128K×0.9=115200 < 120000 绝对上限，因此仍取比率值。
     expect(getCompactThreshold(128_000)).toBe(
       Math.floor(128_000 * COMPACT_THRESHOLD_RATIO),
     )
-    expect(getCompactThreshold(128_000)).toBeLessThanOrEqual(COMPACT_MAX_ABS_THRESHOLD)
   })
 
-  it('大窗口被绝对上限封顶（避免历史膨胀到几十万 token 才压缩）', () => {
-    // 1M×0.9=900000、200K×0.9=180000 均超过 12 万绝对上限，故都封顶到 COMPACT_MAX_ABS_THRESHOLD。
-    expect(getCompactThreshold(1_000_000)).toBe(COMPACT_MAX_ABS_THRESHOLD)
-    expect(getCompactThreshold(200_000)).toBe(COMPACT_MAX_ABS_THRESHOLD)
+  it('大窗口默认也使用90%，不再隐藏封顶至120K', () => {
+    expect(getCompactThreshold(1_000_000)).toBe(900_000)
+    expect(getCompactThreshold(200_000)).toBe(180_000)
+  })
+
+  it('显式低上限说明来源，而非错误标注为90%', () => {
+    vi.stubEnv(ENV_COMPACT_MAX_TOKENS, '120000')
+    expect(getCompactThreshold(1_000_000)).toBe(120_000)
+    expect(describeCompactThreshold(1_000_000)).toContain('DCODE_COMPACT_MAX_TOKENS')
+    expect(describeCompactThreshold(1_000_000)).not.toContain('90%')
+    expect(describeCompactThreshold(128_000)).toContain('90%')
+  })
+
+  it.each(['abc', '500', '1e5', '9'.repeat(400)])('非法环境上限 %s 不覆盖默认比例', (raw) => {
+    vi.stubEnv(ENV_COMPACT_MAX_TOKENS, raw)
+    expect(getCompactThreshold(1_000_000)).toBe(900_000)
   })
 
   it('环境变量 DCODE_COMPACT_MAX_TOKENS 可调高绝对上限', () => {
@@ -218,6 +228,7 @@ describe('getCompactThreshold（压缩阈值 = min(窗口×比率, 绝对上限)
   it('非法窗口回退到兜底窗口，结果恒为正整数', () => {
     expect(getCompactThreshold(0)).toBeGreaterThan(0)
     expect(getCompactThreshold(-100)).toBeGreaterThan(0)
+    expect(Number.isFinite(getCompactThreshold(Infinity))).toBe(true)
     expect(Number.isInteger(getCompactThreshold(128_000))).toBe(true)
   })
 })
@@ -230,8 +241,9 @@ describe('formatContextWindowLabel（档位标签格式化）', () => {
     expect(formatContextWindowLabel(1_000_000)).toBe('1M')
   })
 
-  it('非整百万（如 GPT-5.5 的 1.05M）以一位小数显示', () => {
-    expect(formatContextWindowLabel(1_050_000)).toBe('1.1M')
+  it('非整百万或整千的档位保留精度，可直接用于切换命令', () => {
+    expect(formatContextWindowLabel(1_050_000)).toBe('1.05M')
+    expect(formatContextWindowLabel(131_072)).toBe('131.072K')
   })
 
   it('< 1000 直接显示原值', () => {
@@ -265,10 +277,12 @@ describe('parseContextWindowInput（档位输入解析）', () => {
     expect(parseContextWindowInput('12kb')).toBeUndefined()
     expect(parseContextWindowInput('-5k')).toBeUndefined()
     expect(parseContextWindowInput('0')).toBeUndefined()
+    expect(parseContextWindowInput('0.0001')).toBeUndefined()
+    expect(parseContextWindowInput('9'.repeat(400))).toBeUndefined()
   })
 
   it('解析结果与 formatContextWindowLabel 往返一致', () => {
-    for (const n of [8_000, 128_000, 200_000, 1_000_000]) {
+    for (const n of [8_000, 128_000, 131_072, 200_000, 1_000_000, 1_050_000]) {
       const label = formatContextWindowLabel(n).toLowerCase()
       expect(parseContextWindowInput(label)).toBe(n)
     }

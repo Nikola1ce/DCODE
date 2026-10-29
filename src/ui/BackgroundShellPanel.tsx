@@ -27,15 +27,13 @@ export function BackgroundShellPanel({
 }: BackgroundShellPanelProps): React.ReactElement | null {
   const theme = useTheme()
   const [shells, setShells] = useState<ShellRecord[]>(() =>
-    shellManager.getAllShells().filter((s) => s.status === 'running' || isRecent(s)),
+    readShellSnapshots(),
   )
 
   // 轮询 shellManager，刷新运行中 Shell 状态与输出长度。
   useEffect(() => {
     const tick = () => {
-      const next = shellManager
-        .getAllShells()
-        .filter((s) => s.status === 'running' || isRecent(s))
+      const next = readShellSnapshots()
       setShells((prev) => {
         if (prev.length === 0 && next.length === 0) return prev
         if (prev.length !== next.length) return next
@@ -58,11 +56,11 @@ export function BackgroundShellPanel({
   if (compact) {
     const first = running[0] ?? shells[0]
     const tail = first
-      ? `　▶ ${first.id} $ ${truncate(first.command, 36)}`
+      ? `　▶ ${first.id} $ ${first.command.replace(/\s+/g, ' ')}`
       : ''
     return (
-      <Box marginBottom={1}>
-        <Text color={theme.dim}>
+      <Box height={1} flexShrink={0} overflowY="hidden">
+        <Text color={theme.dim} wrap="truncate">
           后台 Shell {running.length} 运行中
           {tail}
         </Text>
@@ -70,7 +68,7 @@ export function BackgroundShellPanel({
     )
   }
 
-  const cap = Math.max(2, maxVisible)
+  const cap = Math.max(1, maxVisible)
   const visible = shells.slice(0, cap)
   const hidden = shells.length - visible.length
 
@@ -82,7 +80,7 @@ export function BackgroundShellPanel({
       paddingX={1}
       marginBottom={1}
     >
-      <Text color={theme.dim}>
+      <Text color={theme.dim} wrap="truncate">
         后台 Shell（{running.length} 运行中 / {shells.length} 条）
       </Text>
       {visible.map((s) => {
@@ -96,17 +94,25 @@ export function BackgroundShellPanel({
               : theme.warning
         const outLen = s.output.length
         return (
-          <Text key={s.id} color={color}>
-            {mark} [{s.id}] $ {truncate(s.command, 40)}
+          <Text key={s.id} color={color} wrap="truncate">
+            {mark} [{s.id}] $ {s.command.replace(/\s+/g, ' ')}
             {outLen > 0 ? ` (${outLen} 字符输出)` : ''}
           </Text>
         )
       })}
       {hidden > 0 ? (
-        <Text color={theme.dim}>   … 另有 {hidden} 条</Text>
+        <Text color={theme.dim} wrap="truncate">   … 另有 {hidden} 条</Text>
       ) : null}
     </Box>
   )
+}
+
+// ShellManager 原地更新记录，React 必须保留独立快照，否则 prev 与 next 指向
+// 同一对象时状态/输出变化永远比较不出来，完成后的任务仍会显示“运行中”。
+function readShellSnapshots(): ShellRecord[] {
+  return shellManager.getAllShells()
+    .filter((s) => s.status === 'running' || isRecent(s))
+    .map((s) => ({ ...s }))
 }
 
 /**
@@ -118,15 +124,4 @@ function isRecent(s: ShellRecord): boolean {
   if (s.status === 'running') return true
   const end = s.endedAt ?? s.createdAt
   return Date.now() - end < 5 * 60 * 1000
-}
-
-/**
- * 截断命令文本，避免面板换行撑高动态区。
- * @param text 原始文本。
- * @param max 最大长度。
- * @returns 截断后文本。
- */
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text
-  return text.slice(0, max - 1) + '…'
 }

@@ -113,10 +113,14 @@ interface StatusLineProps {
   contextTokens?: number
   // 总共可用的上下文 token 预算；达到后会触发自动压缩。缺省时不渲染进度条。
   contextLimit?: number
+  // 显式设置提前压缩上限时显示阈值，避免用户误以为进度条满了才压缩。
+  compactThreshold?: number
   // 运行期的简短状态文案（如“正在思考”“执行工具”）。
   statusText?: string
   // 是否播放状态栏 spinner；工具进度面板已有 spinner 时可关闭，避免双重高频重绘。
   animate?: boolean
+  // 小窗口内将就绪状态也限制为单行。
+  compact?: boolean
 }
 
 // 权限模式的简短中文标签。
@@ -140,39 +144,46 @@ export function StatusLine({
   costLabel,
   contextTokens,
   contextLimit,
+  compactThreshold,
   statusText,
   animate = true,
+  compact = false,
 }: StatusLineProps): React.ReactElement {
   const theme = useTheme()
   // 仅当上下文预算有效时才展示进度条，避免无意义的 0/0 显示。
   const showContext =
     typeof contextLimit === 'number' && contextLimit > 0
+  const context = showContext ? (
+    <>
+      <ContextMeter used={contextTokens ?? 0} limit={contextLimit} />
+      {compactThreshold !== undefined && compactThreshold < contextLimit * 0.9
+        ? ` · ${formatTokenCount(compactThreshold)} 压缩`
+        : null}
+    </>
+  ) : null
   return (
     <Box marginTop={busy ? 0 : 0}>
       {busy ? (
-        <Box flexWrap="wrap">
+        <Text color={theme.dim} wrap="truncate">
           {animate ? (
             <Spinner />
           ) : (
             <Text color={theme.primary}>{SPINNER_FRAMES[0]}</Text>
           )}
-          <Text color={theme.dim}>
-            {' '}
-            {statusText ?? '处理中'}…　按 <Text color={theme.accent}>Esc</Text> 中断
-          </Text>
-        </Box>
+          {' '}
+          {(statusText ?? '处理中').replace(/\s+/g, ' ')}…　按 <Text color={theme.accent}>Esc</Text> 中断
+        </Text>
       ) : (
-        <Box flexWrap="wrap">
-          <Text color={theme.dim}>
-            {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {costLabel ?? formatCost(costUsd)}
-          </Text>
-          {showContext ? (
+        <Text color={theme.dim} wrap={compact ? 'truncate' : 'wrap'}>
+          {compact && showContext ? <>{context}{'　·　'}</> : null}
+          {model}　·　权限 {MODE_LABELS[permissionMode]}　·　预估成本 {costLabel ?? formatCost(costUsd)}
+          {!compact && showContext ? (
             <>
-              <Text color={theme.dim}>　·　</Text>
-              <ContextMeter used={contextTokens ?? 0} limit={contextLimit} />
+              {'　·　'}
+              {context}
             </>
           ) : null}
-        </Box>
+        </Text>
       )}
     </Box>
   )

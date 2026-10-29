@@ -96,4 +96,13 @@ describe('createLineDecoder', () => {
     const buf = Buffer.from(encodeMessage(msg), 'utf8')
     expect(decoder.push(buf)).toEqual([msg])
   })
+
+  it('UTF-8 中文与 emoji 按单字节分片时仍完整还原', () => {
+    const decoder = createLineDecoder<ServerMessage>()
+    const message: ServerMessage = { type: 'text', requestId: 'r', delta: '你好，修复完成 🚀' }
+    const bytes = Buffer.from(encodeMessage(message))
+    const result: ServerMessage[] = []
+    for (let i = 0; i < bytes.length; i++) result.push(...decoder.push(bytes.subarray(i, i + 1)))
+    expect(result).toEqual([message])
+  })
 })

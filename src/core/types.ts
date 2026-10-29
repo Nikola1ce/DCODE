@@ -144,8 +144,8 @@ export interface AgentRunTrace {
 export type AgentRunEvent =
   | { type: 'run_start'; runId: string; turnId: string; timestamp: number }
   | { type: 'turn_start'; runId: string; turnId: string; timestamp: number; userInput: string }
-  | { type: 'compact_start'; runId: string; turnId: string; iteration: number; timestamp: number; messageCount: number }
-  | { type: 'compact_end'; runId: string; turnId: string; iteration: number; timestamp: number; beforeCount: number; afterCount: number }
+  | { type: 'compact_start'; runId: string; turnId: string; iteration: number; timestamp: number; messageCount: number; usedTokens?: number; threshold?: number; contextWindow?: number }
+  | { type: 'compact_end'; runId: string; turnId: string; iteration: number; timestamp: number; beforeCount: number; afterCount: number; applied?: boolean }
   | { type: 'llm_start'; runId: string; turnId: string; iteration: number; timestamp: number; model: string; toolCount: number }
   | { type: 'reasoning_delta'; runId: string; turnId: string; iteration: number; timestamp: number; delta: string }
   | { type: 'text_delta'; runId: string; turnId: string; iteration: number; timestamp: number; delta: string }

@@ -67,22 +67,22 @@ export function PermissionPrompt({
     }
   })
 
-  // 仅渲染「选择项 + 操作提示」：高度固定且低矮（4 行），动态区可被完整擦除重绘，无残影。
+  // 标题、三个选项和操作提示各占一行，窄窗口也不自动换行撑高动态区。
   return (
     <Box flexDirection="column">
-      <Text color={theme.warning} bold>
+      <Text color={theme.warning} bold wrap="truncate">
         请选择授权（详情见上方）：
       </Text>
       {OPTIONS.map((opt, i) => {
         const selected = i === index
         return (
-          <Text key={opt.value} color={selected ? theme.accent : theme.text}>
+          <Text key={opt.value} color={selected ? theme.accent : theme.text} wrap="truncate">
             {selected ? '❯ ' : '  '}
             {i + 1}. {opt.label}（{opt.key}）
           </Text>
         )
       })}
-      <Text color={theme.dim}>↑/↓ 选择 · 回车确认 · y 允许 · a 总是 · n 拒绝</Text>
+      <Text color={theme.dim} wrap="truncate">↑/↓ 选择 · 回车确认 · y 允许 · a 总是 · n 拒绝</Text>
     </Box>
   )
 }

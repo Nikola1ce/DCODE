@@ -2,8 +2,8 @@
 // 用于首次启动或 /login 时按当前 Provider 输入对应 API Key；掩码显示，回车提交，Esc 取消。
 // 制作人：Moriarty_Dox
 
-import React, { useState } from 'react'
-import { Box, Text, useInput } from 'ink'
+import React, { useEffect, useState } from 'react'
+import { Box, Text, useInput, useStdout } from 'ink'
 import { useTheme } from './theme.js'
 import type { ProviderId } from '../providers/types.js'
 
@@ -23,6 +23,8 @@ interface LoginPromptProps {
   onSubmit: (apiKey: string) => void
   // 取消回调。
   onCancel: () => void
+  // 父级分配的总高度；小窗口优先保留密钥输入与操作提示。
+  maxRows?: number
 }
 
 /**
@@ -38,9 +40,19 @@ export function LoginPrompt({
   apiKeyEnv,
   onSubmit,
   onCancel,
+  maxRows = 11,
 }: LoginPromptProps): React.ReactElement {
   const theme = useTheme()
   const [value, setValue] = useState('')
+  const { stdout } = useStdout()
+  const [columns, setColumns] = useState(stdout.columns || 80)
+  useEffect(() => {
+    const resize = () => setColumns(stdout.columns || 80)
+    stdout.on('resize', resize)
+    return () => { stdout.off('resize', resize) }
+  }, [stdout])
+  const compact = maxRows < 11 || columns < 12
+  const maskColumns = Math.max(0, columns - (compact ? 0 : 4) - 7)
 
   useInput((input, key) => {
     if (key.return) {
@@ -63,31 +75,33 @@ export function LoginPrompt({
   })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.primary} paddingX={1}>
-      <Text color={theme.primary} bold>
-        设置 {providerName} API Key
-      </Text>
-      <Box marginTop={1} flexDirection="column">
+    <Box flexDirection="column" borderStyle={compact ? undefined : 'round'} borderColor={theme.primary} paddingX={compact ? 0 : 1}>
+      {maxRows >= 3 ? <Text color={theme.primary} bold wrap="truncate">
+        设置 {providerName.replace(/\s+/g, ' ')} API Key
+      </Text> : null}
+      {!compact ? <Box marginTop={1} flexDirection="column">
         {platformUrl ? (
-          <Text color={theme.dim}>
-            请在 {platformUrl} 获取 API Key（端点：{baseURL}）。
+          <Text color={theme.dim} wrap="truncate">
+            请在 {platformUrl.replace(/\s+/g, ' ')} 获取 API Key（端点：{baseURL.replace(/\s+/g, ' ')}）。
           </Text>
         ) : (
-          <Text color={theme.dim}>API 端点：{baseURL}</Text>
+          <Text color={theme.dim} wrap="truncate">API 端点：{baseURL.replace(/\s+/g, ' ')}</Text>
         )}
-        <Text color={theme.dim}>
+        <Text color={theme.dim} wrap="truncate">
           密钥保存在 ~/.dcode/config.json（providers.{providerId}，与其它供应商独立）。
         </Text>
-        <Text color={theme.dim}>也可设置环境变量 {apiKeyEnv}。</Text>
+        <Text color={theme.dim} wrap="truncate">也可设置环境变量 {apiKeyEnv.replace(/\s+/g, ' ')}。</Text>
+      </Box> : null}
+      <Box marginTop={compact ? 0 : 1} height={1} overflowY="hidden" flexShrink={0}>
+        <Text wrap="truncate">
+          <Text color={theme.accent}>{'Key ❯ '}</Text>
+          <Text color={theme.text}>{'•'.repeat(Math.min(value.length, maskColumns))}</Text>
+          <Text inverse> </Text>
+        </Text>
       </Box>
-      <Box marginTop={1}>
-        <Text color={theme.accent}>{'Key ❯ '}</Text>
-        <Text color={theme.text}>{'•'.repeat(value.length)}</Text>
-        <Text inverse> </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text color={theme.dim}>回车提交 · Esc 取消</Text>
-      </Box>
+      {maxRows >= 2 ? <Box marginTop={compact ? 0 : 1}>
+        <Text color={theme.dim} wrap="truncate">回车提交 · Esc 取消</Text>
+      </Box> : null}
     </Box>
   )
 }

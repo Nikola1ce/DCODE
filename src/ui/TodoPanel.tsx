@@ -42,18 +42,17 @@ export function TodoPanel({
   // —— 折叠模式：仅一行「进度 + 当前进行中任务」，运行中占用高度降到最低 ——
   if (compact) {
     const active = todos.find((t) => t.status === 'in_progress')
-    const tail = active ? `　▶ ${truncate(active.content, 40)}` : ''
+    const tail = active ? `　▶ ${active.content.replace(/\s+/g, ' ')}` : ''
     return (
-      <Box marginBottom={1}>
-        <Text color={theme.dim}>
+      <Box height={1} flexShrink={0} overflowY="hidden">
+        <Text color={theme.dim} wrap="truncate">
           任务进度 {done}/{todos.length}
           {tail}
         </Text>
       </Box>
     )
   }
-  // 至少保证显示 3 行，避免上限被传得过小导致面板几乎不可见。
-  const cap = Math.max(3, maxVisible)
+  const cap = Math.max(1, maxVisible)
 
   // —— 计算可见窗口：以第一个“进行中”项为中心，没有则从头开始 ——
   // 让用户始终能看到当前正在执行的任务，避免它被滚出窗口。
@@ -78,7 +77,7 @@ export function TodoPanel({
       paddingX={1}
       marginBottom={1}
     >
-      <Text color={theme.dim}>
+      <Text color={theme.dim} wrap="truncate">
         任务进度 {done}/{todos.length}
         {hiddenAbove > 0 ? `   ▲ 上方还有 ${hiddenAbove} 项` : ''}
       </Text>
@@ -94,25 +93,14 @@ export function TodoPanel({
               : theme.dim
         // key 用窗口内真实索引，避免滚动时复用错行。
         return (
-          <Text key={start + i} color={color}>
-            {mark} {t.content}
+          <Text key={start + i} color={color} wrap="truncate">
+            {mark} {t.content.replace(/\s+/g, ' ')}
           </Text>
         )
       })}
       {hiddenBelow > 0 ? (
-        <Text color={theme.dim}>   ▼ 下方还有 {hiddenBelow} 项</Text>
+        <Text color={theme.dim} wrap="truncate">   ▼ 下方还有 {hiddenBelow} 项</Text>
       ) : null}
     </Box>
   )
-}
-
-/**
- * 截断文本，超出部分以省略号替代，避免折叠摘要行换行撑高动态区。
- * @param text 原始文本。
- * @param max 最大保留长度。
- * @returns 截断后的文本。
- */
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text
-  return text.slice(0, max - 1) + '…'
 }

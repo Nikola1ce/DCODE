@@ -2,9 +2,10 @@
 // 验证上下文压缩时 assistant+tool 消息组不会被拆断。
 // 制作人：Moriarty_Dox
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DeepMessage } from './types.js'
 import {
+  canCompactMessages,
   compactMessages,
   estimateMessagesTokens,
   partitionGroupsForCompact,
@@ -14,6 +15,7 @@ import {
 import type { LLMClient, StreamChatParams, StreamEvent } from '../providers/types.js'
 
 class SummaryClient implements LLMClient {
+  calls: StreamChatParams[] = []
   hasApiKey(): boolean {
     return true
   }
@@ -22,7 +24,8 @@ class SummaryClient implements LLMClient {
     return 'custom' as const
   }
 
-  async *streamChat(_params: StreamChatParams): AsyncGenerator<StreamEvent> {
+  async *streamChat(params: StreamChatParams): AsyncGenerator<StreamEvent> {
+    this.calls.push(params)
     yield { type: 'text', delta: '摘要' }
     yield {
       type: 'done',
@@ -31,6 +34,8 @@ class SummaryClient implements LLMClient {
     }
   }
 }
+
+afterEach(() => vi.unstubAllEnvs())
 
 describe('splitConversationGroups', () => {
   it('assistant+tool_calls 与后续 tool 消息同组', () => {
@@ -77,6 +82,24 @@ describe('partitionGroupsForCompact', () => {
   })
 })
 
+describe('canCompactMessages', () => {
+  it('短历史、只有一个完整大工具组的历史均不发起压缩', async () => {
+    const short: DeepMessage[] = Array.from({ length: 8 }, () => ({ role: 'user', content: '短历史' }))
+    expect(canCompactMessages(short)).toBe(false)
+    const toolGroup: DeepMessage[] = [
+      { role: 'assistant', content: '', toolCalls: Array.from({ length: 8 }, (_, i) => ({
+        id: `call${i}`, name: 'read_file', argsJson: '{}',
+      })) },
+      ...Array.from({ length: 8 }, (_, i): DeepMessage => ({ role: 'tool', content: '结果', toolCallId: `call${i}` })),
+    ]
+    expect(canCompactMessages(toolGroup)).toBe(false)
+    const client = new SummaryClient()
+    expect(await compactMessages(client, toolGroup, 'test-model')).toBe(toolGroup)
+    expect(client.calls).toHaveLength(0)
+    expect(canCompactMessages([{ role: 'user', content: '可摘要的旧需求' }, ...toolGroup])).toBe(true)
+  })
+})
+
 describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => {
   // 构造一批消息，使其估算 token 落在指定区间，便于跨阈值断言。
   // estimateTextTokens 约为 length/3，故内容长度 ≈ 目标 token × 3。
@@ -85,8 +108,9 @@ describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => 
     return [{ role: 'user', content }]
   }
 
-  it('低于绝对上限时，窗口越大阈值越高（比率行为仍生效）', () => {
-    // 约 100K token 的历史（< 120K 绝对上限，故仍由窗口×90% 主导）：
+  it('窗口越大，自动压缩阈值越高', () => {
+    vi.stubEnv('DCODE_COMPACT_MAX_TOKENS', '')
+    // 约 100K token 的历史：
     const messages = makeMessagesWithTokens(100_000)
     expect(estimateMessagesTokens(messages)).toBeGreaterThan(95_000)
     // 100K 窗口阈值 = 90K，100K > 90K → 压缩。
@@ -95,12 +119,18 @@ describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => 
     expect(shouldCompact(messages, 128_000)).toBe(false)
   })
 
-  it('大窗口被绝对上限（约 120K）封顶：超大历史照常触发压缩', () => {
-    // 约 150K token 的历史：1M×0.9=900K 看似不该压缩，但绝对上限 120K 会封顶 → 触发压缩。
+  it('大窗口默认按 90% 触发，不被 120K 旧上限提前压缩', () => {
+    vi.stubEnv('DCODE_COMPACT_MAX_TOKENS', '')
     const messages = makeMessagesWithTokens(150_000)
     expect(estimateMessagesTokens(messages)).toBeGreaterThan(140_000)
-    expect(shouldCompact(messages, 1_000_000)).toBe(true)
-    expect(shouldCompact(messages, 200_000)).toBe(true)
+    expect(shouldCompact(messages, 1_000_000)).toBe(false)
+    expect(shouldCompact(messages, 200_000)).toBe(false)
+    expect(shouldCompact(makeMessagesWithTokens(901_000), 1_000_000)).toBe(true)
+  })
+
+  it('显式环境变量上限仍可提前触发压缩', () => {
+    vi.stubEnv('DCODE_COMPACT_MAX_TOKENS', '120000')
+    expect(shouldCompact(makeMessagesWithTokens(150_000), 1_000_000)).toBe(true)
   })
 
   it('恰好跨越窗口×90% 阈值的边界判断正确', () => {
@@ -129,6 +159,89 @@ describe('shouldCompact（压缩阈值随上下文窗口动态变化）', () => 
 })
 
 describe('compactMessages', () => {
+  function history(): DeepMessage[] {
+    return [
+      { role: 'system', content: '系统提示必须完整保留' },
+      ...Array.from({ length: 12 }, (_, i): DeepMessage => ({
+        role: i % 2 === 0 ? 'user' : 'assistant', content: `第${i}条历史：` + '重要上下文。'.repeat(50),
+      })),
+    ]
+  }
+
+  function scriptedClient(events: StreamEvent[]): LLMClient {
+    const client = new SummaryClient()
+    client.streamChat = async function* () { yield* events }
+    return client
+  }
+
+  const completed = (content: string, finishReason = 'stop'): StreamEvent => ({
+    type: 'done', finishReason, message: { role: 'assistant', content },
+  })
+
+  it.each([
+    { label: '空流', events: [] },
+    { label: '缺少完成事件', events: [{ type: 'text', delta: '只生成了一部分摘要' }] },
+    { label: '空摘要', events: [completed('')] },
+    { label: '空白摘要', events: [completed(' \n ')] },
+    { label: '完整事件为空不能用增量兜底', events: [{ type: 'text', delta: '部分摘要' }, completed('')] },
+    { label: '输出达到上限', events: [completed('截断摘要', 'length')] },
+    { label: '内容过滤中断', events: [completed('部分摘要', 'content_filter')] },
+    { label: '工具终态', events: [completed('摘要', 'tool_calls')] },
+    { label: '重复完成事件', events: [completed('摘要一'), completed('摘要二')] },
+    { label: '摘要包含工具调用', events: [{
+      type: 'done', finishReason: 'stop', message: {
+        role: 'assistant', content: '错误的工具摘要',
+        toolCalls: [{ id: 'call', name: 'read_file', argsJson: '{}' }],
+      },
+    }] },
+  ] satisfies Array<{ label: string; events: StreamEvent[] }>)('$label 不覆盖历史', async ({ events }) => {
+    const messages = history()
+    const snapshot = structuredClone(messages)
+
+    expect(await compactMessages(scriptedClient(events), messages, 'test-model')).toBe(messages)
+    expect(messages).toEqual(snapshot)
+  })
+
+  it('已取消时不发起摘要请求', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const messages = history()
+    const client = new SummaryClient()
+
+    expect(await compactMessages(client, messages, 'test-model', controller.signal)).toBe(messages)
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('摘要已生成但连接结束前取消，仍保留原历史', async () => {
+    const controller = new AbortController()
+    const messages = history()
+    const client = new SummaryClient()
+    client.streamChat = async function* () {
+      yield completed('完整摘要')
+      controller.abort()
+    }
+
+    expect(await compactMessages(client, messages, 'test-model', controller.signal)).toBe(messages)
+  })
+
+  it('流式请求失败不会把已有部分摘要应用到历史', async () => {
+    const messages = history()
+    const client = new SummaryClient()
+    client.streamChat = async function* () {
+      yield { type: 'text', delta: '部分摘要' }
+      throw new Error('连接失败')
+    }
+
+    expect(await compactMessages(client, messages, 'test-model')).toBe(messages)
+  })
+
+  it('摘要没有释放 token 空间时保持原历史', async () => {
+    const messages = history()
+    const client = scriptedClient([completed('冗长摘要'.repeat(2000))])
+
+    expect(await compactMessages(client, messages, 'test-model')).toBe(messages)
+  })
+
   it('摘要请求继承取消信号，中断时保留原历史', async () => {
     const controller = new AbortController()
     const messages: DeepMessage[] = Array.from({ length: 12 }, (_, i) => ({
@@ -147,7 +260,7 @@ describe('compactMessages', () => {
       { role: 'system', content: 'sys' },
       {
         role: 'system',
-        content: 'old summary',
+        content: 'old summary '.repeat(100),
         metadata: { kind: 'summary', source: 'system' },
       },
     ]
@@ -159,9 +272,67 @@ describe('compactMessages', () => {
     const summaries = compacted.filter((m) => m.metadata?.kind === 'summary')
 
     expect(summaries).toHaveLength(1)
+    expect(compacted).not.toBe(messages)
+    expect(summaries[0].content).not.toContain('old summary')
     expect(summaries[0]).toMatchObject({
       role: 'system',
       metadata: { kind: 'summary', source: 'system' },
     })
+  })
+
+  it('成功压缩保留最近完整工具组及原对象，不修改原始历史', async () => {
+    const messages = history().slice(0, 7)
+    const toolGroup: DeepMessage[] = [
+      { role: 'assistant', content: '', toolCalls: [{ id: 'call', name: 'read_file', argsJson: '{}' }] },
+      { role: 'tool', content: '最新工具原文'.repeat(1000), toolCallId: 'call', toolName: 'read_file' },
+    ]
+    messages.push(...toolGroup, ...history().slice(-5))
+    const snapshot = structuredClone(messages)
+    const compacted = await compactMessages(new SummaryClient(), messages, 'test-model')
+
+    expect(compacted).not.toBe(messages)
+    expect(compacted[0]).toBe(messages[0])
+    expect(compacted.slice(-7)).toEqual(messages.slice(-7))
+    expect(compacted[2]).toBe(toolGroup[0])
+    expect(compacted[3]).toBe(toolGroup[1])
+    expect(estimateMessagesTokens(compacted)).toBeLessThan(estimateMessagesTokens(messages))
+    expect(messages).toEqual(snapshot)
+  })
+
+  it('摘要输入先瘦身旧工具结果，同时完整保留最近工具原文', async () => {
+    const oldResult = '旧结果'.repeat(10_000)
+    const recentResult = '最近结果'.repeat(2000)
+    const messages: DeepMessage[] = [
+      { role: 'system', content: '系统提示' },
+      { role: 'user', content: '旧任务' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'read_file', argsJson: '{}' }] },
+      { role: 'tool', content: oldResult, toolCallId: 'old', toolName: 'read_file' },
+      ...history().slice(1),
+      { role: 'assistant', content: '', toolCalls: [{ id: 'recent', name: 'read_file', argsJson: '{}' }] },
+      { role: 'tool', content: recentResult, toolCallId: 'recent', toolName: 'read_file' },
+    ]
+    const client = new SummaryClient()
+
+    const compacted = await compactMessages(client, messages, 'test-model')
+
+    const transcript = client.calls[0].messages[1].content
+    expect(transcript).toContain('[历史瘦身')
+    expect(transcript).not.toContain(oldResult)
+    expect(compacted.at(-1)).toBe(messages.at(-1))
+    expect(compacted.at(-1)?.content).toBe(recentResult)
+    expect(messages[3].content).toBe(oldResult)
+  })
+
+  it('摘要比原始工具结果短、却比实际发送视图长时也不应用', async () => {
+    const messages: DeepMessage[] = [
+      { role: 'system', content: '系统提示' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'read_file', argsJson: '{}' }] },
+      { role: 'tool', content: '旧工具结果'.repeat(10_000), toolCallId: 'old', toolName: 'read_file' },
+      ...history().slice(1),
+    ]
+    const summary = '摘要'.repeat(5000)
+    expect(summary.length).toBeLessThan(messages[2].content.length)
+
+    expect(await compactMessages(scriptedClient([completed(summary)]), messages, 'test-model')).toBe(messages)
   })
 })

@@ -137,13 +137,9 @@ export const COMPACT_TOKEN_THRESHOLD = 60000
 // 取 0.9 是为了在接近上限前留出约 10% 余量给「本轮新输出 + 摘要生成」，避免请求真正超限被 API 拒绝。
 export const COMPACT_THRESHOLD_RATIO = 0.9
 
-// 自动压缩触发的「绝对 token 上限」（成本护栏，可由环境变量 DCODE_COMPACT_MAX_TOKENS 覆盖）。
-// 背景：DeepSeek V4 等模型上下文窗口高达 1M，若仅用「窗口 × 90%」做阈值，历史会一路膨胀到
-// 约 90 万 token 才压缩——而每一轮请求都要把全部历史作为输入 token 重新发送，成本随对话线性飙升。
-// 因此对大窗口模型再叠加一个绝对上限：实际阈值 = min(窗口 × 比率, 本上限)。
-// 取 120000（12 万）兼顾「足够容纳大量代码与多轮历史」与「单轮输入成本可控」；
-// 小窗口模型（< 13 万）本就低于该上限，不受影响，仍按窗口 × 90% 触发。
-export const COMPACT_MAX_ABS_THRESHOLD = 120_000
+// 默认尊重所选窗口，不施加隐藏的绝对上限；需要提前压缩时可显式设置环境变量。
+// 旧的 120K 默认封顶会让 1M 窗口在仅使用约 12% 时压缩，与界面剩余空间相矛盾。
+export const COMPACT_MAX_ABS_THRESHOLD = 0
 
 // 绝对上限允许的最小值：防止用户把上限设得过低导致频繁压缩、反而因反复摘要更费 token。
 export const MIN_COMPACT_ABS_THRESHOLD = 8_000
@@ -167,7 +163,7 @@ export function resolveCompactMaxAbsThreshold(): number {
   if (/^-?\d+$/.test(trimmed)) {
     const n = Number.parseInt(trimmed, 10)
     if (n <= 0) return 0
-    if (n >= MIN_COMPACT_ABS_THRESHOLD) return n
+    if (Number.isSafeInteger(n) && n >= MIN_COMPACT_ABS_THRESHOLD) return n
   }
   // 非法或过小：回退默认。
   return COMPACT_MAX_ABS_THRESHOLD
