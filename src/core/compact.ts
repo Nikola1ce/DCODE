@@ -80,8 +80,11 @@ export function estimateMessagesTokens(messages: DeepMessage[]): number {
   let total = 0
   for (const m of messages) {
     total += estimateTextTokens(m.content)
-    if (m.toolCalls) {
+    if (m.toolCalls && m.toolCalls.length > 0) {
       for (const tc of m.toolCalls) total += estimateTextTokens(tc.argsJson)
+      // 带工具调用的 assistant 会随请求回传 reasoning_content 并拼入上下文，需一并计入，
+      // 否则上下文占用被低估，自动压缩触发过晚。
+      if (m.reasoning) total += estimateTextTokens(m.reasoning)
     }
   }
   return total

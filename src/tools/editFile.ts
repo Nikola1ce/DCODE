@@ -8,7 +8,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import { buildDiffPreviewView, countDiff } from './diff.js'
-import { resolveWithinCwd, toDisplayPath } from './util.js'
+import { describeMissingMatch, lineNumbersOf } from './editHints.js'
+import { convertEol, resolveWithinCwd, toDisplayPath, usesCrlf } from './util.js'
 
 // edit_file 的入参结构。
 interface EditFileInput {
@@ -56,7 +57,7 @@ export const editFileTool: ToolDefinition = {
     let preview: string | undefined
     try {
       const oldContent = readFileSync(abs, 'utf8')
-      const newContent = applyEdit(oldContent, input)
+      const newContent = applyEdit(oldContent, adaptEolToFile(oldContent, input))
       preview = buildDiffPreviewView(oldContent, newContent)
     } catch {
       preview = undefined
@@ -89,23 +90,23 @@ export const editFileTool: ToolDefinition = {
       }
     }
 
+    // CRLF 文件：模型给出的 old_string/new_string 通常只含 \n，需转换后再匹配。
+    const edit = adaptEolToFile(oldContent, input)
+
     // 校验匹配次数。
-    const occurrences = countOccurrences(oldContent, input.old_string)
+    const occurrences = countOccurrences(oldContent, edit.old_string)
     if (occurrences === 0) {
-      return {
-        llmContent:
-          '错误：在文件中未找到 old_string。请先用 read_file 确认确切内容（注意缩进与空白）。',
-        isError: true,
-      }
+      return { llmContent: describeMissingMatch(oldContent, input.old_string), isError: true }
     }
     if (occurrences > 1 && !input.replace_all) {
+      const lines = lineNumbersOf(oldContent, edit.old_string).map((n) => `第 ${n} 行`).join('、')
       return {
-        llmContent: `错误：old_string 在文件中出现了 ${occurrences} 次，不唯一。请补充更多上下文使其唯一，或设置 replace_all=true。`,
+        llmContent: `错误：old_string 在文件中出现了 ${occurrences} 次（${lines}），不唯一。请补充更多上下文使其唯一，或设置 replace_all=true。`,
         isError: true,
       }
     }
 
-    const newContent = applyEdit(oldContent, input)
+    const newContent = applyEdit(oldContent, edit)
 
     // 写入前创建检查点，供 /undo 回退。
     saveCheckpointBeforeWrite(ctx.cwd, abs, 'edit_file')
@@ -135,6 +136,30 @@ function countOccurrences(text: string, sub: string): number {
     idx = text.indexOf(sub, idx + sub.length)
   }
   return count
+}
+
+/**
+ * 让编辑入参的换行风格与文件一致：原样匹配不到且文件使用 CRLF 时，
+ * 把 old_string/new_string 转为 CRLF，避免 Windows 文件上多行编辑总是“未找到”，
+ * 同时保证新写入的行与原文件换行风格一致。
+ * @param content 原始文件内容。
+ * @param input 编辑入参。
+ * @returns 可直接用于匹配与替换的入参。
+ */
+function adaptEolToFile(content: string, input: EditFileInput): EditFileInput {
+  if (!input.old_string.includes('\n') && !input.new_string.includes('\n')) return input
+  if (!usesCrlf(content)) return input
+  if (input.old_string !== '' && content.includes(input.old_string)) {
+    // 原样已能匹配：单行或本身含 CRLF 时只统一 new_string；
+    // 多行纯 LF 也能匹配说明该段本就是 LF（混合换行文件），保持原样。
+    const lfOnlyMultiline = input.old_string.includes('\n') && !input.old_string.includes('\r\n')
+    return lfOnlyMultiline ? input : { ...input, new_string: convertEol(input.new_string, true) }
+  }
+  return {
+    ...input,
+    old_string: convertEol(input.old_string, true),
+    new_string: convertEol(input.new_string, true),
+  }
 }
 
 /**

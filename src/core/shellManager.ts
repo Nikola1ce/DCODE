@@ -313,18 +313,36 @@ export const shellManager = new ShellManager()
 export function spawnShellProcess(command: string, cwd: string): ChildProcess {
   const isWindows = process.platform === 'win32'
   const shell = isWindows ? 'powershell.exe' : '/bin/sh'
-  const args = isWindows
-    ? ['-NoProfile', '-NonInteractive', '-Command', command]
-    : ['-c', command]
+  const env = createSafeChildEnv()
+  let args: string[]
+  if (isWindows) {
+    // 用户命令经环境变量传入，由包装脚本在设置 UTF-8 后再解析执行。
+    env[POWERSHELL_COMMAND_ENV] = command
+    args = ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_UTF8_WRAPPER]
+  } else {
+    args = ['-c', command]
+  }
 
   return spawn(shell, args, {
     cwd,
-    env: createSafeChildEnv(),
+    env,
     windowsHide: true,
     // Unix 独立进程组，取消时连同命令派生的子进程一起终止。
     detached: !isWindows,
   })
 }
+
+// Windows PowerShell 5.1 默认按系统代码页（中文系统为 GBK）输出，按 UTF-8 解码会整段乱码，
+// 模型看不懂报错就无法自我修正。包装脚本先把输出编码设为 UTF-8，再在运行时解析用户命令：
+// 若直接拼在同一段 -Command 里，语法错误（如 5.1 不支持的 &&）会让整段脚本解析失败，编码设置来不及生效。
+// 退出码语义与直接 -Command 一致（以最后一条语句是否成功为准），原生命令失败时透传其真实退出码。
+const POWERSHELL_COMMAND_ENV = 'DCODE_SHELL_COMMAND'
+const POWERSHELL_UTF8_WRAPPER =
+  '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;$OutputEncoding=[System.Text.Encoding]::UTF8;' +
+  `try{$__dcode=[scriptblock]::Create($env:${POWERSHELL_COMMAND_ENV}+[Environment]::NewLine+'$global:__dcodeOk=$?')}` +
+  'catch{[Console]::Error.WriteLine($_.Exception.InnerException.Message);exit 1};' +
+  `Remove-Item Env:${POWERSHELL_COMMAND_ENV} -ErrorAction SilentlyContinue;` +
+  '. $__dcode;if($global:__dcodeOk -eq $false){if($LASTEXITCODE){exit $LASTEXITCODE};exit 1}'
 
 /** 只终止当前 Shell 的进程树，防止子进程继续运行并占住输出管道。 */
 export function terminateShellProcess(child: ChildProcess): void {

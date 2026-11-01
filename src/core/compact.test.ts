@@ -329,6 +329,8 @@ describe('compactMessages', () => {
       { role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'read_file', argsJson: '{}' }] },
       { role: 'tool', content: '旧工具结果'.repeat(10_000), toolCallId: 'old', toolName: 'read_file' },
       ...history().slice(1),
+      // 瘦身边界按步长推进，补足历史长度使旧工具结果越过首个边界。
+      ...history().slice(1, 3),
     ]
     const summary = '摘要'.repeat(5000)
     expect(summary.length).toBeLessThan(messages[2].content.length)

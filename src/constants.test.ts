@@ -38,8 +38,8 @@ describe('reasoning effort 四级强度', () => {
     expect(isValidReasoningEffort('HIGH')).toBe(false)
   })
 
-  it('mapEffortToDeepSeek 将 low/medium 归并为 high，max 保持 max', () => {
-    expect(mapEffortToDeepSeek('low')).toBe('high')
+  it('mapEffortToDeepSeek 保留 low、medium 归并为 high，max 保持 max', () => {
+    expect(mapEffortToDeepSeek('low')).toBe('low')
     expect(mapEffortToDeepSeek('medium')).toBe('high')
     expect(mapEffortToDeepSeek('high')).toBe('high')
     expect(mapEffortToDeepSeek('max')).toBe('max')

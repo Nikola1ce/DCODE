@@ -13,6 +13,7 @@
 // 制作人：Moriarty_Dox
 
 import {
+  HISTORY_TRIM_BOUNDARY_STEP,
   HISTORY_TRIM_KEEP_RECENT,
   HISTORY_TRIM_MAX_TOOL_RESULT_CHARS,
   HISTORY_TRIM_HEAD_CHARS,
@@ -75,7 +76,11 @@ export function trimHistoryForRequest(messages: DeepMessage[]): DeepMessage[] {
   if (n <= HISTORY_TRIM_KEEP_RECENT + 1) return messages
 
   // 最近窗口的起始下标（含）——该下标及之后的消息一律保持原样。
-  const recentStart = n - HISTORY_TRIM_KEEP_RECENT
+  // 按步长向下取整：边界每 HISTORY_TRIM_BOUNDARY_STEP 条消息才推进一次，
+  // 期间发送的历史前缀不变，保证前缀缓存命中（窗口实际保留 KEEP_RECENT ~ KEEP_RECENT+STEP-1 条）。
+  const recentStart =
+    Math.floor((n - HISTORY_TRIM_KEEP_RECENT) / HISTORY_TRIM_BOUNDARY_STEP) *
+    HISTORY_TRIM_BOUNDARY_STEP
   let changed = false
 
   const out = messages.map((m, idx) => {

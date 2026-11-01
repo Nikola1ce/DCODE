@@ -101,6 +101,48 @@ export function toDisplayPath(cwd: string, abs: string): string {
 }
 
 /**
+ * 将检索工具（glob/grep）在子目录下得到的相对路径换算为相对工作目录的展示路径，
+ * 确保模型可直接把结果传回 read_file 等工具。cwd 会先做 realpath，
+ * 与 resolveWithinCwd 返回的真实路径保持一致（Windows 短路径名、符号链接）。
+ * @param cwd 当前工作目录。
+ * @param searchRoot 搜索基准目录（绝对路径）。
+ * @param rel 相对 searchRoot 的路径（fast-glob 输出，使用 /）。
+ * @returns 相对工作目录的路径；位于工作目录之外时返回绝对路径。
+ */
+export function toCwdRelative(cwd: string, searchRoot: string, rel: string): string {
+  let base = cwd
+  try {
+    base = realpathSync(cwd)
+  } catch {
+    // cwd 无法解析时按原值计算。
+  }
+  return toDisplayPath(base, join(searchRoot, rel))
+}
+
+/**
+ * 判断文本是否以 CRLF 作为主要换行符（用于编辑/覆盖时保持原文件风格）。
+ * @param text 文件文本。
+ * @returns CRLF 行数不少于 LF-only 行数时返回 true。
+ */
+export function usesCrlf(text: string): boolean {
+  const crlf = (text.match(/\r\n/g) ?? []).length
+  if (crlf === 0) return false
+  const lf = (text.match(/\n/g) ?? []).length
+  return crlf >= lf - crlf
+}
+
+/**
+ * 将文本中的换行统一为 LF，或统一为 CRLF。
+ * @param text 原始文本。
+ * @param crlf true 转换为 CRLF，false 转换为 LF。
+ * @returns 换行统一后的文本。
+ */
+export function convertEol(text: string, crlf: boolean): string {
+  const lf = text.replace(/\r\n/g, '\n')
+  return crlf ? lf.replace(/\n/g, '\r\n') : lf
+}
+
+/**
  * 将文本按最大字符数截断，超出部分以提示行替代。
  * @param text 原始文本。
  * @param maxChars 允许的最大字符数。
@@ -120,7 +162,8 @@ export function truncate(text: string, maxChars: number): string {
  * @returns 带行号前缀的文本。
  */
 export function addLineNumbers(text: string, startLine = 1): string {
-  const lines = text.split('\n')
+  // 按 CRLF/LF 分行，避免行尾残留不可见的 \r 误导模型构造 old_string。
+  const lines = text.split(/\r?\n/)
   // 计算行号宽度以右对齐，提升可读性。
   const width = String(startLine + lines.length - 1).length
   return lines

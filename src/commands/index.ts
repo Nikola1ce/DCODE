@@ -549,7 +549,7 @@ export const COMMANDS: SlashCommand[] = [
             `当前推理强度：${cur}\n` +
             `可选：${REASONING_EFFORTS.join('、')}（例如 /effort max）\n` +
             '说明：仅在 Thinking 模式启用时传给 API；/thinking 关闭时不发送 reasoning_effort。\n' +
-            `注意：DeepSeek V4 实际仅认 high / max，low / medium 会自动归并为 high（当前将以 ${mapEffortToDeepSeek(cur)} 发送）。`,
+            `注意：DeepSeek 接受 low / high / max，medium 会归并为 high（当前将以 ${mapEffortToDeepSeek(cur)} 发送）；low 思维链最短、最省 token。`,
         }
       }
       if (!isValidReasoningEffort(target)) {
@@ -559,7 +559,7 @@ export const COMMANDS: SlashCommand[] = [
       }
       ctx.applyConfig({ reasoningEffort: target })
       const note =
-        target === 'low' || target === 'medium'
+        target === 'medium'
           ? `（DeepSeek 将以 ${mapEffortToDeepSeek(target)} 发送）`
           : ''
       return { message: `已切换推理强度为 ${target}。${note}` }
@@ -1166,7 +1166,9 @@ function getCommandArgSuggestions(
           ? '最高强度（复杂 agentic 任务）'
           : e === 'high'
             ? '高强度（默认，多数推理任务）'
-            : `${e}（DeepSeek 归并为 ${mapEffortToDeepSeek(e)}）`,
+            : e === 'low'
+              ? '低强度（思维链最短，最省 token，适合简单改动）'
+              : `${e}（DeepSeek 归并为 ${mapEffortToDeepSeek(e)}）`,
       completion: `/effort ${e}`,
     }))
   }

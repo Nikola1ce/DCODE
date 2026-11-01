@@ -88,7 +88,7 @@ DCODE 是一个运行在终端中的 AI 编程助手，借鉴 Claude Code 的整
 - **自定义忽略 `.dcodeignore`**：格式同 `.gitignore`，与默认噪声目录、`.gitignore` 合并（`.dcodeignore` 优先级最高、支持 `!` 反忽略），统一作用于 `glob` / `grep` / `list_dir`
 - **额外工作目录 `/add-dir`**：把 cwd 之外的目录加入工作上下文（项目级持久化到 `.dcode/workspace.json`），所有文件工具可安全访问；支持 `list` / `remove` / `clear`
 - **代码审查 `/review`**（别名 `/cr`）：审查工作区/已暂存/分支差异或指定文件，可叠加安全/性能/可读性/最佳实践聚焦维度，结果按 Critical / Warning / Suggestion 分级
-- **Extended Thinking 预算**：推理强度 `low/medium/high/max` 四级（`/effort`），可选 `--thinking-budget` / `/thinking-budget` token 预算；DeepSeek 仅认 high/max，low/medium 自动归并
+- **Extended Thinking 预算**：推理强度 `low/medium/high/max` 四级（`/effort`），可选 `--thinking-budget` / `/thinking-budget` token 预算；DeepSeek 支持 low/high/max，medium 归并为 high
 - **终端内 Diff 查看器**：权限弹窗的 diff 带新旧行号列、`@@` hunk 头与上下文折叠、增绿删红加粗高亮，大文件只展示变更块而非整文件截断
 - **自动更新 `/update`**：检测 GitHub 最新版本并执行 `git pull + npm install + build`（或 `npm update -g`）
 
@@ -671,7 +671,7 @@ dcode --plan
 | `--auto` | 自动接受编辑模式（文件读写免确认） |
 | `--bypass` | 跳过所有权限确认（危险；无头模式下等同自动批准） |
 | `--dangerously-skip-permissions` | 同 `--bypass` |
-| `--reasoning-effort <low\|medium\|high\|max>` | 推理强度（Thinking 模式下生效；DeepSeek 仅认 high/max，low/medium 自动归并） |
+| `--reasoning-effort <low\|medium\|high\|max>` | 推理强度（Thinking 模式下生效；DeepSeek 支持 low/high/max，medium 归并为 high） |
 | `--thinking-budget <整数>` | 思维链 token 预算（约束 `thinking.budget_tokens`，仅支持该参数的 Provider 生效） |
 | `-v, --version` | 显示版本 |
 | `-h, --help` | 显示帮助 |
@@ -696,7 +696,7 @@ dcode --plan
 | `/resume` | 从历史会话中恢复 |
 | `/theme` | 切换暗/亮主题 |
 | `/thinking` | 开关思维链展示 |
-| `/effort [low\|medium\|high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API；DeepSeek 仅认 high/max） |
+| `/effort [low\|medium\|high\|max]` | 查看或切换推理强度（Thinking 模式下传给 API；DeepSeek 的 medium 归并为 high） |
 | `/thinking-budget [N\|clear]`（别名 `/budget`） | 查看或设置思维链 token 预算 |
 | `/mcp [list\|resources\|prompts\|reload]` | 查看/管理 MCP Server 连接 |
 | `/shells`（别名 `/bg`） | 查看后台 Shell 状态 |

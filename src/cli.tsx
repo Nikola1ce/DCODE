@@ -198,7 +198,7 @@ function printHelp(): void {
     '      --auto                  以自动接受编辑模式启动',
     '      --bypass                跳过所有权限确认（危险，同 --dangerously-skip-permissions）',
     '      --dangerously-skip-permissions  跳过所有权限确认（危险）',
-    '      --reasoning-effort <low|medium|high|max>  推理强度（Thinking 模式下生效；DeepSeek 将 low/medium 归并为 high）',
+    '      --reasoning-effort <low|medium|high|max>  推理强度（Thinking 模式下生效；DeepSeek 将 medium 归并为 high）',
     '      --thinking-budget <整数>  思维链 token 预算（如 16000；仅支持该参数的 Provider 生效）',
     '      --ide-server            IDE 集成：以 NDJSON over stdio 与 VSCode 扩展通信（一般由扩展自动启动）',
     '  -v, --version               显示版本',

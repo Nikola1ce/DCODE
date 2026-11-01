@@ -109,7 +109,8 @@ describe('AgentRunner 上下文预算', () => {
       { role: 'user', content: '读取' },
       { role: 'assistant', content: '', toolCalls: [{ id: 'read', name: 'read_file', argsJson: '{}' }] },
       { role: 'tool', toolCallId: 'read', toolName: 'read_file', content: 'x'.repeat(400000) },
-      ...Array.from({ length: 9 }, (): DeepMessage => ({ role: 'user', content: '继续' })),
+      // 瘦身边界按步长推进，需足够长的历史才会越过首个边界。
+      ...Array.from({ length: 15 }, (): DeepMessage => ({ role: 'user', content: '继续' })),
     ]
     const client = new FakeClient([[done('完成')]])
     const events = await collect(makeRunner(client, messages, { getAvailableTools: () => [] }))

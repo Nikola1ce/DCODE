@@ -183,6 +183,12 @@ export const HISTORY_TRIM_KEEP_RECENT = 8
 // 单条工具结果超过该字符数，且已滚出最近窗口时，才会被瘦身（小结果保持原样，避免误伤）。
 export const HISTORY_TRIM_MAX_TOOL_RESULT_CHARS = 4000
 
+// 瘦身边界的推进步长（条消息）：边界按该步长成批推进，而不是每条新消息都前移一次。
+// 原因：供应商的前缀缓存（prompt cache）以“首个变化位置”为界，边界每轮前移都会改写历史中段，
+// 使其后的全部内容（含必须回传的思维链 reasoning_content）按未命中价重新计费。
+// 成批推进后，绝大多数请求的历史前缀保持不变，可持续命中缓存。
+export const HISTORY_TRIM_BOUNDARY_STEP = 8
+
 // 瘦身时为旧的大工具结果保留的「头部字符数」（保留开头便于模型回忆该结果大致内容）。
 export const HISTORY_TRIM_HEAD_CHARS = 800
 
@@ -296,13 +302,14 @@ export function isValidReasoningEffort(value: string): value is ReasoningEffort 
 }
 
 /**
- * 将统一的四级推理强度映射为 DeepSeek V4 实际接受的取值。
- * DeepSeek API 当前仅认 high / max：为兼容性，low / medium 自动归并到 high，
- * 这样上层可以始终暴露四档体验，而底层请求不会因非法取值而 400。
+ * 将统一的四级推理强度映射为 DeepSeek 实际接受的取值。
+ * DeepSeek 接受 low / high / max（medium 在服务端同样映射为 high），
+ * 因此 low 原样发送，让用户选择低强度时真正缩短思维链、节省输出 token。
  * @param effort 面向用户的四级强度。
- * @returns DeepSeek 兼容的 reasoning_effort 值（'high' | 'max'）。
+ * @returns DeepSeek 兼容的 reasoning_effort 值（'low' | 'high' | 'max'）。
  */
-export function mapEffortToDeepSeek(effort: ReasoningEffort): 'high' | 'max' {
+export function mapEffortToDeepSeek(effort: ReasoningEffort): 'low' | 'high' | 'max' {
+  if (effort === 'low') return 'low'
   return effort === 'max' ? 'max' : 'high'
 }
 

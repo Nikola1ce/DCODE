@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  HISTORY_TRIM_BOUNDARY_STEP,
   HISTORY_TRIM_HEAD_CHARS,
   HISTORY_TRIM_KEEP_RECENT,
   HISTORY_TRIM_MAX_TOOL_RESULT_CHARS,
@@ -34,7 +35,7 @@ function bigContent(): string {
  */
 function withRecentPadding(head: DeepMessage[]): DeepMessage[] {
   const padding: DeepMessage[] = []
-  for (let i = 0; i < HISTORY_TRIM_KEEP_RECENT + 1; i++) {
+  for (let i = 0; i < HISTORY_TRIM_KEEP_RECENT + HISTORY_TRIM_BOUNDARY_STEP; i++) {
     padding.push({ role: 'user', content: `padding-${i}` })
   }
   return [{ role: 'system', content: 'sys' }, ...head, ...padding]
@@ -120,5 +121,27 @@ describe('trimHistoryForRequest', () => {
   it('没有任何可瘦身消息时返回原数组引用', () => {
     const msgs = withRecentPadding([{ role: 'user', content: 'nothing big here' }])
     expect(trimHistoryForRequest(msgs)).toBe(msgs)
+  })
+  it('瘦身边界按步长成批推进，期间发送的历史前缀保持不变（利于前缀缓存）', () => {
+    // 大量旧工具结果 + 逐条追加的新消息，模拟 Agent 多轮工具循环。
+    const history: DeepMessage[] = [{ role: 'system', content: 'sys' }]
+    for (let i = 0; i < 40; i++) history.push(toolMsg(`${i}:${bigContent()}`))
+
+    let boundaryMoves = 0
+    let prev = trimHistoryForRequest(history)
+    for (let step = 0; step < HISTORY_TRIM_BOUNDARY_STEP * 3; step++) {
+      history.push(toolMsg(`new-${step}:${bigContent()}`))
+      const next = trimHistoryForRequest(history)
+      // 找到上一次请求与本次请求的首个不同位置。
+      let firstDiff = 0
+      while (firstDiff < prev.length && prev[firstDiff].content === next[firstDiff].content) firstDiff++
+      if (firstDiff < prev.length) boundaryMoves++
+      prev = next
+    }
+    // 逐条推进时每次都会改写中段；成批推进后每 STEP 条消息至多改写一次。
+    expect(boundaryMoves).toBeLessThanOrEqual(3)
+    // 最近 KEEP_RECENT 条始终保持原文。
+    const tail = prev.slice(-HISTORY_TRIM_KEEP_RECENT)
+    expect(tail.every((m) => m.metadata?.trimmed !== true)).toBe(true)
   })
 })

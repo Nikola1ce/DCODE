@@ -9,7 +9,7 @@ import { dirname } from 'node:path'
 import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
 import { buildDiffPreviewView } from './diff.js'
-import { resolveWithinCwd, toDisplayPath } from './util.js'
+import { convertEol, resolveWithinCwd, toDisplayPath, usesCrlf } from './util.js'
 
 // write_file 的入参结构。
 interface WriteFileInput {
@@ -53,7 +53,7 @@ export const writeFileTool: ToolDefinition = {
     return {
       toolName: 'write_file',
       title: `${exists ? '覆盖' : '创建'}文件 ${toDisplayPath(ctx.cwd, abs)}`,
-      preview: buildDiffPreviewView(oldText, input.content),
+      preview: buildDiffPreviewView(oldText, matchExistingEol(oldText, input.content)),
       ruleKey: `write_file(${input.path})`,
     }
   },
@@ -71,16 +71,30 @@ export const writeFileTool: ToolDefinition = {
     const dir = dirname(abs)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
+    // 覆盖已有 CRLF 文件时沿用其换行风格，避免整文件换行变化造成大面积 diff。
+    const content = exists ? matchExistingEol(safeRead(abs), input.content) : input.content
+
     // 写入前创建检查点，供 /undo 回退。
     saveCheckpointBeforeWrite(ctx.cwd, abs, 'write_file')
 
-    writeFileSync(abs, input.content, 'utf8')
+    writeFileSync(abs, content, 'utf8')
     const lineCount = input.content.split('\n').length
     return {
       llmContent: `已${exists ? '覆盖' : '创建'}文件 ${input.path}（${lineCount} 行）。`,
       uiSummary: `${exists ? '覆盖' : '创建'} ${toDisplayPath(ctx.cwd, abs)}（${lineCount} 行）`,
     }
   },
+}
+
+/**
+ * 原文件使用 CRLF 且新内容为纯 LF 时，把新内容转换为 CRLF；其余情况原样返回。
+ * @param oldText 原文件内容。
+ * @param content 待写入内容。
+ * @returns 换行风格与原文件一致的内容。
+ */
+function matchExistingEol(oldText: string, content: string): string {
+  if (!usesCrlf(oldText) || content.includes('\r\n')) return content
+  return convertEol(content, true)
 }
 
 /**

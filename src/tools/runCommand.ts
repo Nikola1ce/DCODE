@@ -44,7 +44,7 @@ export const runCommandTool: ToolDefinition = {
   name: 'run_command',
   description:
     '在当前工作目录执行一条 Shell 命令并返回其输出（stdout/stderr 合并）。' +
-    'Windows 上使用 PowerShell，类 Unix 上使用 /bin/sh。' +
+    'Windows 上使用 Windows PowerShell 5.1（不支持 &&/||，用 `a; if ($?) { b }` 串联），类 Unix 上使用 /bin/sh。' +
     '适合运行测试、构建、git、安装依赖等。请在 description 中简要说明命令用途。' +
     '长耗时任务（构建、训练）请设 background=true，获得 shell_id 后用 bash_output 轮询、kill_shell 终止。' +
     '注意：不要用它来读写文件（请用 read_file/write_file/edit_file）。',
@@ -110,6 +110,21 @@ export const runCommandTool: ToolDefinition = {
   },
 }
 
+// 前台命令超时的上下限：过小会让命令来不及启动，超过 setTimeout 上限（约 24.8 天）会溢出为立即触发。
+const MIN_TIMEOUT_MS = 1000
+const MAX_TIMEOUT_MS = 60 * 60 * 1000
+
+/**
+ * 规整模型传入的超时：非法值（非数字、NaN、≤0）回退默认值，其余限制在合理区间。
+ * @param timeout 模型给出的超时毫秒数（可能为字符串或缺省）。
+ * @returns 可安全传给 setTimeout 的毫秒数。
+ */
+export function normalizeTimeout(timeout: unknown): number {
+  const n = typeof timeout === 'string' ? Number(timeout) : timeout
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return DEFAULT_COMMAND_TIMEOUT_MS
+  return Math.min(Math.max(Math.round(n), MIN_TIMEOUT_MS), MAX_TIMEOUT_MS)
+}
+
 /**
  * 前台阻塞执行命令：spawn 子进程，合并捕获输出，处理超时与中断。
  * @param input 入参。
@@ -120,7 +135,7 @@ async function runForegroundCommand(
   input: RunCommandInput,
   ctx: { cwd: string; abortSignal: AbortSignal; onProgress?: (text: string) => void },
 ): Promise<ToolResult> {
-  const timeoutMs = input.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS
+  const timeoutMs = normalizeTimeout(input.timeout)
   const child = spawnShellProcess(input.command, ctx.cwd)
 
   return await new Promise<ToolResult>((resolvePromise) => {

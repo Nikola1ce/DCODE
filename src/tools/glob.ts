@@ -9,7 +9,7 @@ import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createIgnoreFilter } from '../core/ignore.js'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
-import { toDisplayPath, resolveWithinCwd } from './util.js'
+import { resolveWithinCwd, toCwdRelative } from './util.js'
 
 // glob 的入参结构。
 interface GlobInput {
@@ -90,7 +90,10 @@ export const globTool: ToolDefinition = {
     withMtime.sort((a, b) => b.mtime - a.mtime)
 
     const total = withMtime.length
-    const shown = withMtime.slice(0, MAX_RESULTS).map((x) => x.rel)
+    // 指定 path 时把结果换算为相对工作目录的路径，便于直接传给 read_file。
+    const shown = withMtime
+      .slice(0, MAX_RESULTS)
+      .map((x) => (input.path ? toCwdRelative(ctx.cwd, searchCwd, x.rel) : x.rel))
     const note =
       total > MAX_RESULTS ? `\n（共 ${total} 个，仅显示前 ${MAX_RESULTS} 个）` : ''
 

@@ -8,7 +8,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createIgnoreFilter } from '../core/ignore.js'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
-import { resolveWithinCwd } from './util.js'
+import { resolveWithinCwd, toCwdRelative } from './util.js'
 
 // grep 的入参结构。
 interface GrepInput {
@@ -27,6 +27,17 @@ const MAX_FILES = 2000
 const MAX_MATCHES = 200
 // 单文件大小上限（字节）：超过则跳过，避免读超大二进制/日志。
 const MAX_FILE_SIZE = 1024 * 1024
+// 单条匹配行展示的最大字符数：压缩代码等超长行只保留开头，避免撑爆上下文。
+const MAX_LINE_CHARS = 300
+
+/**
+ * 截断超长的匹配行。
+ * @param line 匹配行文本。
+ * @returns 不超过 MAX_LINE_CHARS 的文本（超长时附省略标记）。
+ */
+function clipLine(line: string): string {
+  return line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)} …（行过长已截断）` : line
+}
 
 export const grepTool: ToolDefinition = {
   name: 'grep',
@@ -66,7 +77,9 @@ export const grepTool: ToolDefinition = {
     } catch (e: any) {
       return { llmContent: `错误：${e.message}`, isError: true }
     }
-    const pattern = input.include ?? '**/*'
+    // 不含路径分隔符的 include（如 "*.ts"）按文件名匹配，递归搜索所有子目录。
+    const include = input.include?.trim()
+    const pattern = !include ? '**/*' : include.includes('/') ? include : `**/${include}`
 
     // 统一忽略过滤器（基于工作根的 .gitignore + .dcodeignore + 默认噪声目录）。
     const ignoreFilter = createIgnoreFilter(ctx.cwd)
@@ -101,13 +114,16 @@ export const grepTool: ToolDefinition = {
         // 含 NUL 字符的大概率是二进制，跳过。
         if (content.includes('\u0000')) continue
 
-        const lines = content.split('\n')
+        // 按 CRLF/LF 分行，保证 `$` 等行尾锚点在 Windows 文件上也能匹配。
+        const lines = content.split(/\r?\n/)
+        // 指定 path 时换算为相对工作目录的路径，便于直接传给 read_file。
+        const displayPath = input.path ? toCwdRelative(ctx.cwd, searchRoot, rel) : rel
         let fileHasMatch = false
         for (let i = 0; i < lines.length; i++) {
           if (results.length >= MAX_MATCHES) break
           // 每行独立测试，重置 lastIndex（此处未用 g 标志，无需重置）。
           if (regex.test(lines[i])) {
-            results.push(`${rel}:${i + 1}: ${lines[i].trim()}`)
+            results.push(`${displayPath}:${i + 1}: ${clipLine(lines[i].trim())}`)
             fileHasMatch = true
           }
         }

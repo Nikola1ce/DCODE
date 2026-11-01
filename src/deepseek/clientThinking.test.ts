@@ -84,9 +84,9 @@ describe('OpenAICompatibleClient thinking / reasoning_effort 请求体', () => {
     expect(body.reasoning_effort).toBe('max')
   })
 
-  it('low / medium 被归一化为 high 发送给 DeepSeek', async () => {
+  it('low 原样发送、medium 归一化为 high 发送给 DeepSeek', async () => {
     const low = await runAndCaptureBody(deepseekConfig({ reasoningEffort: 'low' }))
-    expect(low.reasoning_effort).toBe('high')
+    expect(low.reasoning_effort).toBe('low')
     const medium = await runAndCaptureBody(deepseekConfig({ reasoningEffort: 'medium' }))
     expect(medium.reasoning_effort).toBe('high')
   })

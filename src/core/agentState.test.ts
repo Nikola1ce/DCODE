@@ -188,7 +188,8 @@ describe('Agent 上下文与快照', () => {
       { role: 'system', content: '测试系统提示' },
       { role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'read_file', argsJson: '{}' }] },
       { role: 'tool', content: '历史工具结果'.repeat(40_000), toolCallId: 'old', toolName: 'read_file' },
-      ...Array.from({ length: 10 }, (): DeepMessage => ({ role: 'user', content: '最近短消息' })),
+      // 瘦身边界按步长推进，需足够长的历史才会越过首个边界。
+      ...Array.from({ length: 15 }, (): DeepMessage => ({ role: 'user', content: '最近短消息' })),
     ]
     const rawTokens = estimateMessagesTokens(messages)
     const originalToolResult = messages[2].content

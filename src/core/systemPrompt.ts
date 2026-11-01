@@ -8,6 +8,7 @@ import { PRODUCT_NAME, AUTHOR } from '../constants.js'
 import type { PermissionMode } from '../config.js'
 import { formatMemories, loadMemories } from '../memory.js'
 import { getMcpManager } from '../mcp/client.js'
+import { detectProjectProfile } from './projectProfile.js'
 import type { SkillDefinition } from './skills.js'
 import { formatSkillsForPrompt } from './skills.js'
 
@@ -39,6 +40,9 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const modeNote = describePermissionMode(ctx.permissionMode)
   const mcpNote = buildMcpSection()
   const extraDirsNote = buildExtraDirsNote(ctx.extraDirs ?? [])
+  const project = detectProjectProfile(ctx.cwd)
+  const projectNote = project ? `\n- 项目：${project}` : ''
+  const shellNote = buildShellNote(process.platform)
 
   // 主体提示。使用清晰的分节，便于模型遵循。
   // 表述刻意保持紧凑：本段每轮请求都会作为输入 token 重复发送，过度冗长会持续推高成本。
@@ -58,8 +62,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 三步以上的复杂任务先用 todo_write 列计划并更新状态。
 - 复杂多文件或需并行时用 task 派遣子代理（可并行，explore 做只读探索；并发上限 5，model 可指定 flash 省成本）。
 - 需最新文档/API/issue 用 web_search、web_fetch（需授权，plan 模式不可用）。
-- 改完尽量跑测试或构建自我验证。
-${mcpNote}
+- 互不依赖的读取/检索在同一轮一次发出多个工具调用，减少往返。
+${shellNote}${mcpNote}
+# 编码工作流
+- 动手前先弄清：定位相关实现、调用方与已有测试；修 Bug 先找到根因（能复现就先复现），不要只压症状。
+- 改函数签名、导出、配置项或数据结构时，用 grep 找出全部引用一并更新。
+- 改完必须验证：运行与改动相关的测试、类型检查或构建；失败就读错误、修复、再运行，直到通过或确认与本次改动无关。
+- 工具报错时先读错误信息再调整，不要原样重试；edit_file 未匹配时按返回的实际内容重新构造 old_string。
+- 不臆造 API、配置项或命令输出；不确定时查看源码、依赖或文档。
+- 能自行判断的细节直接按最合理的方式做完，不中途停下询问；只有需求本身有歧义或操作不可逆时才问用户。
+- 收尾简述改了什么、如何验证；验证失败或未执行要如实说明。
+
 # 代码规范
 - 遵循目标文件已有风格、命名与缩进；改动小而聚焦，不顺手重构。
 - 不加无意义注释（仅解释非显而易见的意图）。不泄露密钥等敏感信息。
@@ -69,7 +82,7 @@ ${modeNote}
 - 删除、强制覆盖、影响系统等破坏性操作务必谨慎，依赖用户授权。
 
 # 运行环境
-- 平台：${process.platform}｜目录：${ctx.cwd}${extraDirsNote}
+- 平台：${process.platform}｜目录：${ctx.cwd}${extraDirsNote}${projectNote}
 - 日期：${new Date().toISOString().slice(0, 10)}｜模型：${ctx.model}`
 
   let prompt = base
@@ -106,6 +119,21 @@ function buildExtraDirsNote(extraDirs: string[]): string {
   if (extraDirs.length === 0) return ''
   const list = extraDirs.map((d) => `  - ${d}`).join('\n')
   return `\n- 额外可访问目录（用户已通过 /add-dir 授权，文件工具可在其中读写）：\n${list}`
+}
+
+/**
+ * 生成 run_command 所用 Shell 的语法提示。Windows 上是 Windows PowerShell 5.1，
+ * 模型习惯写的 `a && b`、`export X=1` 在其中是语法错误，需显式告知。
+ * @param platform 运行平台（process.platform）。
+ * @returns 以 “- ” 开头、换行结尾的提示行；非 Windows 返回空串。
+ */
+export function buildShellNote(platform: NodeJS.Platform): string {
+  if (platform !== 'win32') return ''
+  return (
+    '- run_command 在 Windows PowerShell 5.1 中执行：不支持 && 和 ||，' +
+    '用 `a; if ($?) { b }` 串联；环境变量用 `$env:NAME = "值"`；' +
+    '优先用 git、npm、node、python 等跨平台命令，避免 Unix 专属命令（grep/sed/rm -rf）。\n'
+  )
 }
 
 /**

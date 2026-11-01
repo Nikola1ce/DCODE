@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { MAX_FILE_READ_CHARS } from '../constants.js'
 import type { ToolDefinition, ToolResult } from '../core/types.js'
-import { addLineNumbers, resolveWithinCwd, toDisplayPath, truncate } from './util.js'
+import { addLineNumbers, resolveWithinCwd, toDisplayPath } from './util.js'
 
 // read_file 的入参结构。
 interface ReadFileInput {
@@ -57,11 +57,18 @@ export const readFileTool: ToolDefinition = {
 
     // 读取全文（文本模式）。
     let content = readFileSync(abs, 'utf8')
+    // 含 NUL 字符的大概率是二进制文件，按文本输出只会是乱码并浪费上下文。
+    if (content.includes('\u0000')) {
+      return {
+        llmContent: `错误：${input.path} 是二进制文件（${st.size} 字节），无法按文本读取。`,
+        isError: true,
+      }
+    }
 
     // 处理可选的行范围切片。
     let startLine = 1
     if (input.offset !== undefined || input.limit !== undefined) {
-      const lines = content.split('\n')
+      const lines = content.split(/\r?\n/)
       const totalLines = lines.length
       const start = Math.max(0, (input.offset ?? 1) - 1)
       if (start >= totalLines) {
@@ -83,13 +90,33 @@ export const readFileTool: ToolDefinition = {
       return { llmContent: '（文件为空）', uiSummary: `读取 ${toDisplayPath(ctx.cwd, abs)}（空文件）` }
     }
 
-    // 超长内容截断，防止撑爆上下文。
+    // 超长内容按整行截断，防止撑爆上下文，并告诉模型从哪一行继续读。
     const numbered = addLineNumbers(content, startLine)
-    const finalText = truncate(numbered, MAX_FILE_READ_CHARS)
+    const finalText = truncateByLines(numbered, MAX_FILE_READ_CHARS, startLine)
 
     return {
       llmContent: finalText,
-      uiSummary: `读取 ${toDisplayPath(ctx.cwd, abs)}（${content.split('\n').length} 行）`,
+      uiSummary: `读取 ${toDisplayPath(ctx.cwd, abs)}（${content.split(/\r?\n/).length} 行）`,
     }
   },
+}
+
+/**
+ * 按整行截断带行号的文本：不在行中间切断，并提示下一次读取的 offset。
+ * @param numbered 带行号的文本。
+ * @param maxChars 最大字符数。
+ * @param startLine 本次读取的起始行号（1 基）。
+ * @returns 截断后的文本（未超限时原样返回）。
+ */
+function truncateByLines(numbered: string, maxChars: number, startLine: number): string {
+  if (numbered.length <= maxChars) return numbered
+  const cut = numbered.lastIndexOf('\n', maxChars)
+  // 单行就超限（如压缩文件）时只能按字符截断。
+  const head = cut > 0 ? numbered.slice(0, cut) : numbered.slice(0, maxChars)
+  const shownLines = head.split('\n').length
+  const nextOffset = startLine + shownLines
+  return (
+    `${head}\n\n... [内容过长已截断：本次显示到第 ${nextOffset - 1} 行。` +
+    `如需后续内容，请用 offset=${nextOffset} 继续读取，或先用 grep 定位目标位置] ...`
+  )
 }

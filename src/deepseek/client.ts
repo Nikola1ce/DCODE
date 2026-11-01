@@ -219,7 +219,7 @@ export class OpenAICompatibleClient implements LLMClient {
         if (supportsThinking) {
           const thinking: Record<string, unknown> = { type: thinkingType }
           if (thinkingType === 'enabled') {
-            // DeepSeek 仅认 high / max：把四级强度归一化后再发送，避免非法值 400。
+            // DeepSeek 接受 low / high / max：把四级强度归一化后再发送，避免非法值 400。
             requestBody.reasoning_effort = mapEffortToDeepSeek(reasoningEffort)
             // 思维链 token 预算：仅当为合法整数时随 thinking 一并发送（budget_tokens）。
             // DeepSeek 当前会忽略该字段，但保持透传以兼容支持预算上限的其它 thinking Provider。
