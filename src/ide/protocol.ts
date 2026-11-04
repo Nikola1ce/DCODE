@@ -9,7 +9,10 @@
 //   3. 所有消息都带 type 判别字段，便于在两端做穷尽式 switch 与类型收窄。
 // 制作人：Moriarty_Dox
 
-import type { PermissionDecision, PermissionRequest } from '../core/types.js'
+import type { DeepMessage, PermissionDecision, PermissionRequest, ToolFileChange, ToolResult } from '../core/types.js'
+import type { CheckpointSummary, CheckpointDiffResult, SessionUndoResult } from '../core/checkpoint.js'
+import type { HostToolDeclaration, HostToolMessage } from './hostTools.js'
+import type { ReasoningEffort } from '../constants.js'
 import { StringDecoder } from 'node:string_decoder'
 
 // 当前协议版本号。客户端连接后服务端会在 ready 消息里回传此值，
@@ -20,7 +23,33 @@ import { StringDecoder } from 'node:string_decoder'
 //     并新增 set_provider 指令，使扩展面板可做「点击切换模型 / 点击切换供应商」的下拉菜单。
 // v4：新增「面板内 /login」交互——服务端 login_prompt（请求录入 Key）+ 客户端 submit_api_key
 //     （提交 Key），使 VSCode 面板可直接输入并保存 API Key，无需再跳转终端。
-export const IDE_PROTOCOL_VERSION = 4
+// v5：桌面能力协商、轮次身份、历史与检查点、宿主工具及消息级回退/分叉。
+// 所有 v4 字段保留；客户端应按 capabilities 判断可选能力，而非严格相等比较版本。
+export const IDE_PROTOCOL_VERSION = 5
+
+export interface IdeCapabilities {
+  reasoningEffort?: boolean
+  historySnapshot?: boolean
+  turnMetadata?: boolean
+  structuredPermissions?: boolean
+  checkpointDiff?: boolean
+  checkpointUndoById?: boolean
+  hostTools?: boolean
+  rewind?: boolean
+  forkSession?: boolean
+}
+
+/** UI 历史投影：不下发 system 提示或 Responses API 的内部/加密输出。 */
+export type HistoryMessage = Pick<DeepMessage,
+  'id' | 'runId' | 'turnId' | 'role' | 'content' | 'toolCalls' | 'toolCallId' |
+  'toolName' | 'reasoning' | 'isError' | 'timestamp' | 'metadata'>
+
+export interface RunMetadata {
+  runId?: string
+  turnId?: string
+  timestamp?: number
+  messageId?: string
+}
 
 // IDE 服务端启动时使用的权限模式（与 config.PermissionMode 对齐，单独列出避免循环依赖语义）。
 // - default：写文件/执行命令前发起权限请求（IDE 内弹窗确认）；
@@ -139,8 +168,20 @@ export interface ClientShutdownMessage {
   type: 'shutdown'
 }
 
+export type ClientDesktopMessage =
+  | { type: 'set_reasoning_effort'; effort: ReasoningEffort }
+  | { type: 'request_history'; requestId: string }
+  | { type: 'rewind'; requestId: string; messageId: string; mode: 'messages' | 'files' | 'both' }
+  | { type: 'fork_session'; requestId: string; messageId: string }
+  | { type: 'request_checkpoints'; requestId: string }
+  | { type: 'request_checkpoint_diff'; requestId: string; checkpointId: string }
+  | { type: 'undo_checkpoint'; requestId: string; checkpointId: string }
+  | { type: 'register_host_tools'; requestId: string; tools: HostToolDeclaration[] }
+  | { type: 'host_tool_result'; hostCallId: string; result: ToolResult }
+
 // 客户端可发送的全部消息联合类型。
 export type ClientMessage =
+  | ClientDesktopMessage
   | ClientPromptMessage
   | ClientCancelMessage
   | ClientPermissionResponseMessage
@@ -187,6 +228,8 @@ export interface ModelOption {
 // 服务端就绪（启动并完成 Agent 初始化后第一条消息）。
 export interface ServerReadyMessage {
   type: 'ready'
+  capabilities?: IdeCapabilities
+  reasoningEffort?: ReasoningEffort
   // 协议版本，供客户端校验兼容性。
   protocolVersion: number
   // dcode 产品版本。
@@ -233,6 +276,7 @@ export interface ServerToolStartMessage {
   name: string
   // 一行人类可读摘要（如「读取 src/index.ts」）。
   summary: string
+  input?: unknown
 }
 
 // 工具执行过程中的实时进度（如命令的增量输出）。
@@ -255,6 +299,7 @@ export interface ServerToolEndMessage {
   summary?: string
   // 工具回传给模型的完整文本（客户端可折叠展示）。
   detail?: string
+  changedFiles?: ToolFileChange[]
 }
 
 // 服务端发起权限请求：等待客户端 permission_response。
@@ -293,6 +338,7 @@ export interface ServerTurnErrorMessage {
 // 服务端状态变更通知（模型/权限模式/会话被切换后回推，便于客户端刷新 UI）。
 export interface ServerStatusMessage {
   type: 'status'
+  reasoningEffort?: ReasoningEffort
   model: string
   provider: string
   permissionMode: IdePermissionMode
@@ -366,7 +412,21 @@ export interface ServerLoginPromptMessage {
 }
 
 // 服务端可发送的全部消息联合类型。
-export type ServerMessage =
+export type ServerDesktopMessage =
+  | HostToolMessage
+  | { type: 'host_tools_registered'; requestId: string; names: string[] }
+  | { type: 'checkpoint_list'; requestId: string; sessionId: string; checkpoints: CheckpointSummary[] }
+  | { type: 'checkpoint_diff'; requestId: string; result: CheckpointDiffResult }
+  | { type: 'checkpoint_undone'; requestId: string; result: SessionUndoResult }
+  | { type: 'turn_started'; requestId: string; runId: string; turnId: string; timestamp: number; messageId?: string }
+  | { type: 'assistant_done'; requestId: string; message: HistoryMessage }
+  | { type: 'history_snapshot'; requestId: string; sessionId: string | null; messages: HistoryMessage[] }
+  | { type: 'rewind_result'; requestId: string; sessionId: string; mode: 'messages' | 'files' | 'both'; removedMessages: number; restoredFiles: string[]; warning: string }
+  | { type: 'session_forked'; requestId: string; sessionId: string; parentSessionId: string; parentMessageId: string }
+  | { type: 'operation_error'; requestId: string; operation: string; message: string; code?: 'busy' | 'invalid_request' | 'not_found' | 'conflict' | 'unsupported' }
+
+export type ServerMessage = (
+  | ServerDesktopMessage
   | ServerReadyMessage
   | ServerReasoningMessage
   | ServerTextMessage
@@ -381,6 +441,7 @@ export type ServerMessage =
   | ServerCommandSuggestionsMessage
   | ServerCommandResultMessage
   | ServerLoginPromptMessage
+) & RunMetadata
 
 /**
  * 把一条消息编码为 NDJSON 行（JSON 字符串 + 换行符）。
@@ -425,7 +486,8 @@ export function decodeMessage<T = ClientMessage | ServerMessage>(
  *
  * @returns 含 push(chunk) 方法的解码器；push 返回本次新解析出的完整消息数组。
  */
-export function createLineDecoder<T = ClientMessage | ServerMessage>() {
+export function createLineDecoder<T = ClientMessage | ServerMessage>(maxLineBytes = 8 * 1024 * 1024) {
+  if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) throw new Error('NDJSON 帧大小上限必须为正整数。')
   // 跨 chunk 的未完成行缓冲。
   let buffer = ''
   const utf8 = new StringDecoder('utf8')
@@ -444,8 +506,16 @@ export function createLineDecoder<T = ClientMessage | ServerMessage>() {
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx)
         buffer = buffer.slice(idx + 1)
+        if (Buffer.byteLength(line, 'utf8') > maxLineBytes) {
+          buffer = ''
+          throw new Error('NDJSON 消息超过大小上限。')
+        }
         const msg = decodeMessage<T>(line)
         if (msg) out.push(msg)
+      }
+      if (Buffer.byteLength(buffer, 'utf8') > maxLineBytes) {
+        buffer = ''
+        throw new Error('NDJSON 消息超过大小上限。')
       }
       return out
     },

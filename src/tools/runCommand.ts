@@ -79,6 +79,7 @@ export const runCommandTool: ToolDefinition = {
         (input.description ? `：${input.description}` : ''),
       preview: `${bg}$ ${input.command}`,
       ruleKey: `run_command(${input.command})`,
+      details: { kind: 'command', command: input.command, cwd: ctx.cwd },
     }
   },
   /**

@@ -7,6 +7,7 @@ import type { LLMClient, StreamChatParams, StreamEvent } from '../providers/type
 import { Agent } from './agent.js'
 import { estimateMessagesTokens, estimateTextTokens } from './compact.js'
 import type { SessionRecorder } from './session.js'
+import { withSessionMessageIds } from './session.js'
 import type { AgentRunEvent, DeepMessage } from './types.js'
 
 vi.mock('../providers/factory.js', () => ({ createLLMClient: vi.fn() }))
@@ -45,7 +46,7 @@ function history(): DeepMessage[] {
 function setup(messages: DeepMessage[], patch: Partial<DCodeConfig> = {}) {
   const client = new StateClient()
   vi.mocked(createLLMClient).mockReturnValue(client)
-  let persisted = structuredClone(messages)
+  let persisted: DeepMessage[] = withSessionMessageIds('state-session', messages)
   const snapshots: DeepMessage[][] = []
   const recorder = {
     id: 'state-session',
@@ -77,11 +78,11 @@ describe('Agent 上下文与快照', () => {
     expect(agent.getMessages()[0].role).toBe('system')
     expect(agent.getMessages()[0].metadata?.kind).not.toBe('summary')
     expect(agent.getMessages()[0].content).toContain(process.cwd())
-    expect(agent.getMessages().slice(1)).toEqual(messages)
+    expect(agent.getMessages().slice(1)).toEqual(withSessionMessageIds('state-session', messages))
     agent.setModel('另一个模型')
-    expect(agent.getMessages().slice(1)).toEqual(messages)
+    expect(agent.getMessages().slice(1)).toEqual(withSessionMessageIds('state-session', messages))
     agent.replaceMessages(messages)
-    expect(agent.getMessages().slice(1)).toEqual(messages)
+    expect(agent.getMessages().slice(1)).toEqual(withSessionMessageIds('state-session', messages))
   })
 
   it('clear 清除对话和旧摘要，并持久化只含当前系统提示的快照', () => {
@@ -93,7 +94,7 @@ describe('Agent 上下文与快照', () => {
 
     agent.clear()
 
-    expect(agent.getMessages()).toEqual([messages[0]])
+    expect(agent.getMessages()).toEqual(withSessionMessageIds('state-session', [messages[0]]))
     expect(recorder.replaceMessages).toHaveBeenCalledTimes(1)
     expect(snapshots[0]).toEqual(agent.getMessages())
     expect(persisted()).toEqual(agent.getMessages())
@@ -136,9 +137,9 @@ describe('Agent 上下文与快照', () => {
 
     expect(await agent.compactNow()).toContain('未应用压缩')
 
-    expect(agent.getMessages()).toEqual(messages)
+    expect(agent.getMessages()).toEqual(withSessionMessageIds('state-session', messages))
     expect(recorder.replaceMessages).not.toHaveBeenCalled()
-    expect(persisted()).toEqual(messages)
+    expect(persisted()).toEqual(withSessionMessageIds('state-session', messages))
   })
 
   it('自动压缩先保存替换快照，之后的回答继续追加，恢复结果与内存一致', async () => {
@@ -179,7 +180,7 @@ describe('Agent 上下文与快照', () => {
 
     expect(events.find((e) => e.type === 'compact_end')).toMatchObject({ applied: false })
     expect(recorder.replaceMessages).not.toHaveBeenCalled()
-    expect(agent.getMessages().slice(0, original.length)).toEqual(original)
+    expect(agent.getMessages().slice(0, original.length)).toEqual(withSessionMessageIds('state-session', original))
     expect(persisted()).toEqual(agent.getMessages())
   })
 

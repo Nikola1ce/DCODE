@@ -1,4 +1,5 @@
-# DCODE Windows installer: copy release files to LOCALAPPDATA and register dcode command.
+﻿# DCODE Windows installer: copy release files to LOCALAPPDATA and register dcode command.
+# Producer: Moriarty_Dox
 param(
   [Parameter(Mandatory = $true)]
   [string]$SourceDir
@@ -13,6 +14,22 @@ if (-not (Test-Path (Join-Path $SourceDir 'dist\cli.js'))) {
   Write-Error "dist\cli.js not found under: $SourceDir"
 }
 
+# Source checkouts carry package.json; portable releases carry VERSION.txt instead.
+$packageSrc = Join-Path $SourceDir 'package.json'
+$versionSrc = Join-Path $SourceDir 'VERSION.txt'
+$version = $null
+if (Test-Path -LiteralPath $packageSrc -PathType Leaf) {
+  $version = (Get-Content -LiteralPath $packageSrc -Raw -Encoding UTF8 | ConvertFrom-Json).version
+} elseif (Test-Path -LiteralPath $versionSrc -PathType Leaf) {
+  $versionText = Get-Content -LiteralPath $versionSrc -Raw -Encoding UTF8
+  if ($versionText -match '(?m)^DCODE v(\S+)\s*$') {
+    $version = $Matches[1]
+  }
+}
+if ($version -isnot [string] -or [string]::IsNullOrWhiteSpace($version)) {
+  Write-Error "Source version not found in package.json or VERSION.txt under: $SourceDir"
+}
+
 $installRoot = Join-Path $env:LOCALAPPDATA 'DCODE'
 $binDir = Join-Path $installRoot 'bin'
 $distDir = Join-Path $installRoot 'dist'
@@ -21,6 +38,19 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
 Copy-Item -Force (Join-Path $SourceDir 'dist\cli.js') (Join-Path $distDir 'cli.js')
+
+$assetsSrc = Join-Path $SourceDir 'dist\assets'
+if (Test-Path -LiteralPath $assetsSrc -PathType Container) {
+  Copy-Item -LiteralPath $assetsSrc -Destination $distDir -Recurse -Force
+}
+
+$packageJson = [ordered]@{
+  name = 'dcode'
+  version = $version
+  type = 'module'
+} | ConvertTo-Json
+# PowerShell 5.1's UTF8 encoding adds a BOM, which updater's JSON.parse cannot read.
+[System.IO.File]::WriteAllText((Join-Path $installRoot 'package.json'), $packageJson, [System.Text.UTF8Encoding]::new($false))
 
 $licenseSrc = Join-Path $SourceDir 'LICENSE'
 if (Test-Path $licenseSrc) {

@@ -77,14 +77,8 @@ export const DEFAULT_IGNORED_DIRS = [
 // 项目级记忆文件名：类似 Claude Code 的 CLAUDE.md，存放项目约定/上下文。
 export const MEMORY_FILE_NAME = 'DCODE.md'
 
-// 单轮 Agent 主循环的最大工具调用迭代次数，防止模型陷入死循环。
-export const MAX_AGENT_ITERATIONS = 50
-
 // 子代理同时运行的最大数量（Task 工具并发上限）。
 export const MAX_CONCURRENT_SUBAGENTS = 5
-
-// 单个子代理主循环的最大工具调用迭代次数（低于主 Agent，控制成本）。
-export const MAX_SUBAGENT_ITERATIONS = 30
 
 /** 内置子代理类型标识。 */
 export const SUBAGENT_TYPE_NAMES = ['generalPurpose', 'explore', 'shell'] as const

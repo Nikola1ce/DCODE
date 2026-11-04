@@ -6,9 +6,13 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
+import {
+  buildCheckpointFileDiff,
+  completeCheckpointAfterWrite,
+  discardPendingCheckpoint,
+  saveCheckpointBeforeWrite,
+} from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreviewView } from './diff.js'
 import { convertEol, resolveWithinCwd, toDisplayPath, usesCrlf } from './util.js'
 
 // write_file 的入参结构。
@@ -50,11 +54,21 @@ export const writeFileTool: ToolDefinition = {
     const exists = existsSync(abs)
     // 生成 diff 预览供用户确认。
     const oldText = exists ? safeRead(abs) : ''
+    const diff = buildCheckpointFileDiff(oldText, matchExistingEol(oldText, input.content))
+    const display = toDisplayPath(ctx.cwd, abs)
     return {
       toolName: 'write_file',
-      title: `${exists ? '覆盖' : '创建'}文件 ${toDisplayPath(ctx.cwd, abs)}`,
-      preview: buildDiffPreviewView(oldText, matchExistingEol(oldText, input.content)),
+      title: `${exists ? '覆盖' : '创建'}文件 ${display}`,
+      preview: diff.preview,
       ruleKey: `write_file(${input.path})`,
+      details: {
+        kind: 'file',
+        path: display,
+        operation: exists ? 'edit' : 'create',
+        hunks: diff.truncated && diff.hunks.length === 0 ? undefined : diff.hunks,
+        added: diff.added,
+        removed: diff.removed,
+      },
     }
   },
   /**
@@ -72,16 +86,31 @@ export const writeFileTool: ToolDefinition = {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
     // 覆盖已有 CRLF 文件时沿用其换行风格，避免整文件换行变化造成大面积 diff。
-    const content = exists ? matchExistingEol(safeRead(abs), input.content) : input.content
+    const oldText = exists ? safeRead(abs) : ''
+    const content = exists ? matchExistingEol(oldText, input.content) : input.content
 
-    // 写入前创建检查点，供 /undo 回退。
-    saveCheckpointBeforeWrite(ctx.cwd, abs, 'write_file')
-
-    writeFileSync(abs, content, 'utf8')
+    const checkpoint = saveCheckpointBeforeWrite(ctx.cwd, abs, 'write_file', ctx)
+    try {
+      writeFileSync(abs, content, 'utf8')
+    } catch (error) {
+      if (checkpoint) discardPendingCheckpoint(ctx.cwd, checkpoint.id)
+      return { llmContent: `错误：写入 ${input.path} 失败：${error instanceof Error ? error.message : String(error)}`, isError: true }
+    }
+    const completed = checkpoint && completeCheckpointAfterWrite(ctx.cwd, checkpoint.id, content)
+    const warning = completed ? '' : '\n警告：检查点未能完整保存，此次改动无法自动回退。'
+    const { added, removed } = buildCheckpointFileDiff(oldText, content)
     const lineCount = input.content.split('\n').length
+    const display = toDisplayPath(ctx.cwd, abs)
     return {
-      llmContent: `已${exists ? '覆盖' : '创建'}文件 ${input.path}（${lineCount} 行）。`,
-      uiSummary: `${exists ? '覆盖' : '创建'} ${toDisplayPath(ctx.cwd, abs)}（${lineCount} 行）`,
+      llmContent: `已${exists ? '覆盖' : '创建'}文件 ${input.path}（${lineCount} 行）。${warning}`,
+      uiSummary: `${exists ? '覆盖' : '创建'} ${display}（${lineCount} 行）${completed ? '' : '（检查点不可用）'}`,
+      changedFiles: [{
+        path: display,
+        operation: exists ? 'edit' : 'create',
+        checkpointId: completed?.id,
+        added,
+        removed,
+      }],
     }
   },
 }

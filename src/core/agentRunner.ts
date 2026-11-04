@@ -4,7 +4,6 @@
 
 import { randomUUID } from 'node:crypto'
 import type { ChatCompletionTool } from 'openai/resources/chat/completions'
-import { MAX_AGENT_ITERATIONS } from '../constants.js'
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import { calcCost } from '../deepseek/pricing.js'
 import type { LLMClient } from '../providers/types.js'
@@ -46,6 +45,7 @@ export interface AgentRunnerOptions {
   setTodos: (todos: TodoItem[]) => void
   sessionId?: string | null
   getAvailableTools?: (permissionMode: PermissionMode) => ToolDefinition[]
+  // 可选的显式执行预算（测试/嵌入方使用）；主会话和子代理均不设置默认上限。
   maxIterations?: number
   runId?: string
   turnId?: string
@@ -66,20 +66,21 @@ export class AgentRunner {
 
   async *run(): AsyncGenerator<AgentRunEvent> {
     const startedAt = Date.now()
-    yield this.event('run_start', { timestamp: startedAt })
-    yield this.event('turn_start', {
-      timestamp: Date.now(),
-      userInput: this.opts.userInput,
-    })
-
     const userMsg: DeepMessage = {
+      id: randomUUID(), runId: this.runId, turnId: this.turnId,
       role: 'user',
       content: this.opts.userInput,
-      timestamp: Date.now(),
+      timestamp: startedAt,
     }
+    yield this.event('run_start', { timestamp: startedAt })
+    yield this.event('turn_start', {
+      timestamp: startedAt,
+      userInput: this.opts.userInput,
+      messageId: userMsg.id,
+    })
     this.opts.appendMessage(userMsg)
 
-    const maxIterations = this.opts.maxIterations ?? MAX_AGENT_ITERATIONS
+    const maxIterations = this.opts.maxIterations ?? Infinity
     for (let iter = 0; iter < maxIterations; iter++) {
       if (this.opts.abortSignal.aborted) {
         yield this.event('run_end', {
@@ -141,7 +142,11 @@ export class AgentRunner {
               delta: ev.delta,
             })
           } else if (ev.type === 'done') {
-            assistantMsg = ev.message
+            assistantMsg = {
+              ...ev.message,
+              id: randomUUID(), runId: this.runId, turnId: this.turnId,
+              timestamp: ev.message.timestamp ?? Date.now(),
+            }
             finishReason = ev.finishReason
             const providerId = this.opts.client.getProviderId()
             const costUsd = ev.usage
@@ -150,7 +155,7 @@ export class AgentRunner {
             yield this.event('llm_done', {
               timestamp: Date.now(),
               iteration: iter,
-              message: ev.message,
+              message: assistantMsg,
               finishReason,
               usage: ev.usage,
               costUsd,
@@ -250,6 +255,7 @@ export class AgentRunner {
 
       for (const { call, executed } of executedResults) {
         const toolMsg: DeepMessage = {
+          id: randomUUID(), runId: this.runId, turnId: this.turnId,
           role: 'tool',
           content: executed.result.llmContent,
           toolCallId: call.id,
@@ -297,6 +303,7 @@ export class AgentRunner {
     const content = message?.content || streamedText
     if (!content.trim()) return
     const partial: DeepMessage = {
+      id: message?.id ?? randomUUID(), runId: this.runId, turnId: this.turnId,
       role: 'assistant',
       content,
       reasoning: message?.reasoning || streamedReasoning || undefined,
@@ -360,6 +367,8 @@ export class AgentRunner {
       todos: this.opts.getTodos(),
       setTodos: this.opts.setTodos,
       sessionId: this.opts.sessionId ?? null,
+      runId: this.runId,
+      turnId: this.turnId,
       onProgress: (text) =>
         queue.push(this.event('tool_progress', {
           timestamp: Date.now(),

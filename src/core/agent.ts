@@ -24,9 +24,11 @@ import {
   removeExtraDir,
   type AddDirResult,
 } from './workspaceDirs.js'
-import type { SessionRecorder } from './session.js'
+import { randomUUID } from 'node:crypto'
+import { withSessionMessageIds, type SessionRecorder } from './session.js'
+import { rewindSession, type RewindMode, type SessionRewindResult } from './sessionActions.js'
 import { AgentRunner } from './agentRunner.js'
-import type { AgentRunEvent, DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolResult } from './types.js'
+import type { AgentRunEvent, DeepMessage, PermissionDecision, PermissionRequest, TodoItem, ToolDefinition, ToolResult } from './types.js'
 
 /**
  * 单轮对话的回调集合。
@@ -81,6 +83,8 @@ export class Agent {
   private activeSkills: SkillDefinition[] = []
   // 经 /add-dir 额外授权的工作目录（绝对路径）；启动时从项目 .dcode/workspace.json 加载。
   private extraDirs: string[] = []
+  // 仅属于当前宿主连接，不写入全局工具注册表或共享配置。
+  private hostTools: ToolDefinition[] = []
 
   /**
    * 构造函数。
@@ -103,7 +107,7 @@ export class Agent {
 
     // 初始化消息历史：若有历史则沿用，否则以 system 提示开场。
     if (opts.initialMessages && opts.initialMessages.length > 0) {
-      this.messages = [...opts.initialMessages]
+      this.messages = withSessionMessageIds(this.recorder?.id ?? randomUUID(), opts.initialMessages)
       // 普通会话日志通常只有 user/assistant；恢复时仍须补齐工具与工作区系统指令。
       if (!this.messages.some((m) => m.role === 'system' && m.metadata?.kind !== 'summary')) {
         this.refreshSystemPrompt()
@@ -131,7 +135,7 @@ export class Agent {
 
   /** 与运行器共用发送视图和工具定义估算，避免状态栏与自动压缩各算一套。 */
   getContextTokens(): number {
-    return estimateRequestTokens(this.messages, toOpenAITools(getAvailableTools(this.permissionMode)))
+    return estimateRequestTokens(this.messages, toOpenAITools(this.getToolsForMode(this.permissionMode)))
   }
 
   /**
@@ -148,6 +152,27 @@ export class Agent {
    */
   getSessionId(): string | null {
     return this.recorder?.id ?? null
+  }
+
+  /** 更新当前连接声明的宿主工具。调用方必须在 Agent 空闲时更新。 */
+  setHostTools(tools: ToolDefinition[]): void {
+    const names = new Set(getAvailableTools('bypass').map((tool) => tool.name))
+    for (const tool of tools) {
+      if (names.has(tool.name)) throw new Error(`工具名称冲突：${tool.name}`)
+      names.add(tool.name)
+    }
+    this.hostTools = [...tools]
+    this.refreshSystemPrompt()
+  }
+
+  private getToolsForMode(mode: PermissionMode): ToolDefinition[] {
+    return [...getAvailableTools(mode), ...this.hostTools.filter((tool) => mode !== 'plan' || tool.readOnly)]
+  }
+
+  private getHostToolPrompt(): string {
+    if (!this.hostTools.length) return ''
+    return '\n\n# 宿主工具\n以下工具由当前桌面或 IDE 宿主提供，仅在本连接可用；需要确认时等待用户授权：\n' +
+      this.hostTools.map((tool) => `- ${tool.name}：${tool.description}`).join('\n')
   }
 
   /** 获取当前 Provider 标识。 */
@@ -216,6 +241,26 @@ export class Agent {
   /** 返回消息历史（供 UI 回放或导出）。 */
   getMessages(): DeepMessage[] {
     return this.messages
+  }
+
+  /** 回退当前会话；宿主须先等待主任务和子代理全部停止。 */
+  rewindToMessage(messageId: string, mode: RewindMode): SessionRewindResult {
+    if (!this.recorder) throw new Error('当前会话未启用持久化。')
+    const { snapshot, result } = rewindSession(this.recorder, this.cwd, messageId, mode)
+    if (mode !== 'files') {
+      this.messages = snapshot.messages
+      this.todos = []
+      this.refreshSystemPrompt()
+    }
+    return result
+  }
+
+  /** 创建分支会话，不切换或改写原会话，也不复制文件检查点所有权。 */
+  forkSession(messageId: string): { sessionId: string; parentSessionId: string; parentMessageId: string } {
+    if (!this.recorder) throw new Error('当前会话未启用持久化。')
+    const fork = this.recorder.fork(messageId)
+    const { meta } = fork.snapshot()
+    return { sessionId: fork.id, parentSessionId: this.recorder.id, parentMessageId: meta.parentMessageId ?? messageId }
   }
 
   /** 返回当前会话已加载的技能名列表。 */
@@ -324,6 +369,7 @@ export class Agent {
    * @param messages 要载入的历史消息（通常来自磁盘，可能不含 system）。
    */
   replaceMessages(messages: DeepMessage[]): void {
+    messages = withSessionMessageIds(this.recorder?.id ?? randomUUID(), messages)
     const hasSystem = messages.some((m) => m.role === 'system' && m.metadata?.kind !== 'summary')
     if (hasSystem) {
       this.messages = [...messages]
@@ -337,7 +383,7 @@ export class Agent {
           permissionMode: this.permissionMode,
           activeSkills: this.activeSkills,
           extraDirs: this.extraDirs,
-        }),
+        }) + this.getHostToolPrompt(),
       }
       this.messages = [sys, ...messages]
     }
@@ -364,7 +410,7 @@ export class Agent {
         permissionMode: this.permissionMode,
         activeSkills: this.activeSkills,
         extraDirs: this.extraDirs,
-      }),
+      }) + this.getHostToolPrompt(),
     }
     if (this.messages[0]?.role === 'system' && this.messages[0].metadata?.kind !== 'summary') this.messages[0] = sys
     else this.messages.unshift(sys)
@@ -403,6 +449,7 @@ export class Agent {
       userInput,
       abortSignal: handlers.abortSignal,
       requestPermission: handlers.requestPermission,
+      getAvailableTools: (mode) => this.getToolsForMode(mode),
       getMessages: () => this.messages,
       setMessages: (messages) => {
         this.messages = messages

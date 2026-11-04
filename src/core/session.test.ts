@@ -2,13 +2,18 @@
 // 验证恢复历史时可修复缺失的 tool 结果，避免继续会话时消息协议不完整。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, utimesSync } from 'node:fs'
+import { appendFileSync, existsSync, fsyncSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 const disk = vi.hoisted(() => ({ dir: '' }))
 vi.mock('../config.js', () => ({ getConfigDir: () => disk.dir }))
-import { getLatestSessionId, listSessions, loadSessionMessages, repairInterruptedToolResults, SessionRecorder } from './session.js'
-import type { DeepMessage } from './types.js'
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync), renameSync: vi.fn(actual.renameSync) }
+})
+import { getLatestSessionId, listSessions, loadSessionEvents, loadSessionMessages, loadSessionSnapshot, repairInterruptedToolResults, SessionRecorder } from './session.js'
+import { legacySessionMessageId } from './sessionHistory.js'
+import type { AgentRunEvent, DeepMessage } from './types.js'
 
 describe('repairInterruptedToolResults', () => {
   it('为缺失 tool 结果的 assistant tool_call 原位补合成错误', () => {

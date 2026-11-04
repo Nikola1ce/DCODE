@@ -11,9 +11,14 @@
 // 制作人：Moriarty_Dox
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
+import {
+  buildCheckpointFileDiff,
+  completeCheckpointAfterWrite,
+  discardPendingCheckpoint,
+  saveCheckpointBeforeWrite,
+  type CheckpointFileDiff,
+} from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreviewView } from './diff.js'
 import {
   makeCell,
   NOTEBOOK_CELL_TYPES,
@@ -94,21 +99,29 @@ export const notebookEditTool: ToolDefinition = {
     }
     const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     // 预先计算编辑后的文本以生成 diff；任何失败都不附预览（不阻断授权流程）。
-    let preview: string | undefined
+    let diff: CheckpointFileDiff | undefined
     try {
       const oldRaw = readFileSync(abs, 'utf8')
       const { newText } = applyNotebookEdit(oldRaw, input)
-      // 使用增强 diff 视图（带行号 + hunk 头 + 折叠），与 write_file/edit_file 的「终端 Diff 查看器」一致。
-      preview = buildDiffPreviewView(oldRaw, newText)
+      diff = buildCheckpointFileDiff(oldRaw, newText)
     } catch {
-      preview = undefined
+      diff = undefined
     }
     const mode = input.mode ?? 'replace'
+    const display = toDisplayPath(ctx.cwd, abs)
     return {
       toolName: 'notebook_edit',
-      title: `编辑 Notebook ${toDisplayPath(ctx.cwd, abs)}（${mode}${input.cell !== undefined ? ` cell #${input.cell}` : ''}）`,
-      preview,
+      title: `编辑 Notebook ${display}（${mode}${input.cell !== undefined ? ` cell #${input.cell}` : ''}）`,
+      preview: diff?.preview,
       ruleKey: `notebook_edit(${input.path})`,
+      details: {
+        kind: 'file',
+        path: display,
+        operation: 'edit',
+        hunks: diff?.truncated && diff.hunks.length === 0 ? undefined : diff?.hunks,
+        added: diff?.added,
+        removed: diff?.removed,
+      },
     }
   },
   /**
@@ -136,14 +149,21 @@ export const notebookEditTool: ToolDefinition = {
       return { llmContent: `错误：${e.message}`, isError: true }
     }
 
-    // 写回前创建检查点，供 /undo 回退。
-    saveCheckpointBeforeWrite(ctx.cwd, abs, 'notebook_edit')
-    writeFileSync(abs, newText, 'utf8')
-
+    const checkpoint = saveCheckpointBeforeWrite(ctx.cwd, abs, 'notebook_edit', ctx)
+    try {
+      writeFileSync(abs, newText, 'utf8')
+    } catch (error) {
+      if (checkpoint) discardPendingCheckpoint(ctx.cwd, checkpoint.id)
+      return { llmContent: `错误：编辑 ${input.path} 失败：${error instanceof Error ? error.message : String(error)}`, isError: true }
+    }
+    const completed = checkpoint && completeCheckpointAfterWrite(ctx.cwd, checkpoint.id, newText)
+    const warning = completed ? '' : '\n警告：检查点未能完整保存，此次改动无法自动回退。'
+    const { added, removed } = buildCheckpointFileDiff(oldRaw, newText)
     const display = toDisplayPath(ctx.cwd, abs)
     return {
-      llmContent: `${summary}（${display}）`,
-      uiSummary: `编辑 Notebook ${display}（${summary}）`,
+      llmContent: `${summary}（${display}）${warning}`,
+      uiSummary: `编辑 Notebook ${display}（${summary}）${completed ? '' : '（检查点不可用）'}`,
+      changedFiles: [{ path: display, operation: 'edit', checkpointId: completed?.id, added, removed }],
     }
   },
 }

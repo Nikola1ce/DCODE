@@ -332,7 +332,47 @@ describe('AgentRunner', () => {
     expect(messages.at(-1)?.content).toBe('部分回答')
   })
 
-  it('达到迭代上限时发出提示并停止', async () => {
+  it('主会话默认可超过原来的50轮工具迭代，直到模型正常完成', async () => {
+    const messages: DeepMessage[] = [{ role: 'system', content: 'sys' }]
+    const responses: StreamEvent[][] = Array.from({ length: 64 }, (_, index) => [{
+      type: 'done', finishReason: 'tool_calls',
+      message: { role: 'assistant', content: '', toolCalls: [{ id: `tool-${index}`, name: 'missing_tool', argsJson: '{}' }] },
+    }])
+    responses.push([done('全部完成')])
+    const client = new FakeClient(responses)
+
+    const events = await collect(makeRunner(client, messages, { maxIterations: undefined, getAvailableTools: () => [] }))
+
+    expect(client.calls).toHaveLength(65)
+    expect(events.at(-1)).toMatchObject({ type: 'run_end', reason: 'final', iterations: 65 })
+    expect(events.some((event) => event.type === 'run_end' && event.reason === 'max_iterations')).toBe(false)
+    const persisted = messages.filter((message) => message.role !== 'system')
+    expect(new Set(persisted.map((message) => message.id)).size).toBe(persisted.length)
+    expect(new Set(persisted.map((message) => message.turnId)).size).toBe(1)
+    expect(messages.at(-1)?.content).toBe('全部完成')
+  })
+
+  it('无固定上限的主会话超过50轮后仍可由用户停止', async () => {
+    const ac = new AbortController()
+    const messages: DeepMessage[] = []
+    const client = new FakeClient([])
+    let iterations = 0
+    client.streamChat = async function* () {
+      iterations++
+      if (iterations === 55) ac.abort()
+      yield {
+        type: 'done', finishReason: 'tool_calls',
+        message: { role: 'assistant', content: '', toolCalls: [{ id: `t-${iterations}`, name: 'missing_tool', argsJson: '{}' }] },
+      }
+    }
+    const events = await collect(makeRunner(client, messages, {
+      maxIterations: undefined, getAvailableTools: () => [], abortSignal: ac.signal,
+    }))
+    expect(iterations).toBe(55)
+    expect(events.at(-1)).toMatchObject({ type: 'run_end', reason: 'aborted' })
+  })
+
+  it('显式设置执行预算的调用方达到迭代上限时停止', async () => {
     const loopMessage = {
       role: 'assistant' as const,
       content: '',

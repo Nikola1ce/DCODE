@@ -5,9 +5,14 @@
 // 制作人：Moriarty_Dox
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { saveCheckpointBeforeWrite } from '../core/checkpoint.js'
+import {
+  buildCheckpointFileDiff,
+  completeCheckpointAfterWrite,
+  discardPendingCheckpoint,
+  saveCheckpointBeforeWrite,
+  type CheckpointFileDiff,
+} from '../core/checkpoint.js'
 import type { PermissionRequest, ToolDefinition, ToolResult } from '../core/types.js'
-import { buildDiffPreviewView, countDiff } from './diff.js'
 import { describeMissingMatch, lineNumbersOf } from './editHints.js'
 import { convertEol, resolveWithinCwd, toDisplayPath, usesCrlf } from './util.js'
 
@@ -54,19 +59,28 @@ export const editFileTool: ToolDefinition = {
     }
     const abs = resolveWithinCwd(ctx.cwd, input.path, ctx.extraDirs)
     // 预先计算替换后的文本以生成 diff（失败则不附预览）。
-    let preview: string | undefined
+    let diff: CheckpointFileDiff | undefined
     try {
       const oldContent = readFileSync(abs, 'utf8')
       const newContent = applyEdit(oldContent, adaptEolToFile(oldContent, input))
-      preview = buildDiffPreviewView(oldContent, newContent)
+      diff = buildCheckpointFileDiff(oldContent, newContent)
     } catch {
-      preview = undefined
+      diff = undefined
     }
+    const display = toDisplayPath(ctx.cwd, abs)
     return {
       toolName: 'edit_file',
-      title: `编辑文件 ${toDisplayPath(ctx.cwd, abs)}`,
-      preview,
+      title: `编辑文件 ${display}`,
+      preview: diff?.preview,
       ruleKey: `edit_file(${input.path})`,
+      details: {
+        kind: 'file',
+        path: display,
+        operation: 'edit',
+        hunks: diff?.truncated && diff.hunks.length === 0 ? undefined : diff?.hunks,
+        added: diff?.added,
+        removed: diff?.removed,
+      },
     }
   },
   /**
@@ -108,15 +122,22 @@ export const editFileTool: ToolDefinition = {
 
     const newContent = applyEdit(oldContent, edit)
 
-    // 写入前创建检查点，供 /undo 回退。
-    saveCheckpointBeforeWrite(ctx.cwd, abs, 'edit_file')
-
-    writeFileSync(abs, newContent, 'utf8')
-
-    const { added, removed } = countDiff(oldContent, newContent)
+    const checkpoint = saveCheckpointBeforeWrite(ctx.cwd, abs, 'edit_file', ctx)
+    try {
+      writeFileSync(abs, newContent, 'utf8')
+    } catch (error) {
+      if (checkpoint) discardPendingCheckpoint(ctx.cwd, checkpoint.id)
+      return { llmContent: `错误：编辑 ${input.path} 失败：${error instanceof Error ? error.message : String(error)}`, isError: true }
+    }
+    const completed = checkpoint && completeCheckpointAfterWrite(ctx.cwd, checkpoint.id, newContent)
+    const warning = completed ? '' : '\n警告：检查点未能完整保存，此次改动无法自动回退。'
+    const { added, removed } = buildCheckpointFileDiff(oldContent, newContent)
+    const stats = added === undefined ? '差异较大，未逐行统计' : `新增 ${added} 行，删除 ${removed} 行`
+    const display = toDisplayPath(ctx.cwd, abs)
     return {
-      llmContent: `已编辑 ${input.path}（新增 ${added} 行，删除 ${removed} 行）。`,
-      uiSummary: `编辑 ${toDisplayPath(ctx.cwd, abs)}  +${added} -${removed}`,
+      llmContent: `已编辑 ${input.path}（${stats}）。${warning}`,
+      uiSummary: `编辑 ${display}${added === undefined ? '' : `  +${added} -${removed}`}${completed ? '' : '（检查点不可用）'}`,
+      changedFiles: [{ path: display, operation: 'edit', checkpointId: completed?.id, added, removed }],
     }
   },
 }

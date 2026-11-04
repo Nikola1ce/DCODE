@@ -127,20 +127,23 @@ export interface ExecutedToolResult {
  * 任何阶段出错都会被捕获并转成 isError 结果，保证主循环不中断。
  * @param call 模型发起的工具调用。
  * @param ctx 工具运行上下文。
+ * @param overrideTool 当前运行的局部工具定义；不写入全局注册表。
  * @returns 执行结果。
  */
 export async function executeToolCall(
   call: ToolCall,
   ctx: ToolContext,
+  overrideTool?: ToolDefinition,
 ): Promise<ExecutedToolResult> {
   const cancelled = (): ExecutedToolResult => ({
     toolCallId: call.id, toolName: call.name,
     result: { llmContent: '操作已取消。', isError: true },
   })
   if (ctx.abortSignal.aborted) return cancelled()
-  const tool = getTool(call.name)
-  // 未知工具：直接返回错误，提示模型使用已注册工具。
-  if (!tool) {
+  ctx = { ...ctx, toolCallId: call.id }
+  const tool = overrideTool ?? getTool(call.name)
+  // 局部定义也必须与调用名称一致，避免执行其他工具却使用本次调用的审计信息。
+  if (!tool || tool.name !== call.name) {
     return {
       toolCallId: call.id,
       toolName: call.name,
@@ -214,9 +217,13 @@ export async function executeToolCall(
     if (ctx.abortSignal.aborted) return cancelled()
     const permReq = tool.checkPermission?.(input, ctx) ?? null
     if (permReq) {
-      const decision = await requestPermissionUntilAbort(permReq, ctx)
+      const decision = await requestPermissionUntilAbort({
+        ...permReq,
+        toolCallId: call.id,
+        input,
+      }, ctx)
       if (ctx.abortSignal.aborted) return cancelled()
-      if (decision === 'deny') {
+      if (decision !== 'allow_once' && decision !== 'allow_always') {
         return {
           toolCallId: call.id,
           toolName: call.name,

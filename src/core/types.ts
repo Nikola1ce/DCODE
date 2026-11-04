@@ -7,6 +7,7 @@
 import type { DCodeConfig, PermissionMode } from '../config.js'
 import type { DeepSeekUsage } from '../deepseek/pricing.js'
 import type { ResponseOutputItem } from 'openai/resources/responses/responses'
+import type { DiffHunk } from '../tools/diff.js'
 
 // 消息角色：与 OpenAI Chat Completions 对齐，便于直接转换为 API 请求体。
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
@@ -27,6 +28,10 @@ export interface ToolCall {
  * 并在发送前由 deepseek/client 转换为严格的 API 消息体。
  */
 export interface DeepMessage {
+  // 持久化身份；旧会话在加载时补齐，不传给模型 API。
+  id?: string
+  runId?: string
+  turnId?: string
   // 消息角色。
   role: MessageRole
   // 文本内容（assistant 在仅工具调用时可能为空字符串）。
@@ -55,6 +60,15 @@ export interface DeepMessage {
   }
 }
 
+/** 文件写工具产生的结构化改动；命令造成的间接修改不在此列表内。 */
+export interface ToolFileChange {
+  path: string
+  operation: 'create' | 'edit' | 'delete'
+  checkpointId?: string
+  added?: number
+  removed?: number
+}
+
 /**
  * 工具执行结果。
  * llmContent 回传给模型作为 tool 消息内容；uiSummary 仅供终端展示。
@@ -66,6 +80,7 @@ export interface ToolResult {
   uiSummary?: string
   // 是否为错误结果。
   isError?: boolean
+  changedFiles?: ToolFileChange[]
 }
 
 // 权限决策结果：允许一次 / 总是允许（记入白名单）/ 拒绝。
@@ -84,6 +99,13 @@ export interface PermissionRequest {
   preview?: string
   // 用于记入白名单的规则标识，例如 "Write" 或 "Bash(git status)"。
   ruleKey: string
+  toolCallId?: string
+  input?: unknown
+  // preview 保持旧客户端兼容；新客户端可按 details 渲染结构化卡片。
+  details?:
+    | { kind: 'file'; path: string; operation: 'create' | 'edit' | 'delete'; hunks?: DiffHunk[]; added?: number; removed?: number }
+    | { kind: 'command'; command: string; cwd: string }
+    | { kind: 'host'; toolName: string; input?: unknown }
 }
 
 /**
@@ -112,6 +134,9 @@ export interface ToolContext {
   onProgress?: (text: string) => void
   // 当前会话 id（Hooks 与会话持久化用，可选）。
   sessionId?: string | null
+  runId?: string
+  turnId?: string
+  toolCallId?: string
 }
 
 // 工具副作用与调度策略。缺省时由 readOnly 推断为 none / unknown。
@@ -143,7 +168,7 @@ export interface AgentRunTrace {
 // 新消费者可直接订阅 onEvent / SessionRecorder event 行。
 export type AgentRunEvent =
   | { type: 'run_start'; runId: string; turnId: string; timestamp: number }
-  | { type: 'turn_start'; runId: string; turnId: string; timestamp: number; userInput: string }
+  | { type: 'turn_start'; runId: string; turnId: string; timestamp: number; userInput: string; messageId?: string }
   | { type: 'compact_start'; runId: string; turnId: string; iteration: number; timestamp: number; messageCount: number; usedTokens?: number; threshold?: number; contextWindow?: number }
   | { type: 'compact_end'; runId: string; turnId: string; iteration: number; timestamp: number; beforeCount: number; afterCount: number; applied?: boolean }
   | { type: 'llm_start'; runId: string; turnId: string; iteration: number; timestamp: number; model: string; toolCount: number }
@@ -172,6 +197,7 @@ export type AgentRunEvent =
       id: string
       name: string
       summary: string
+      input?: unknown
     }
   | { type: 'tool_progress'; runId: string; turnId: string; iteration: number; timestamp: number; id: string; text: string }
   | {

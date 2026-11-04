@@ -1,7 +1,7 @@
 // toolScheduler 单元测试。
 // 验证只读工具并行、副作用工具串行，以及子代理工具集排除 task。
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ALL_TOOLS, getSubAgentTools } from '../tools/index.js'
 import { globalToolRegistry } from '../tools/registry.js'
 import { executeToolBatch } from './toolScheduler.js'
@@ -32,6 +32,7 @@ const baseCtx: ToolContext = {
 
 afterEach(() => {
   globalToolRegistry.registerBuiltin(ALL_TOOLS)
+  globalToolRegistry.registerMcp([])
 })
 
 describe('executeToolBatch', () => {

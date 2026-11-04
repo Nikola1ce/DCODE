@@ -6,7 +6,6 @@
 import { randomUUID } from 'node:crypto'
 import {
   MAX_CONCURRENT_SUBAGENTS,
-  MAX_SUBAGENT_ITERATIONS,
   SUBAGENT_TYPES,
   type SubAgentType,
 } from '../constants.js'
@@ -317,7 +316,6 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
   let usage: UsageTotals = emptyUsageTotals()
   let liveAssistantText = ''
   let finalText = ''
-  let maxIterationsHit = false
 
   const runner = new AgentRunner({
     client,
@@ -339,7 +337,9 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
     getTodos: () => [],
     setTodos: () => {},
     getAvailableTools: () => getSubAgentTools(permissionMode),
-    maxIterations: MAX_SUBAGENT_ITERATIONS,
+    sessionId: opts.parentCtx.sessionId,
+    // 子任务写入归属父轮次，消息回退可覆盖它的检查点；runId 仍由子任务独立生成。
+    turnId: opts.parentCtx.turnId,
   })
 
   for await (const event of runner.run()) {
@@ -361,8 +361,6 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
     } else if (event.type === 'tool_end') {
       const status = event.result.isError ? '失败' : '完成'
       opts.onProgress?.(`\n[工具 ${event.name} ${status}]\n`)
-    } else if (event.type === 'run_end') {
-      maxIterationsHit = event.reason === 'max_iterations'
     }
   }
 
@@ -373,12 +371,6 @@ async function runSubAgentLoop(opts: SubAgentLoopOptions): Promise<{ text: strin
   const costNote = usage.costUsd > 0
     ? `\n\n[子代理用量：${usage.inputTokens}+${usage.outputTokens} tokens，约 $${usage.costUsd.toFixed(4)}]`
     : ''
-  if (maxIterationsHit) {
-    return {
-      text: `[子代理达到最大迭代次数（${MAX_SUBAGENT_ITERATIONS}），已停止。部分结果：]\n${finalText || liveAssistantText}${costNote}`,
-      isError: true,
-    }
-  }
   return { text: (finalText || liveAssistantText || '子代理未收到模型响应。') + costNote, isError: !finalText }
 }
 

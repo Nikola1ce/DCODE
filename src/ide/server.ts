@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import type { Agent } from '../core/agent.js'
 import type {
   AgentRunEvent,
+  DeepMessage,
   PermissionDecision,
   PermissionRequest,
 } from '../core/types.js'
@@ -34,11 +35,13 @@ import {
   type ClientMessage,
   type ContextAttachment,
   type IdePermissionMode,
+  type HistoryMessage,
+  type RunMetadata,
   type ModelOption,
   type ProviderOption,
   type ServerMessage,
 } from './protocol.js'
-import { VERSION } from '../constants.js'
+import { VERSION, isValidReasoningEffort } from '../constants.js'
 import {
   buildProviderLoginPatch,
   buildProviderSwitchPatch,
@@ -51,6 +54,10 @@ import {
   resolveProviderApiKey,
 } from '../providers/registry.js'
 import type { ProviderId } from '../providers/types.js'
+import { getTool } from '../tools/index.js'
+import { HostToolRegistry } from './hostTools.js'
+import { getCheckpointDiff, listCheckpointSummaries, undoCheckpointById } from '../core/checkpoint.js'
+import { subAgentManager } from '../core/subAgent.js'
 
 // 服务端运行所需的依赖（便于测试时注入假的输入/输出流与 Agent）。
 export interface IdeServerDeps {
@@ -87,6 +94,8 @@ export class IdeServer {
   private activeRequestId: string | null = null
   // 当前轮次的中断控制器。
   private activeAbort: AbortController | null = null
+  private activeRun: RunMetadata = {}
+  private readonly hostTools: HostToolRegistry
   // 待回执的权限请求：permissionId → resolve 回调。
   private readonly pendingPermissions = new Map<
     string,
@@ -103,6 +112,16 @@ export class IdeServer {
     this.input = deps.input
     this.output = deps.output
     this.logStream = deps.log ?? process.stderr
+    this.hostTools = new HostToolRegistry({
+      getTool,
+      send: (message) => {
+        if (this.closed) throw new Error('宿主连接已断开。')
+        if (message.type === 'host_tool_call') {
+          if (!this.activeRequestId) throw new Error('当前没有活动轮次。')
+          this.send({ ...this.activeRun, ...message, requestId: this.activeRequestId })
+        } else this.send(message)
+      },
+    })
     // 默认实现：写盘（updateConfig）+ 热更新 Agent（applyConfigPatch），并刷新本地 config 引用。
     // 与 TUI 的 App.applyConfig 行为保持一致，确保斜杠命令在 IDE 模式下与终端一致地生效与持久化。
     this.applyConfig =
@@ -126,6 +145,12 @@ export class IdeServer {
       this.send({
         type: 'ready',
         protocolVersion: IDE_PROTOCOL_VERSION,
+        capabilities: {
+          reasoningEffort: true, historySnapshot: true, turnMetadata: true,
+          structuredPermissions: true, checkpointDiff: true, checkpointUndoById: true,
+          hostTools: true, rewind: true, forkSession: true,
+        },
+        reasoningEffort: this.config.reasoningEffort,
         version: VERSION,
         model: this.agent.getModel(),
         provider: this.agent.getProviderId(),
@@ -139,11 +164,17 @@ export class IdeServer {
 
       const decoder = createLineDecoder<ClientMessage>()
       this.input.on('data', (chunk: Buffer | string) => {
-        for (const msg of decoder.push(chunk)) {
-          // 逐条处理客户端消息；处理函数内部已捕获异常，避免单条错误拖垮通道。
-          void this.handleClientMessage(msg)
+        if (this.closed) return
+        try {
+          for (const msg of decoder.push(chunk)) {
+            void this.handleClientMessage(msg)
+          }
+        } catch (error) {
+          this.logLine(`[ide-server] 协议输入错误：${error instanceof Error ? error.message : String(error)}`)
+          this.shutdown()
         }
       })
+      this.output.on('error', () => this.shutdown())
       // 输入流结束（客户端关闭管道）视为关闭信号。
       this.input.on('end', () => this.shutdown())
       this.input.on('error', () => this.shutdown())
@@ -157,6 +188,10 @@ export class IdeServer {
   private async handleClientMessage(msg: ClientMessage): Promise<void> {
     if (this.closed) return
     try {
+      if (this.activeRequestId && ['clear', 'set_model', 'set_provider', 'set_permission_mode', 'submit_api_key'].includes(msg.type)) {
+        this.send({ type: 'log', level: 'warn', message: '任务进行中，请先停止并等待结束，再修改会话或配置。' })
+        return
+      }
       switch (msg.type) {
         case 'prompt':
           await this.handlePrompt(msg.requestId, msg.text, msg.attachments)
@@ -176,6 +211,48 @@ export class IdeServer {
         case 'set_provider':
           this.handleSetProvider(msg.provider)
           break
+        case 'set_reasoning_effort':
+          this.handleSetReasoningEffort(msg.effort)
+          break
+        case 'request_history':
+          this.sendHistory(msg.requestId)
+          break
+        case 'register_host_tools':
+          if (!this.requireIdle(msg.requestId, msg.type)) break
+          this.hostTools.register(msg.tools)
+          this.agent.setHostTools(this.hostTools.getTools())
+          this.send({ type: 'host_tools_registered', requestId: msg.requestId, names: this.hostTools.getTools().map((tool) => tool.name) })
+          break
+        case 'host_tool_result':
+          if (typeof msg.hostCallId === 'string') this.hostTools.acceptResult(msg.hostCallId, msg.result)
+          break
+        case 'request_checkpoints':
+          if (!isRequestId(msg.requestId)) throw new Error('无效 requestId。')
+          this.send({ type: 'checkpoint_list', requestId: msg.requestId, sessionId: this.requireSessionId(), checkpoints: listCheckpointSummaries(this.agent.cwd, this.requireSessionId()) })
+          break
+        case 'request_checkpoint_diff':
+          if (!isRequestId(msg.requestId)) throw new Error('无效 requestId。')
+          this.send({ type: 'checkpoint_diff', requestId: msg.requestId, result: getCheckpointDiff(this.agent.cwd, msg.checkpointId, this.requireSessionId()) })
+          break
+        case 'undo_checkpoint':
+          if (!this.requireIdle(msg.requestId, msg.type)) break
+          this.send({ type: 'checkpoint_undone', requestId: msg.requestId, result: undoCheckpointById(this.agent.cwd, msg.checkpointId, this.requireSessionId()) })
+          break
+        case 'rewind': {
+          if (!this.requireIdle(msg.requestId, msg.type)) break
+          if (!['messages', 'files', 'both'].includes(msg.mode) || !isRequestId(msg.messageId)) throw new Error('无效回退模式或消息 id。')
+          const result = this.agent.rewindToMessage(msg.messageId, msg.mode)
+          this.send({ type: 'rewind_result', requestId: msg.requestId, ...result })
+          this.sendHistory(msg.requestId)
+          break
+        }
+        case 'fork_session': {
+          if (!this.requireIdle(msg.requestId, msg.type)) break
+          if (!isRequestId(msg.messageId)) throw new Error('无效消息 id。')
+          const result = this.agent.forkSession(msg.messageId)
+          this.send({ type: 'session_forked', requestId: msg.requestId, ...result })
+          break
+        }
         case 'clear':
           this.handleClear()
           break
@@ -196,7 +273,11 @@ export class IdeServer {
           this.logLine(`[ide-server] 未知消息类型：${(msg as { type?: string }).type}`)
       }
     } catch (e: any) {
-      this.logLine(`[ide-server] 处理消息出错：${e?.message ?? String(e)}`)
+      const message = e?.message ?? String(e)
+      this.logLine(`[ide-server] 处理消息出错：${message}`)
+      if ('requestId' in msg && isRequestId(msg.requestId)) {
+        this.send({ type: 'operation_error', requestId: msg.requestId, operation: msg.type, message })
+      }
     }
   }
 
@@ -252,10 +333,11 @@ export class IdeServer {
         // 直接消费结构化事件，逐一转换为协议消息（比旧回调更完整）。
         onEvent: (ev) => {
           if (terminal) return
+          this.activeRun = { runId: ev.runId, turnId: ev.turnId, timestamp: ev.timestamp }
           if (ev.type === 'run_end') {
-            terminal = { type: 'turn_done', requestId, reason: ev.reason, costUsd, usage }
+            terminal = { type: 'turn_done', requestId, reason: ev.reason, costUsd, usage, ...this.activeRun }
           } else if (ev.type === 'run_error') {
-            terminal = { type: 'turn_error', requestId, message: ev.error }
+            terminal = { type: 'turn_error', requestId, message: ev.error, ...this.activeRun }
           } else {
             this.forwardRunEvent(requestId, ev, (c, u) => {
               costUsd += c
@@ -284,7 +366,8 @@ export class IdeServer {
       this.activeRequestId = null
       this.activeAbort = null
       // 先释放串行槽，再通知客户端结束，收到结束帧后立即发下一轮也不会误报忙碌。
-      if (terminal) this.send(terminal)
+      if (terminal) this.send({ ...this.activeRun, ...terminal })
+      this.activeRun = {}
     }
   }
 
@@ -302,39 +385,36 @@ export class IdeServer {
       usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number },
     ) => void,
   ): void {
+    const send = (message: ServerMessage) => this.send({
+      runId: ev.runId, turnId: ev.turnId, timestamp: ev.timestamp, ...message,
+    })
     switch (ev.type) {
+      case 'turn_start':
+        send({ type: 'turn_started', requestId, runId: ev.runId, turnId: ev.turnId, timestamp: ev.timestamp, messageId: ev.messageId })
+        break
+      case 'assistant_message':
+        send({ type: 'assistant_done', requestId, messageId: ev.message.id, message: toHistoryMessage(ev.message) })
+        break
       case 'reasoning_delta':
-        this.send({ type: 'reasoning', requestId, delta: ev.delta })
+        send({ type: 'reasoning', requestId, delta: ev.delta })
         break
       case 'text_delta':
-        this.send({ type: 'text', requestId, delta: ev.delta })
+        send({ type: 'text', requestId, delta: ev.delta })
         break
       case 'tool_start':
-        this.send({
-          type: 'tool_start',
-          requestId,
-          toolCallId: ev.id,
-          name: ev.name,
-          summary: ev.summary,
+        send({
+          type: 'tool_start', requestId, toolCallId: ev.id,
+          name: ev.name, summary: ev.summary, input: ev.input,
         })
         break
       case 'tool_progress':
-        this.send({
-          type: 'tool_progress',
-          requestId,
-          toolCallId: ev.id,
-          text: ev.text,
-        })
+        send({ type: 'tool_progress', requestId, toolCallId: ev.id, text: ev.text })
         break
       case 'tool_end':
-        this.send({
-          type: 'tool_end',
-          requestId,
-          toolCallId: ev.id,
-          name: ev.name,
-          isError: !!ev.result.isError,
-          summary: ev.result.uiSummary,
-          detail: ev.result.llmContent,
+        send({
+          type: 'tool_end', requestId, toolCallId: ev.id, name: ev.name,
+          isError: !!ev.result.isError, summary: ev.result.uiSummary,
+          detail: ev.result.llmContent, changedFiles: ev.result.changedFiles,
         })
         break
       case 'llm_done':
@@ -349,7 +429,7 @@ export class IdeServer {
         }
         break
       default:
-        // 其余事件（run_start/turn_start/llm_start/compact_* 等）当前客户端无需感知，忽略。
+        // 其余内部调度事件无需逐帧发送；用量仍由 llm_done 累计。
         break
     }
   }
@@ -375,6 +455,7 @@ export class IdeServer {
         requestId,
         permissionId,
         request: req,
+        ...this.activeRun,
       })
     })
   }
@@ -388,6 +469,7 @@ export class IdeServer {
     permissionId: string,
     decision: PermissionDecision,
   ): void {
+    if (!['allow_once', 'allow_always', 'deny'].includes(decision)) return
     const resolve = this.pendingPermissions.get(permissionId)
     if (!resolve) return
     this.pendingPermissions.delete(permissionId)
@@ -656,10 +738,50 @@ export class IdeServer {
     this.emitStatus()
   }
 
+  private requireSessionId(): string {
+    const sessionId = this.agent.getSessionId()
+    if (!sessionId) throw new Error('当前会话未启用持久化。')
+    return sessionId
+  }
+
+  private requireIdle(requestId: string, operation: string): boolean {
+    if (!isRequestId(requestId)) throw new Error('无效 requestId。')
+    if (this.activeRequestId || subAgentManager.getRunningCount() > 0) {
+      this.send({ type: 'operation_error', requestId, operation, code: 'busy', message: '主任务或子代理仍在运行，请停止并等待结束后重试。' })
+      return false
+    }
+    return true
+  }
+
+  private handleSetReasoningEffort(effort: string): void {
+    if (typeof effort !== 'string' || !isValidReasoningEffort(effort)) {
+      this.send({ type: 'log', level: 'warn', message: '无效推理强度，可用值为 low / medium / high / max。' })
+      return
+    }
+    if (this.activeRequestId) {
+      this.send({ type: 'log', level: 'warn', message: '任务进行中，停止后再切换推理强度。' })
+      return
+    }
+    this.applyConfig({ reasoningEffort: effort })
+    // 测试/嵌入方的 applyConfig 也可只负责持久化；服务端状态始终同步。
+    this.config = { ...this.config, reasoningEffort: effort }
+    this.agent.applyConfigPatch({ reasoningEffort: effort })
+    this.emitStatus()
+  }
+
+  private sendHistory(requestId: string): void {
+    if (!isRequestId(requestId)) throw new Error('无效 requestId。')
+    this.send({
+      type: 'history_snapshot', requestId, sessionId: this.agent.getSessionId(),
+      messages: this.agent.getMessages().filter((message) => message.role !== 'system').map(toHistoryMessage),
+    })
+  }
+
   /** 回推当前状态（模型/Provider/权限模式/会话 + 可切换供应商与模型列表）。 */
   private emitStatus(): void {
     this.send({
       type: 'status',
+      reasoningEffort: this.config.reasoningEffort,
       model: this.agent.getModel(),
       provider: this.agent.getProviderId(),
       permissionMode: this.toIdeMode(this.agent.permissionMode),
@@ -721,6 +843,7 @@ export class IdeServer {
     if (this.closed) return
     this.closed = true
     this.activeAbort?.abort()
+    this.hostTools.disconnect()
     this.failPendingPermissions()
     this.resolveDone?.()
   }
@@ -761,6 +884,15 @@ export class IdeServer {
   private toIdeMode(mode: PermissionMode): IdePermissionMode {
     return mode as IdePermissionMode
   }
+}
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
+}
+
+function toHistoryMessage(message: DeepMessage): HistoryMessage {
+  const { id, runId, turnId, role, content, toolCalls, toolCallId, toolName, reasoning, isError, timestamp, metadata } = message
+  return { id, runId, turnId, role, content, toolCalls, toolCallId, toolName, reasoning, isError, timestamp, metadata }
 }
 
 /**

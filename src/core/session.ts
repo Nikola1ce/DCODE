@@ -8,18 +8,42 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from '../config.js'
 import type { AgentRunEvent, DeepMessage } from './types.js'
+import {
+  forkSessionHistory,
+  legacySessionMessageId,
+  retainSessionEvents,
+  rewindSessionHistory,
+  sameSessionMessage,
+  sessionToolCalls,
+  truncateSessionHistory,
+  withSessionMessageIds,
+  type SessionHistoryMessage,
+} from './sessionHistory.js'
+
+export {
+  assertSafeSessionHistory,
+  forkSessionHistory,
+  getSessionHistoryBoundary,
+  rewindSessionHistory,
+  truncateSessionHistory,
+  withSessionMessageIds,
+} from './sessionHistory.js'
+export type { SessionHistoryMessage } from './sessionHistory.js'
 
 // 会话文件头部的元信息（写入 JSONL 第一行）。
 export interface SessionMeta {
@@ -33,6 +57,23 @@ export interface SessionMeta {
   cwd: string
   // 创建时使用的模型。
   model: string
+  // fork 的直接来源与实际保留边界；不代表继承源会话的文件检查点所有权。
+  parentSessionId?: string
+  parentMessageId?: string
+}
+
+/** 可安全交给调用方修改的会话副本；读取会修复中断的工具结果，写操作则严格校验原始边界。 */
+export interface SessionSnapshot {
+  sessionId: string
+  meta: SessionMeta
+  messages: SessionHistoryMessage[]
+  events: AgentRunEvent[]
+}
+
+interface SessionState {
+  meta?: SessionMeta
+  messages: SessionHistoryMessage[]
+  events: AgentRunEvent[]
 }
 
 // 会话文件中的消息行。
@@ -71,9 +112,38 @@ function getSessionsDir(): string {
  * @param id 会话 id。
  * @returns 会话 JSONL 文件绝对路径。
  */
-function getSessionPath(id: string): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('无效的会话 ID。')
+function isValidSessionId(id: unknown): id is string {
+  return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id)
+    && !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(id)
+}
+
+/** 会话文件路径；仅接受安全的单段 id，防止路径穿越与保留设备名。 */
+export function getSessionPath(id: string): string {
+  if (!isValidSessionId(id)) throw new Error('无效的会话 ID。')
   return join(getSessionsDir(), `${id}.jsonl`)
+}
+
+// 临时文件与目标在同一目录，fsync 后一次 rename 发布；失败不能破坏旧会话。
+function writeSessionAtomic(path: string, lines: (SessionMeta | MessageLine | EventLine | SnapshotLine)[], createOnly = false): void {
+  const text = lines.map((line) => JSON.stringify(line)).join('\n') + '\n'
+  const temporaryPath = `${path}.${randomUUID()}.tmp`
+  let fd: number | undefined
+  try {
+    fd = openSync(temporaryPath, 'wx', 0o600)
+    writeFileSync(fd, text, 'utf8')
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    if (createOnly && existsSync(path)) throw new Error('会话 ID 已存在，不能覆盖已有会话。')
+    renameSync(temporaryPath, path)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath)
+  }
+}
+
+function sessionLines(meta: SessionMeta, messages: DeepMessage[], events: AgentRunEvent[]): (SessionMeta | SnapshotLine | EventLine)[] {
+  return [meta, { type: 'snapshot', messages }, ...events.map((event): EventLine => ({ type: 'event', version: 1, event }))]
 }
 
 /**
@@ -118,7 +188,7 @@ export class SessionRecorder {
         cwd,
         model,
       }
-      writeFileSync(rec.path, JSON.stringify(meta) + '\n', 'utf8')
+      writeSessionAtomic(rec.path, [meta], true)
     }
     return rec
   }
@@ -128,7 +198,8 @@ export class SessionRecorder {
    * @param message 要追加的消息。
    */
   append(message: DeepMessage): void {
-    this.appendLine({ type: 'message', message })
+    // 新消息使用新身份，避免 rewind 后重用被删除消息的旧序号；不改写调用方对象。
+    this.appendLine({ type: 'message', message: { ...message, id: message.id || randomUUID() } })
   }
 
   /**
@@ -141,7 +212,70 @@ export class SessionRecorder {
 
   /** 追加当前有效上下文快照；恢复时替换之前的消息，随后追加的新消息仍保留。 */
   replaceMessages(messages: DeepMessage[]): void {
-    this.appendLine({ type: 'snapshot', messages })
+    if (this.disabled) return
+    // 兼容旧调用方传入无 ID 的快照，保留能够匹配的旧消息身份。
+    const previous = this.getHistory()
+    const identified = identifySnapshotMessages(this.id, messages, previous)
+    this.appendLine({ type: 'snapshot', messages: identified })
+  }
+
+  /** 获取当前历史的独立副本；与 CLI 加载一样会修复崩溃留下的缺失工具结果。 */
+  getHistory(): SessionHistoryMessage[] {
+    return loadSessionMessages(this.id)
+  }
+
+  /** 获取消息、事件与元信息；不存在或缺少合法元信息时抛错。 */
+  snapshot(): SessionSnapshot {
+    return loadSessionSnapshot(this.id)
+  }
+
+  /** 精确保留前 messageCount 条持久化消息（包含摘要/system）；边界不完整时不写盘。 */
+  truncate(messageCount: number): SessionSnapshot {
+    return this.rewriteHistory((messages) => truncateSessionHistory(messages, messageCount))
+  }
+
+  /** user 从目标前回退；assistant 保留至其连续工具链的最终回答，tool/system 不可作为目标。 */
+  rewind(messageId: string): SessionSnapshot {
+    return this.rewriteHistory((messages) => rewindSessionHistory(messages, messageId))
+  }
+
+  /**
+   * fork 包含目标 user；assistant 延伸至完整工具链结尾；省略目标则复制全部安全历史。
+   * 返回新记录器。parentMessageId 指向实际保留的最后消息，不复制任何检查点文件或所有权。
+   */
+  fork(messageId?: string): SessionRecorder {
+    this.assertWritable()
+    const state = requireSessionState(this.id, this.path)
+    const messages = forkSessionHistory(state.messages, messageId)
+    const events = retainSessionEvents(state.events, state.messages, messages)
+    const rec = new SessionRecorder(randomUUID())
+    const meta: SessionMeta = {
+      type: 'meta',
+      id: rec.id,
+      createdAt: new Date().toISOString(),
+      cwd: state.meta.cwd,
+      model: state.meta.model,
+      parentSessionId: this.id,
+      ...(messages.length > 0 ? { parentMessageId: messages[messages.length - 1].id } : {}),
+    }
+    // 元信息只复制 cwd/model，不能把源会话的未来扩展字段（如检查点所有者）带入分支。
+    writeSessionAtomic(rec.path, sessionLines(meta, messages, events), true)
+    rec.appendBoundaryChecked = true
+    return rec
+  }
+
+  private assertWritable(): void {
+    if (this.disabled) throw new Error('会话持久化已禁用，不能改写或派生会话。')
+  }
+
+  private rewriteHistory(select: (messages: SessionHistoryMessage[]) => SessionHistoryMessage[]): SessionSnapshot {
+    this.assertWritable()
+    const state = requireSessionState(this.id, this.path)
+    const messages = select(state.messages)
+    const events = retainSessionEvents(state.events, state.messages, messages)
+    writeSessionAtomic(this.path, sessionLines(state.meta, messages, events))
+    this.appendBoundaryChecked = true
+    return makeSessionSnapshot(this.id, { meta: state.meta, messages, events })
   }
 
   private appendLine(line: MessageLine | EventLine | SnapshotLine): void {
@@ -175,13 +309,40 @@ export class SessionRecorder {
  * @param id 会话 id。
  * @returns 消息数组；文件不存在或损坏时返回空数组。
  */
-export function loadSessionMessages(id: string): DeepMessage[] {
+export function loadSessionMessages(id: string): SessionHistoryMessage[] {
   const path = getSessionPath(id)
   if (!existsSync(path)) return []
   try {
-    return repairInterruptedToolResults(readSessionState(readFileSync(path, 'utf8')).messages)
+    const state = readSessionState(readFileSync(path, 'utf8'), id)
+    return withSessionMessageIds(id, repairInterruptedToolResults(state.messages))
   } catch {
     return []
+  }
+}
+
+/** 加载严格的会话快照；与兼容 CLI 的 loadSessionMessages 不同，读盘/元信息错误会抛出。 */
+export function loadSessionSnapshot(id: string): SessionSnapshot {
+  return makeSessionSnapshot(id, requireSessionState(id, getSessionPath(id)))
+}
+
+/** 加载会话中保留的运行事件；文件不存在时返回空数组，损坏时抛出以免静默丢失审阅记录。 */
+export function loadSessionEvents(id: string): AgentRunEvent[] {
+  return requireSessionState(id, getSessionPath(id)).events
+}
+
+function requireSessionState(id: string, path: string): SessionState & { meta: SessionMeta } {
+  if (!existsSync(path)) throw new Error(`会话不存在：${id}`)
+  const state = readSessionState(readFileSync(path, 'utf8'), id)
+  if (!state.meta) throw new Error('会话缺少合法元信息，不能安全改写或派生。')
+  return { ...state, meta: state.meta }
+}
+
+function makeSessionSnapshot(id: string, state: SessionState & { meta: SessionMeta }): SessionSnapshot {
+  return {
+    sessionId: id,
+    meta: structuredClone(state.meta),
+    messages: withSessionMessageIds(id, repairInterruptedToolResults(state.messages)),
+    events: structuredClone(state.events),
   }
 }
 
@@ -192,8 +353,9 @@ export function repairInterruptedToolResults(messages: DeepMessage[]): DeepMessa
     // 工具结果必须紧随发起它的 assistant；孤立/重复结果不能发回 API。
     if (m.role === 'tool') continue
     out.push(m)
-    if (m.role !== 'assistant' || !m.toolCalls?.length) continue
-    const pending = new Map(m.toolCalls.map((call) => [call.id, call]))
+    const calls = sessionToolCalls(m)
+    if (calls.length === 0) continue
+    const pending = new Map(calls.map((call) => [call.id, call]))
     while (messages[i + 1]?.role === 'tool') {
       const result = messages[++i]
       if (!result.toolCallId || !pending.delete(result.toolCallId)) continue
@@ -206,7 +368,10 @@ export function repairInterruptedToolResults(messages: DeepMessage[]): DeepMessa
         toolCallId: call.id,
         toolName: call.name,
         isError: true,
-        timestamp: Date.now(),
+        ...(m.id ? { id: legacySessionMessageId(`${m.id}:tool:${call.id}`, 0) } : {}),
+        ...(m.runId ? { runId: m.runId } : {}),
+        ...(m.turnId ? { turnId: m.turnId } : {}),
+        ...(m.timestamp !== undefined ? { timestamp: m.timestamp } : {}),
         metadata: { kind: 'synthetic_error', source: 'system' },
       })
     }
@@ -223,24 +388,67 @@ function isMessage(value: unknown): value is DeepMessage {
       call && typeof call.id === 'string' && typeof call.name === 'string' && typeof call.argsJson === 'string')))
 }
 
-function readSessionState(text: string): { meta?: SessionMeta; messages: DeepMessage[] } {
+function identifySnapshotMessages(
+  sessionId: string,
+  messages: readonly DeepMessage[],
+  previous: readonly SessionHistoryMessage[],
+  startOrdinal?: number,
+): SessionHistoryMessage[] {
+  const candidates = [...previous]
+  const identified = messages.map((message) => {
+    const index = candidates.findIndex((candidate) => sameSessionMessage(message, candidate))
+    const prior = index < 0 ? undefined : candidates.splice(index, 1)[0]
+    return {
+      ...message,
+      ...(prior?.runId && !message.runId ? { runId: prior.runId } : {}),
+      ...(prior?.turnId && !message.turnId ? { turnId: prior.turnId } : {}),
+      id: message.id || prior?.id || (startOrdinal === undefined ? randomUUID() : undefined),
+    }
+  })
+  return withSessionMessageIds(sessionId, identified, startOrdinal)
+}
+
+function isEvent(value: unknown): value is AgentRunEvent {
+  if (!value || typeof value !== 'object') return false
+  const event = value as AgentRunEvent
+  return typeof event.type === 'string' && typeof event.runId === 'string' && typeof event.turnId === 'string'
+    && typeof event.timestamp === 'number'
+    && (!('message' in event) || isMessage(event.message))
+}
+
+function readSessionState(text: string, sessionId: string): SessionState {
   let meta: SessionMeta | undefined
-  let messages: DeepMessage[] = []
+  let messages: SessionHistoryMessage[] = []
+  const events: AgentRunEvent[] = []
+  let activeRun: { runId: string; turnId: string } | undefined
+  let ordinal = 0
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     try {
       const obj = JSON.parse(line)
-      if (obj?.type === 'meta' && typeof obj.id === 'string' && typeof obj.cwd === 'string'
-        && typeof obj.createdAt === 'string') meta = obj
-      else if (obj?.type === 'message' && isMessage(obj.message)) messages.push(obj.message)
-      else if (obj?.type === 'snapshot' && Array.isArray(obj.messages) && obj.messages.every(isMessage)) {
-        messages = obj.messages
+      if (obj?.type === 'meta' && obj.id === sessionId && typeof obj.cwd === 'string'
+        && typeof obj.createdAt === 'string') {
+        meta = { ...obj, model: typeof obj.model === 'string' ? obj.model : '' }
+      } else if (obj?.type === 'message' && isMessage(obj.message)) {
+        // 旧日志已记录 run/turn 事件，但消息自身没有关联字段；只在明确的运行区间内回填。
+        const message = {
+          ...obj.message,
+          ...(activeRun && !obj.message.runId ? { runId: activeRun.runId } : {}),
+          ...(activeRun && !obj.message.turnId ? { turnId: activeRun.turnId } : {}),
+        }
+        messages.push(...withSessionMessageIds(sessionId, [message], ordinal++))
+      } else if (obj?.type === 'snapshot' && Array.isArray(obj.messages) && obj.messages.every(isMessage)) {
+        messages = identifySnapshotMessages(sessionId, obj.messages, messages, ordinal)
+        ordinal += obj.messages.length
+      } else if (obj?.type === 'event' && isEvent(obj.event)) {
+        events.push(obj.event)
+        activeRun = obj.event.type === 'run_end' ? undefined : { runId: obj.event.runId, turnId: obj.event.turnId }
       }
     } catch {
       // 单条日志损坏不应吞掉后续有效消息，也不应让整个会话从恢复列表消失。
     }
   }
-  return { meta, messages }
+  return { meta, messages, events }
 }
 
 // 会话摘要信息（用于 /resume 列表展示）。
@@ -273,8 +481,10 @@ export function listSessions(limit = 20): SessionSummary[] {
     const path = join(dir, file)
     try {
       const mtime = statSync(path).mtimeMs
-      const { meta, messages } = readSessionState(readFileSync(path, 'utf8'))
-      if (!meta || `${meta.id}.jsonl` !== file || !/^[a-zA-Z0-9_-]+$/.test(meta.id)) continue
+      const id = file.slice(0, -'.jsonl'.length)
+      if (!isValidSessionId(id)) continue
+      const { meta, messages } = readSessionState(readFileSync(path, 'utf8'), id)
+      if (!meta) continue
       const firstUserText = messages.find((m) => m.role === 'user' && m.content)?.content.slice(0, 60) ?? '(无内容)'
       const messageCount = messages.length
 
