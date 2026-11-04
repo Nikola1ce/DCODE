@@ -5,7 +5,8 @@ release/out/
 .DS_Store
 .dcode-local/
 .dcode/checkpoints/
-docs
+docs/*
+!docs/DCODE-Desktop-设计方案.md
 
 # 模型/价格检查插件（本地自用，不进版本库）
 scripts/models-check.mjs
