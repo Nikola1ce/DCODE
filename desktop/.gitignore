@@ -1,0 +1,5 @@
+# DCODE Desktop 本地依赖与构建产物。制作人：Moriarty_Dox
+node_modules/
+dist/
+coverage/
+*.log

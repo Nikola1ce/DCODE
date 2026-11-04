@@ -22,6 +22,9 @@
     "test:watch": "vitest",
     "trace:analyze": "node scripts/trace-analyze.mjs",
     "package": "node scripts/package-release.mjs",
+    "desktop:build": "npm --prefix desktop run build",
+    "desktop:test": "npm --prefix desktop test",
+    "desktop:start": "npm --prefix desktop run start",
     "start": "node dist/cli.js",
     "prepublishOnly": "node build.mjs"
   },
