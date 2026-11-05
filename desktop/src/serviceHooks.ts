@@ -13,6 +13,7 @@ export function useResource<T>(key: string, load: () => Promise<T>) {
   const loader = useRef(load)
   loader.current = load
   const [value, setValue] = useState<T>()
+  const [resolvedKey, setResolvedKey] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [revision, setRevision] = useState(0)
@@ -32,13 +33,13 @@ export function useResource<T>(key: string, load: () => Promise<T>) {
       }
     }
     void load().then((next) => {
-      if (active) setValue(next)
+      if (active) { setValue(next); setResolvedKey(key) }
     }).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? reason.message : '无法读取数据，请重试。')
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [key, revision])
-  return { value, error, loading, refresh }
+  return { value, error, loading, refresh, resolvedKey }
 }
 
 export function useAction(refresh?: () => void) {

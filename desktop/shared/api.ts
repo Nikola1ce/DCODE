@@ -68,7 +68,7 @@ export type DesktopEvent =
   | { type: 'stream'; message: StreamMessage }
   | { type: 'turn_interrupted'; requestId: string; error: DesktopError }
 
-/** 服务路径绑定原生授权工作区，配置仅返回桌面展示偏好。 */
+/** 服务路径绑定原生授权工作区，配置只投影白名单展示字段与密钥存在状态。 */
 export interface DesktopApi extends ServicesApi {
   getSnapshot(): Promise<Result<ConnectionSnapshot>>
   chooseWorkspace(): Promise<Result<ConnectionSnapshot | null>>

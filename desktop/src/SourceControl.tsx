@@ -5,6 +5,7 @@ import type { GitEntry } from '../shared/services.js'
 import type { DocumentPreview } from './DocumentView.js'
 import { commitGraph } from './diffModel.js'
 import { unwrap, useAction, useDraft, useResource } from './serviceHooks.js'
+import { Icon } from './Icon.js'
 
 export function SourceControl({ cwd, revision, locked, open }: {
   cwd: string; revision: number; locked: boolean; open(document: DocumentPreview): void
@@ -37,24 +38,24 @@ export function SourceControl({ cwd, revision, locked, open }: {
     return <details className="scm-group" open>
       <summary><span>{title}</span><span className="group-actions">
         <button className="icon-button" disabled={busy || !items.length} title={isStaged ? '取消全部暂存' : '暂存所有更改'} aria-label={isStaged ? '取消全部暂存' : '暂存所有更改'}
-          onClick={(event) => { event.preventDefault(); void action.run(() => unwrap(window.dcode.gitStageAll(!isStaged))) }}>{isStaged ? '−' : '+'}</button>
+          onClick={(event) => { event.preventDefault(); void action.run(() => unwrap(window.dcode.gitStageAll(!isStaged))) }}><Icon name={isStaged ? 'minus' : 'plus'} size={15} /></button>
         <span className="count">{items.length}</span></span></summary>
       {filtered.map((entry) => <div key={entry.path} className={`scm-file ${selected === `${isStaged}:${entry.path}` ? 'selected' : ''}`}>
-        <button className="file-label" title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
+        <button className="file-label" disabled={action.busy} title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
           onClick={() => void action.run(async () => {
             const diff = await unwrap(window.dcode.gitDiff(entry.path, isStaged))
             setSelected(`${isStaged}:${entry.path}`)
             open({ title: `${entry.path} · ${isStaged ? '暂存区' : '工作区'}`, ...diff, diff: true,
               reload: () => unwrap(window.dcode.gitDiff(entry.path, isStaged)) })
           })}>
-          <span className="file-symbol">◇</span><span className="file-name">{entry.path.split('/').at(-1)}</span>
+          <span className="file-symbol"><Icon name="files" size={14} /></span><span className="file-name">{entry.path.split('/').at(-1)}</span>
           <span className="file-directory">{entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''}</span>
         </button>
         <div className="file-actions">
           {!isStaged && <button className="icon-button" title="放弃更改" aria-label={`放弃 ${entry.path} 的更改`} disabled={busy}
-            onClick={() => void action.run(() => unwrap(window.dcode.gitDiscard(entry.path)))}>↶</button>}
+            onClick={() => void action.run(() => unwrap(window.dcode.gitDiscard(entry.path)))}><Icon name="undo" size={14} /></button>}
           <button className="icon-button" title={isStaged ? '取消暂存' : '暂存更改'} aria-label={`${isStaged ? '取消暂存' : '暂存'} ${entry.path}`} disabled={busy}
-            onClick={() => void action.run(() => unwrap(window.dcode.gitStage(entry.path, !isStaged)))}>{isStaged ? '−' : '+'}</button>
+            onClick={() => void action.run(() => unwrap(window.dcode.gitStage(entry.path, !isStaged)))}><Icon name={isStaged ? 'minus' : 'plus'} size={15} /></button>
         </div>
         <span className={`git-letter git-${isStaged ? entry.index : entry.worktree}`}>{isStaged ? entry.index : entry.worktree === '?' ? 'U' : entry.worktree}</span>
       </div>)}
@@ -65,10 +66,10 @@ export function SourceControl({ cwd, revision, locked, open }: {
 
   return <div className="source-control">
     <div className="panel-heading"><h2>源代码管理</h2><button className="icon-button" aria-label="刷新源代码管理" title="刷新" disabled={action.busy}
-      onClick={() => { status.refresh(); history.refresh() }}>↻</button></div>
+      onClick={() => { status.refresh(); history.refresh() }}><Icon name="refresh" size={16} className={status.loading ? 'spin' : ''} /></button></div>
     {status.error && <p className="inline-error" role="alert">{status.error}</p>}
     {status.value && <>
-      <div className="scm-repository"><span>⑂ {status.value.branch === '(detached)' ? '分离 HEAD' : status.value.branch}</span>
+      <div className="scm-repository"><span><Icon name="git" size={15} />{status.value.branch === '(detached)' ? '分离 HEAD' : status.value.branch}</span>
         {status.value.upstream && <span className="muted">↑{status.value.ahead ?? 0} ↓{status.value.behind ?? 0}</span>}</div>
       <div className="scm-inputs">
         <textarea aria-label="提交消息" value={message} maxLength={8000} rows={3} placeholder={`消息（Ctrl+Enter 在“${status.value.branch}”提交）`}
@@ -76,7 +77,7 @@ export function SourceControl({ cwd, revision, locked, open }: {
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void commit() }
           }} />
-        <button className="primary commit-button" disabled={busy || !message.trim() || !staged.length || !!conflicts.length} onClick={() => void commit()}>✓ {action.busy ? '处理中…' : '提交'}</button>
+        <button className="primary commit-button" disabled={busy || !message.trim() || !staged.length || !!conflicts.length} onClick={() => void commit()}><Icon name={action.busy ? 'refresh' : 'check'} size={16} className={action.busy ? 'spin' : ''} />{action.busy ? '处理中…' : '提交'}</button>
         <input aria-label="筛选更改文件" placeholder="筛选文件…" value={filter} onChange={(event) => setFilter(event.target.value)} />
       </div>
       {feedback && <p className="success-message" role="status">{feedback}</p>}
@@ -105,6 +106,6 @@ export function SourceControl({ cwd, revision, locked, open }: {
         {history.value?.length === 0 && <p className="group-empty">首次提交后显示记录</p>}
       </details>
     </>}
-    {status.loading && !status.value && <p className="empty-panel">正在读取仓库…</p>}
+    {status.loading && !status.value && <div className="loading-skeleton" aria-label="正在读取仓库"><i /><i /><i /></div>}
   </div>
 }

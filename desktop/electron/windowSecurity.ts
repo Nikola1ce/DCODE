@@ -32,6 +32,12 @@ export function isTrustedInvocation(event: IpcRequest, owner: TrustedContents | 
     && event.senderFrame === owner.mainFrame && event.senderFrame.url === rendererUrl
 }
 
+/** 复制操作只允许已加载本地工作台的主窗口写入文本，读取剪贴板继续由系统拒绝。 */
+export function isClipboardWriteAllowed(permission: string, requester: TrustedContents | null, owner: TrustedContents | null, rendererUrl: string): boolean {
+  return permission === 'clipboard-sanitized-write' && !!owner && requester === owner
+    && !owner.isDestroyed() && owner.mainFrame.url === rendererUrl
+}
+
 /** 禁止远程资源、任意 file: 读取、查询字符串绕过和未声明的本地文件。 */
 export function isAllowedAssetUrl(url: string, assets: ReadonlySet<string>): boolean {
   return assets.has(url)

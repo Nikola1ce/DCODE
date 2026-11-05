@@ -1,10 +1,11 @@
 // 工作区导航、会话管理、历史、检查点审阅及用量面板。
 // 制作人：Moriarty_Dox
 import { useState } from 'react'
-import type { DesktopPreferences, DesktopSession } from '../shared/services.js'
+import type { DesktopSession } from '../shared/services.js'
 import type { DocumentPreview } from './DocumentView.js'
 import { DocumentView } from './DocumentView.js'
 import { unwrap, useAction, useResource } from './serviceHooks.js'
+import { Icon } from './Icon.js'
 
 export interface PanelProps { revision: number; open(document: DocumentPreview): void }
 
@@ -12,7 +13,7 @@ export function ProjectsPanel({ locked, revision }: { locked: boolean; revision:
   const recent = useResource(String(revision), () => unwrap(window.dcode.listRecentWorkspaces()))
   const action = useAction(recent.refresh)
   return <><div className="panel-heading"><h2>最近项目</h2></div><div className="panel-controls">
-    <button className="primary" disabled={locked || action.busy} onClick={() => void action.run(() => unwrap(window.dcode.chooseWorkspace()))}>选择项目文件夹</button></div>
+    <button className="primary" disabled={locked || action.busy} onClick={() => void action.run(() => unwrap(window.dcode.chooseWorkspace()))}><Icon name="projects" size={16} />选择项目文件夹</button></div>
     {(recent.error || action.error) && <p className="inline-error">{recent.error || action.error}</p>}
     <div className="panel-scroll">{recent.value?.map((workspace) => <button className="recent-project" key={workspace.id} title={workspace.path} disabled={locked || action.busy}
       onClick={() => void action.run(() => unwrap(window.dcode.openRecentWorkspace(workspace.id)))}>
@@ -27,8 +28,8 @@ export function FilesPanel({ revision, open }: PanelProps) {
   const files = useResource(`${directory}:${revision}`, () => unwrap(window.dcode.listFiles(directory)))
   const action = useAction()
   return <>
-    <div className="panel-heading"><h2>资源管理器</h2><button className="icon-button" title="刷新文件" aria-label="刷新文件" onClick={files.refresh}>↻</button></div>
-    <div className="breadcrumb"><button disabled={!directory} onClick={() => setDirectory(directory.split('/').slice(0, -1).join('/'))}>↑</button><span>{directory || '项目根目录'}</span></div>
+    <div className="panel-heading"><h2>资源管理器</h2><button className="icon-button" title="刷新文件" aria-label="刷新文件" onClick={files.refresh}><Icon name="refresh" size={16} className={files.loading ? 'spin' : ''} /></button></div>
+    <div className="breadcrumb"><button aria-label="返回上级目录" disabled={!directory} onClick={() => setDirectory(directory.split('/').slice(0, -1).join('/'))}><Icon name="arrow" size={14} /></button><span>{directory || '项目根目录'}</span></div>
     {(files.error || action.error) && <p className="inline-error" role="alert">{files.error || action.error}</p>}
     <div className="panel-scroll">
       {files.value?.entries.map((entry) => <button className="tree-row" key={entry.path} disabled={action.busy} onClick={() => {
@@ -41,7 +42,7 @@ export function FilesPanel({ revision, open }: PanelProps) {
               return { text: latest.kind === 'text' ? latest.text : `二进制文件 · ${latest.size.toLocaleString()} 字节`, truncated: latest.kind === 'text' && latest.truncated }
             } })
         })
-      }}><span className="file-symbol">{entry.kind === 'directory' ? '▸' : '◇'}</span>{entry.name}</button>)}
+      }}><span className="file-symbol"><Icon name={entry.kind === 'directory' ? 'projects' : 'files'} size={16} /></span>{entry.name}</button>)}
       {files.value?.entries.length === 0 && <p className="empty-panel">目录为空</p>}
       {files.value?.truncated && <p className="inline-notice">目录较大，仅显示前 2000 项。</p>}
     </div>
@@ -60,7 +61,7 @@ export function SessionsPanel({ revision, locked, sessionId, select }: {
   const disabled = locked || action.busy
   function rename(session: DesktopSession) { setRenaming(session.id); setTitle(session.title) }
   return <>
-    <div className="panel-heading"><h2>项目会话</h2><button className="icon-button" title="新建会话" aria-label="新建会话" disabled={disabled} onClick={() => void action.run(() => select(null))}>+</button></div>
+    <div className="panel-heading"><h2>项目会话</h2><button className="icon-button" title="新建会话 Ctrl+N" aria-label="新建会话" disabled={disabled} onClick={() => void action.run(() => select(null))}><Icon name="plus" size={17} /></button></div>
     <div className="panel-controls"><input aria-label="搜索会话" placeholder="搜索会话…" value={filter} onChange={(event) => setFilter(event.target.value)} />
       <label className="checkbox"><input type="checkbox" checked={archived} onChange={(event) => setArchived(event.target.checked)} />显示已归档</label></div>
     {(sessions.error || action.error) && <p className="inline-error" role="alert">{sessions.error || action.error}</p>}
@@ -79,6 +80,7 @@ export function SessionsPanel({ revision, locked, sessionId, select }: {
           <button disabled={disabled || session.id === sessionId} onClick={() => void action.run(() => unwrap(window.dcode.deleteSession(session.id)))}>删除</button></div>
       </article>)}
       {sessions.value?.sessions.length === 0 && <p className="empty-panel">{archived ? '还没有归档会话' : '点击 + 开始新会话'}</p>}
+      {!!sessions.value?.sessions.length && !sessions.value.sessions.some((session) => session.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())) && <p className="empty-panel">没有匹配的会话<button className="text-button" onClick={() => setFilter('')}>清除搜索</button></p>}
       {!!sessions.value?.skipped && <p className="inline-notice">已跳过 {sessions.value.skipped} 个无法读取的记录。</p>}
       {sessions.value?.truncated && <p className="inline-notice">已达到 2000 个会话的扫描上限。</p>}
     </div>
@@ -88,13 +90,13 @@ export function SessionsPanel({ revision, locked, sessionId, select }: {
 export function ReviewPanel({ revision, sessionId, open }: PanelProps & { sessionId: string }) {
   const listing = useResource(String(revision), () => unwrap(window.dcode.listReviews(sessionId)))
   return <>
-    <div className="panel-heading"><h2>文件审阅</h2><button className="icon-button" title="刷新审阅" aria-label="刷新审阅" onClick={listing.refresh}>↻</button></div>
+    <div className="panel-heading"><h2>文件审阅</h2><button className="icon-button" title="刷新审阅" aria-label="刷新审阅" onClick={listing.refresh}><Icon name="refresh" size={16} className={listing.loading ? 'spin' : ''} /></button></div>
     {listing.error && <p className="inline-error" role="alert">{listing.error}</p>}
     <div className="panel-scroll">{listing.value?.turns.map((turn, index) => <details className="review-group" key={turn.turnId ?? `${turn.timestamp}-${index}`} open>
       <summary>{new Date(turn.timestamp).toLocaleString()} <span className="count">{turn.files.length}</span></summary>
       {turn.files.map((file) => <button className="tree-row" key={file.checkpointId} onClick={() => open({ title: `${file.path} · 审阅`, text: '',
         review: { sessionId, checkpointId: file.checkpointId } })}>
-        <span className="file-symbol">◇</span><span className="truncate">{file.path}</span><span className="muted small">{file.complete ? `${file.checkpointCount} 次` : '待完成'}</span></button>)}
+        <span className="file-symbol"><Icon name="files" size={15} /></span><span className="truncate">{file.path}</span><span className="muted small">{file.complete ? `${file.checkpointCount} 次` : '待完成'}</span></button>)}
     </details>)}
       {listing.value?.turns.length === 0 && <p className="empty-panel">本会话产生文件修改后，可在这里查看差异并回退。</p>}
     </div>
@@ -148,16 +150,4 @@ export function UsagePanel({ sessionId, revision }: { sessionId: string; revisio
       <h3>按轮次</h3>{usage.value.turns.map((turn) => <div className="usage-turn" key={turn.turnId}><span>{new Date(turn.timestamp).toLocaleString()}</span><strong>${turn.usage.costUsd.toFixed(4)}</strong></div>)}
     </div>}
   </>
-}
-
-export function SettingsPanel({ preferences, update }: { preferences: DesktopPreferences; update(patch: Partial<DesktopPreferences>): Promise<void> }) {
-  const action = useAction()
-  return <><div className="panel-heading"><h2>桌面设置</h2></div><div className="settings-fields">
-    <label>外观<select value={preferences.theme} disabled={action.busy} onChange={(event) => void action.run(() => update({ theme: event.target.value as DesktopPreferences['theme'] }))}>
-      <option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label>
-    <label>发送消息<select value={preferences.sendKey} disabled={action.busy} onChange={(event) => void action.run(() => update({ sendKey: event.target.value as DesktopPreferences['sendKey'] }))}>
-      <option value="enter">Enter 发送，Shift+Enter 换行</option><option value="mod-enter">Ctrl / ⌘ + Enter 发送</option></select></label>
-    {action.error && <p className="inline-error" role="alert">{action.error}</p>}
-    <p className="muted small">模型与 API Key 沿用 DCODE 命令行配置。修改后重新连接项目即可加载。</p>
-  </div></>
 }

@@ -72,6 +72,27 @@ export class DesktopController {
     })
   }
 
+  configure<T>(save: () => Promise<T>): Promise<{ value: T; connectionError?: string }> {
+    const operation = this.exclusive(async () => {
+      await this.connection?.shutdown()
+      if (this.disposed) throw new DesktopFault('CONNECTION_CLOSED', '桌面正在关闭。')
+      let value: T
+      try { value = await save() }
+      catch (error) {
+        if (!this.disposed) await this.connection?.start().catch(() => {})
+        throw error
+      }
+      try {
+        if (this.disposed) return { value, connectionError: '设置已保存，桌面正在关闭。' }
+        if (this.grant) await this.dependencies.authority.validate(this.grant)
+        await this.connection?.start()
+        return { value }
+      } catch { return { value, connectionError: '设置已保存，内核连接失败。请点击重新连接。' } }
+    })
+    this.serviceOperations.add(operation)
+    return operation.finally(() => { this.serviceOperations.delete(operation) })
+  }
+
   sendPrompt(text: string): { requestId: string } {
     if (this.changing || this.disposed) throw new DesktopFault('BUSY', '工作区操作正在进行，消息未发送。')
     return this.requiredConnection().sendPrompt(text)

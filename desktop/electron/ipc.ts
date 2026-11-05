@@ -9,6 +9,7 @@ import type { IpcRequest } from './windowSecurity.js'
 import type { DesktopServices } from './services/index.js'
 import { boolean, invalid, relativePath, sessionId } from './services/validation.js'
 import { preferencePatch, presentationPatch } from './services/settings.js'
+import { modelSettingsInput } from './services/configuration.js'
 
 export type IpcHandler = (event: IpcRequest, ...args: unknown[]) => Promise<Result<unknown>>
 export interface IpcRouter {
@@ -49,6 +50,14 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
     },
   }
   if (services) Object.assign(routes, {
+    [CHANNELS.getModelSettings]: (...args: unknown[]) => { count(args, 0); return services.getModelSettings() },
+    [CHANNELS.validateModelSettings]: (...args: unknown[]) => { count(args, 1); return services.validateModelSettings(modelSettingsInput(args[0])) },
+    [CHANNELS.saveModelSettings]: (...args: unknown[]) => { count(args, 1); return services.saveModelSettings(modelSettingsInput(args[0])) },
+    [CHANNELS.searchFiles]: (...args: unknown[]) => {
+      count(args, 1)
+      if (typeof args[0] !== 'string' || args[0].length > 200 || /[\x00-\x1f]/.test(args[0])) invalid()
+      return services.searchFiles(args[0])
+    },
     [CHANNELS.listRecentWorkspaces]: (...args: unknown[]) => { count(args, 0); return services.listRecentWorkspaces() },
     [CHANNELS.openRecentWorkspace]: (...args: unknown[]) => { count(args, 1); return services.openRecentWorkspace(sessionId(args[0])) },
     [CHANNELS.listFiles]: (...args: unknown[]) => { count(args, 1); return services.listFiles(relativePath(args[0], true)) },

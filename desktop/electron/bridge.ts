@@ -12,6 +12,10 @@ export interface BridgeTransport {
 
 export function createDesktopBridge(transport: BridgeTransport): Readonly<DesktopApi> {
   const api: DesktopApi = {
+    getModelSettings: () => transport.invoke(CHANNELS.getModelSettings) as ReturnType<DesktopApi['getModelSettings']>,
+    validateModelSettings: (input) => transport.invoke(CHANNELS.validateModelSettings, input) as ReturnType<DesktopApi['validateModelSettings']>,
+    saveModelSettings: (input) => transport.invoke(CHANNELS.saveModelSettings, input) as ReturnType<DesktopApi['saveModelSettings']>,
+    searchFiles: (query) => transport.invoke(CHANNELS.searchFiles, query) as ReturnType<DesktopApi['searchFiles']>,
     listRecentWorkspaces: () => transport.invoke(CHANNELS.listRecentWorkspaces) as ReturnType<DesktopApi['listRecentWorkspaces']>,
     openRecentWorkspace: (id) => transport.invoke(CHANNELS.openRecentWorkspace, id) as ReturnType<DesktopApi['openRecentWorkspace']>,
     listFiles: (path) => transport.invoke(CHANNELS.listFiles, path) as ReturnType<DesktopApi['listFiles']>,

@@ -1,6 +1,23 @@
 // 主进程服务的可序列化契约，渲染进程仅持有相对路径与会话摘要。
 // 制作人：Moriarty_Dox
 import type { ConnectionSnapshot, Result } from './api.js'
+import type { ProviderId } from '../../src/providers/types.js'
+import type { ReasoningEffort } from '../../src/constants.js'
+
+export interface ProviderSettings {
+  id: ProviderId; name: string; baseURL: string; model: string
+  models: { value: string; label: string; hint?: string }[]
+  hasApiKey: boolean; requiresApiKey: boolean; environmentKey: boolean; hasProxy: boolean
+}
+export interface ModelSettings {
+  provider: ProviderId; model: string; reasoningEffort: ReasoningEffort; showThinking: boolean
+  providers: ProviderSettings[]; environmentOverrides: string[]
+}
+export interface ModelSettingsInput {
+  provider: ProviderId; model: string; baseURL: string; reasoningEffort: ReasoningEffort; showThinking: boolean
+  apiKey?: string; proxy?: string
+}
+export interface ConfigurationSave { settings: ModelSettings; connectionError?: string }
 import type {
   CheckpointReviewResult, CheckpointReviewMutation, CheckpointSummary, SessionUndoResult,
 } from '../../src/core/checkpoint.js'
@@ -46,8 +63,16 @@ export interface DesktopPreferences {
   sendKey: 'enter' | 'mod-enter'
   notifications: boolean
   preventSleep: boolean
+  closeBehavior: 'ask' | 'tray' | 'quit'
+  notifyPermission: boolean
+  notifyComplete: boolean
+  notifyError: boolean
 }
 export interface ServicesApi {
+  getModelSettings(): Promise<Result<ModelSettings>>
+  validateModelSettings(input: ModelSettingsInput): Promise<Result<string>>
+  saveModelSettings(input: ModelSettingsInput): Promise<Result<ConfigurationSave>>
+  searchFiles(query: string): Promise<Result<FileListing>>
   listRecentWorkspaces(): Promise<Result<RecentWorkspace[]>>
   openRecentWorkspace(id: string): Promise<Result<ConnectionSnapshot | null>>
   listReviews(sessionId: string): Promise<Result<ReviewListing>>

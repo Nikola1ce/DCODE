@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const disk = vi.hoisted(() => ({ directory: '' }))
-vi.mock('../../../src/config.js', () => ({ getConfigDir: () => disk.directory }))
+vi.mock('node:os', async (original) => ({ ...await original<typeof import('node:os')>(), homedir: () => disk.directory }))
 import { SessionRecorder } from '../../../src/core/session.js'
 import { DesktopController } from '../desktopController.js'
 import { WorkspaceAuthority } from '../workspaceAccess.js'
@@ -57,6 +57,8 @@ describe('服务 IPC 与生命周期', () => {
     expect(await api.readFile('file.txt')).toMatchObject({ ok: false, error: { code: 'NO_WORKSPACE' } })
     expect(await api.listSessions(false)).toMatchObject({ ok: false, error: { code: 'NO_WORKSPACE' } })
     expect(await api.getSettings()).toMatchObject({ ok: true, value: { theme: 'system' } })
+    expect(await api.getModelSettings()).toMatchObject({ ok: true, value: { providers: expect.any(Array) } })
+    expect(await api.searchFiles('')).toMatchObject({ ok: false, error: { code: 'NO_WORKSPACE' } })
     expect(await routes.get(CHANNELS.getSettings)!({ sender: {}, senderFrame: null })).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } })
   })
 
@@ -85,6 +87,9 @@ describe('服务 IPC 与生命周期', () => {
       [CHANNELS.deleteSession, ['../id']], [CHANNELS.getUsage, ['__proto__']],
       [CHANNELS.getSettings, ['config.json']], [CHANNELS.updateSettings, [{ proxy: 'bad' }]],
       [CHANNELS.watchWorkspace, ['true']],
+      [CHANNELS.getModelSettings, ['extra']], [CHANNELS.validateModelSettings, [{}]],
+      [CHANNELS.saveModelSettings, [{ apiKey: 'secret' }]], [CHANNELS.searchFiles, ['x'.repeat(201)]],
+      [CHANNELS.searchFiles, ['bad\u0000']], [CHANNELS.searchFiles, [false]],
       [CHANNELS.gitStageAll, ['true']], [CHANNELS.gitHistory, [1]],
       [CHANNELS.gitCommit, ['', 'a'.repeat(64)]], [CHANNELS.gitCommit, ['message', 'HEAD']],
       [CHANNELS.gitCommitDiff, ['--help']], [CHANNELS.openSession, ['../session']],
@@ -99,6 +104,19 @@ describe('服务 IPC 与生命周期', () => {
     ] as [string, unknown[]][]) {
       expect(await routes.get(channel)!(event, ...args)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } })
     }
+  })
+
+  it('文件搜索使用授权和忽略规则，匹配相对路径并限制结果数', async () => {
+    await api.chooseWorkspace()
+    await mkdir(join(cwd, 'nested'))
+    await mkdir(join(cwd, 'node_modules'))
+    await writeFile(join(cwd, 'nested', '说明.TXT'), '内容')
+    await writeFile(join(cwd, 'node_modules', '说明.txt'), '忽略')
+    expect(await api.searchFiles('nested/说明.txt')).toMatchObject({ ok: true, value: { entries: [{ path: 'nested/说明.TXT' }], truncated: false } })
+    await Promise.all(Array.from({ length: 205 }, (_, index) => writeFile(join(cwd, `match-${index}.txt`), '内容')))
+    const result = await api.searchFiles('match-')
+    expect(result.ok && result.value.entries.length).toBe(200)
+    expect(result.ok && result.value.truncated).toBe(true)
   })
 
   it('历史只投影对话字段，拒绝打开其他工作区的会话', async () => {

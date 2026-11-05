@@ -4,6 +4,8 @@ import { useMemo, useState } from 'react'
 import { diffRows, pairedDiffRows } from './diffModel.js'
 import type { TextDiff } from '../shared/services.js'
 import { useResource } from './serviceHooks.js'
+import { Icon } from './Icon.js'
+import { CopyButton } from './CopyButton.js'
 
 export interface DocumentPreview {
   title: string; text: string; diff?: boolean; truncated?: boolean
@@ -13,13 +15,16 @@ export interface DocumentPreview {
 
 export function DocumentView({ document, revision = 0 }: { document: DocumentPreview; revision?: number }) {
   const [split, setSplit] = useState(true)
+  const [metadata, setMetadata] = useState(false)
   const latest = useResource(`${document.title}:${revision}`, () => document.reload ? document.reload() : Promise.resolve({ text: document.text, truncated: !!document.truncated }))
   const text = latest.error ? '' : latest.value?.text ?? document.text
-  const rows = useMemo(() => diffRows(text), [text])
+  const rows = useMemo(() => diffRows(text).filter((row) => metadata || row.kind !== 'meta' || !/^(index |--- |\+\+\+ |$)/.test(row.text)), [text, metadata])
   const pairs = useMemo(() => pairedDiffRows(rows), [rows])
   return <section className="document-view" aria-label="文件预览">
-    <div className="document-toolbar"><span className="path">{document.title}</span>
-      {document.diff && <button onClick={() => setSplit(!split)}>{split ? '统一视图' : '并排视图'}</button>}
+    <div className="document-toolbar"><span className="path">{document.title}</span><div className="document-actions">
+      <CopyButton text={text} label={document.diff ? '复制差异' : '复制文件内容'} compact />
+      {document.diff && <><button aria-pressed={metadata} title="显示补丁元信息" onClick={() => setMetadata(!metadata)}><Icon name="info" size={14} /></button><button onClick={() => setSplit(!split)}><Icon name="sidebar" size={14} />{split ? '统一视图' : '并排视图'}</button></>}
+    </div>
     </div>
     {latest.error && <p className="inline-error" role="alert">{latest.error}</p>}
     {(latest.value?.truncated ?? document.truncated) && <p className="inline-notice">内容较大，当前显示部分预览。</p>}

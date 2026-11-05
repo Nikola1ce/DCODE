@@ -33,6 +33,59 @@ function fixture() {
 }
 
 describe('DesktopController', () => {
+  it('设置可在选项目之前保存，应用时重启同一会话，保存失败后恢复连接', async () => {
+    const f = fixture()
+    await expect(f.controller.configure(async () => 'first')).resolves.toEqual({ value: 'first' })
+    await f.controller.chooseWorkspace()
+    await expect(f.controller.configure(async () => 'saved')).resolves.toEqual({ value: 'saved' })
+    expect(f.trace).toEqual(['start-0', 'stop-0', 'start-0'])
+    await expect(f.controller.configure(async () => { throw new Error('save failed') })).rejects.toThrow('save failed')
+    expect(f.connections).toHaveLength(1)
+    expect(f.connections[0].start).toHaveBeenCalledTimes(3)
+    await f.controller.dispose()
+  })
+
+  it('设置落盘后的重连失败单独返回，执行中拒绝修改且不调用保存', async () => {
+    const f = fixture()
+    await f.controller.chooseWorkspace()
+    vi.mocked(f.connections[0].start).mockRejectedValueOnce(new Error('start failed'))
+    await expect(f.controller.configure(async () => 'saved')).resolves.toMatchObject({ value: 'saved', connectionError: expect.stringContaining('设置已保存') })
+    f.connections[0].getSnapshot().phase = 'running'
+    const save = vi.fn(async () => {})
+    await expect(f.controller.configure(save)).rejects.toMatchObject({ code: 'BUSY' })
+    expect(save).not.toHaveBeenCalled()
+    await f.controller.dispose()
+  })
+
+  it('设置保存期间拒绝消息和并发配置', async () => {
+    const f = fixture()
+    await f.controller.chooseWorkspace()
+    let finish!: () => void
+    const saving = f.controller.configure(() => new Promise<void>((resolve) => { finish = resolve }))
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    expect(() => f.controller.sendPrompt('task')).toThrowError(expect.objectContaining({ code: 'BUSY' }))
+    await expect(f.controller.configure(async () => {})).rejects.toMatchObject({ code: 'BUSY' })
+    finish()
+    await saving
+    await f.controller.dispose()
+  })
+
+  it('退出等待在途设置保存，写入结束后释放连接', async () => {
+    const f = fixture()
+    await f.controller.chooseWorkspace()
+    let finish!: () => void
+    const saving = f.controller.configure(() => new Promise<void>((resolve) => { finish = resolve }))
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    const disposed = vi.fn()
+    const closing = f.controller.dispose().then(disposed)
+    await Promise.resolve()
+    expect(disposed).not.toHaveBeenCalled()
+    finish()
+    await expect(saving).resolves.toMatchObject({ connectionError: expect.stringContaining('桌面正在关闭') })
+    await closing
+    expect(f.connections[0].start).toHaveBeenCalledOnce()
+  })
+
   it('恢复会话在当前授权内核验归属，新会话不传 resumeId', async () => {
     const f = fixture()
     await f.controller.chooseWorkspace()

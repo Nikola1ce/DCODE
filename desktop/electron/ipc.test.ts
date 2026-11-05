@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { installIpcRoutes } from './ipc.js'
 import type { IpcController, IpcHandler } from './ipc.js'
 import { createDesktopBridge } from './bridge.js'
-import { CONTENT_SECURITY_POLICY, SECURE_WEB_PREFERENCES, isAllowedAssetUrl, isTrustedInvocation } from './windowSecurity.js'
+import { CONTENT_SECURITY_POLICY, SECURE_WEB_PREFERENCES, isAllowedAssetUrl, isTrustedInvocation, isClipboardWriteAllowed } from './windowSecurity.js'
 import { CHANNELS } from '../shared/channels.js'
 import { EMPTY_SNAPSHOT } from '../shared/api.js'
 import type { DesktopEvent } from '../shared/api.js'
@@ -28,6 +28,15 @@ function fixture() {
 }
 
 describe('IPC 白名单与来源', () => {
+  it('仅本地工作台主窗口可写入剪贴板，读取和其他页面被拒绝', () => {
+    const owner = { mainFrame: { url }, isDestroyed: () => false }
+    expect(isClipboardWriteAllowed('clipboard-sanitized-write', owner, owner, url)).toBe(true)
+    expect(isClipboardWriteAllowed('clipboard-read', owner, owner, url)).toBe(false)
+    expect(isClipboardWriteAllowed('clipboard-sanitized-write', null, owner, url)).toBe(false)
+    expect(isClipboardWriteAllowed('clipboard-sanitized-write', { ...owner }, owner, url)).toBe(false)
+    owner.mainFrame.url = 'https://example.com/'
+    expect(isClipboardWriteAllowed('clipboard-sanitized-write', owner, owner, url)).toBe(false)
+  })
   it('仅注册六个明确方法，不提供启动路径、文件、进程、配置或通用 send', () => {
     const f = fixture()
     expect([...f.routes.keys()].sort()).toEqual([
@@ -110,6 +119,7 @@ describe('隔离 preload 与资源策略', () => {
       'listFiles', 'readFile', 'watchWorkspace', 'gitStatus', 'gitDiff', 'gitStage', 'gitDiscard',
       'gitStageAll', 'gitCommit', 'gitHistory', 'gitCommitDiff', 'getSessionHistory', 'openSession',
       'listRecentWorkspaces', 'openRecentWorkspace',
+      'getModelSettings', 'validateModelSettings', 'saveModelSettings', 'searchFiles',
       'listSessions', 'updateSession', 'deleteSession', 'getUsage', 'getSettings', 'updateSettings',
       'listReviews', 'getReview', 'revertReview', 'undoReview',
     ].sort())

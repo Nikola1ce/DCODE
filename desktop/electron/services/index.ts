@@ -2,7 +2,8 @@
 // 制作人：Moriarty_Dox
 import type { DesktopController } from '../desktopController.js'
 import type { DesktopEvent } from '../../shared/api.js'
-import type { DesktopPreferences, SessionPresentation } from '../../shared/services.js'
+import type { DesktopPreferences, ModelSettingsInput, SessionPresentation } from '../../shared/services.js'
+import { ConfigurationService } from './configuration.js'
 import { samePath } from '../workspaceAccess.js'
 import { WorkspaceService } from './workspace.js'
 import { GitService } from './git.js'
@@ -19,6 +20,7 @@ export class DesktopServices {
   private readonly review: ReviewService
   private readonly unsubscribe: () => void
   private watchedCwd: string | null = null
+  private readonly configuration = new ConfigurationService()
 
   constructor(private readonly controller: DesktopController, private readonly settings: SettingsService,
     dialogs: { confirm(title: string, detail: string): Promise<boolean>; trash(path: string): Promise<void> },
@@ -34,6 +36,31 @@ export class DesktopServices {
   }
 
   listFiles(path: string) { return this.controller.useWorkspace((grant) => this.workspace.list(grant.cwd, path)) }
+  getModelSettings() { return this.configuration.get() }
+  validateModelSettings(input: ModelSettingsInput) { return this.configuration.validate(input) }
+  async saveModelSettings(input: ModelSettingsInput) {
+    const result = await this.controller.configure(() => this.configuration.save(input))
+    return { settings: result.value, connectionError: result.connectionError }
+  }
+  searchFiles(query: string) {
+    return this.controller.useWorkspace(async (grant) => {
+      const directories = ['']
+      const entries = []
+      let scanned = 0
+      let truncated = false
+      for (let index = 0; index < directories.length && scanned < 10_000; index++) {
+        const listing = await this.workspace.list(grant.cwd, directories[index])
+        truncated ||= listing.truncated
+        for (const entry of listing.entries) {
+          if (++scanned > 10_000) { truncated = true; break }
+          if (entry.kind === 'directory') directories.push(entry.path)
+          else if (entry.path.toLocaleLowerCase().includes(query.toLocaleLowerCase())) entries.push(entry)
+          if (entries.length === 200) return { entries, truncated: true }
+        }
+      }
+      return { entries, truncated: truncated || scanned >= 10_000 }
+    })
+  }
   listRecentWorkspaces() { return this.settings.recentWorkspaces() }
   async openRecentWorkspace(id: string) {
     const recent = (await this.settings.recentWorkspaces()).find((entry) => entry.id === id)
@@ -116,5 +143,6 @@ export class DesktopServices {
     this.stopWatch()
     this.unsubscribe()
     await this.settings.flush()
+    await this.configuration.flush()
   }
 }

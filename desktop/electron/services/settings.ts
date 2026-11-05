@@ -8,7 +8,9 @@ import { boolean, invalid, record, sessionId } from './validation.js'
 import type { DesktopPreferences, RecentWorkspace, SessionPresentation } from '../../shared/services.js'
 import { samePath } from '../workspaceAccess.js'
 
-const DEFAULTS: DesktopPreferences = { theme: 'system', sendKey: 'enter', notifications: true, preventSleep: true }
+export const DEFAULT_PREFERENCES: DesktopPreferences = { theme: 'system', sendKey: 'enter', notifications: true, preventSleep: true,
+  closeBehavior: 'ask', notifyPermission: true, notifyComplete: true, notifyError: true }
+const DEFAULTS = DEFAULT_PREFERENCES
 interface SettingsData {
   version: number
   preferences?: Record<string, unknown>
@@ -20,7 +22,8 @@ export function preferencePatch(value: unknown): Partial<DesktopPreferences> {
   const patch = record(value, Object.keys(DEFAULTS))
   if ('theme' in patch && !['system', 'light', 'dark'].includes(patch.theme as string)) invalid()
   if ('sendKey' in patch && !['enter', 'mod-enter'].includes(patch.sendKey as string)) invalid()
-  for (const key of ['notifications', 'preventSleep']) if (key in patch) boolean(patch[key])
+  if ('closeBehavior' in patch && !['ask', 'tray', 'quit'].includes(patch.closeBehavior as string)) invalid()
+  for (const key of ['notifications', 'preventSleep', 'notifyPermission', 'notifyComplete', 'notifyError']) if (key in patch) boolean(patch[key])
   return patch
 }
 
@@ -32,6 +35,8 @@ export function presentationPatch(value: unknown): SessionPresentation {
 }
 
 export class SettingsService {
+  private readonly listeners = new Set<(preferences: DesktopPreferences) => void>()
+  subscribe(listener: (preferences: DesktopPreferences) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private pending: Promise<unknown> = Promise.resolve()
   readonly path: string
 
@@ -95,7 +100,10 @@ export class SettingsService {
   async update(value: unknown): Promise<DesktopPreferences> {
     const patch = preferencePatch(value)
     await this.change((data) => { data.preferences = { ...data.preferences, ...patch } })
-    return this.get()
+    const preferences = await this.get()
+    // 偏好已落盘，系统适配器失败时仍向调用方返回已保存状态。
+    for (const listener of this.listeners) { try { listener(preferences) } catch {} }
+    return preferences
   }
 
   async updateSession(id: string, value: unknown): Promise<void> {
