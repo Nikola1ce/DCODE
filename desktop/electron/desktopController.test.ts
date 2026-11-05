@@ -33,6 +33,31 @@ function fixture() {
 }
 
 describe('DesktopController', () => {
+  it('恢复会话在当前授权内核验归属，新会话不传 resumeId', async () => {
+    const f = fixture()
+    await f.controller.chooseWorkspace()
+    const validate = vi.fn(async () => {})
+    await f.controller.openSession('saved-session', validate)
+    expect(validate).toHaveBeenCalledWith(resolve('project'), 'saved-session')
+    expect(f.createConnection).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: resolve('project') }), 'saved-session')
+    await f.controller.openSession(null, validate)
+    expect(f.createConnection).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: resolve('project') }), undefined)
+    const calls = f.createConnection.mock.calls.length
+    validate.mockRejectedValueOnce(new Error('foreign workspace'))
+    await expect(f.controller.openSession('foreign', validate)).rejects.toThrow('foreign workspace')
+    expect(f.createConnection).toHaveBeenCalledTimes(calls)
+    await f.controller.dispose()
+  })
+
+  it('最近目录仍经过原生选择，取消时保持当前工作区', async () => {
+    const f = fixture()
+    await f.controller.chooseWorkspace()
+    f.chooseDirectory.mockResolvedValue(null)
+    await f.controller.chooseWorkspace(resolve('recent-project'))
+    expect(f.chooseDirectory).toHaveBeenLastCalledWith(resolve('recent-project'))
+    expect(f.createConnection).toHaveBeenCalledTimes(1)
+    await f.controller.dispose()
+  })
   it('未经过原生选择不能启动；切换项目先停止旧内核', async () => {
     const f = fixture()
     await expect(f.controller.reconnect()).rejects.toMatchObject({ code: 'NO_WORKSPACE' })

@@ -6,6 +6,7 @@ import type {
   ServerPermissionRequestMessage,
   ServerReadyMessage,
 } from '../../src/ide/protocol.js'
+import type { ServicesApi } from './services.js'
 
 export type ConnectionPhase =
   | 'disconnected' | 'starting' | 'ready' | 'running' | 'cancelling'
@@ -20,6 +21,8 @@ export type DesktopErrorCode =
   | 'UNSUPPORTED_PROTOCOL' | 'UNSUPPORTED_CAPABILITY' | 'PROTOCOL_V4_LIMITED'
   | 'IDENTITY_MISMATCH' | 'UNSAFE_PERMISSION_MODE' | 'NOT_READY'
   | 'API_KEY_REQUIRED' | 'PERMISSION_NOT_PENDING' | 'INTERNAL_ERROR'
+  | 'GIT_UNAVAILABLE' | 'GIT_FAILED' | 'NOT_GIT_REPOSITORY' | 'CONFLICT'
+  | 'FILE_TOO_LARGE' | 'SETTINGS_INVALID'
 
 export interface DesktopError {
   code: DesktopErrorCode
@@ -59,13 +62,14 @@ export interface ConnectionSnapshot {
 }
 
 export type DesktopEvent =
+  | { type: 'workspace_changed' | 'workspace_watch_error'; cwd: string }
   | { type: 'connection'; snapshot: ConnectionSnapshot }
   | { type: 'turn_started'; requestId: string; text: string }
   | { type: 'stream'; message: StreamMessage }
   | { type: 'turn_interrupted'; requestId: string; error: DesktopError }
 
-/** 不提供任意 IPC、目录、会话 id、配置、密钥、文件或进程操作入口。 */
-export interface DesktopApi {
+/** 服务路径绑定原生授权工作区，配置仅返回桌面展示偏好。 */
+export interface DesktopApi extends ServicesApi {
   getSnapshot(): Promise<Result<ConnectionSnapshot>>
   chooseWorkspace(): Promise<Result<ConnectionSnapshot | null>>
   reconnect(): Promise<Result<ConnectionSnapshot>>

@@ -45,6 +45,8 @@ export interface CheckpointRecord extends CheckpointIdentity {
   afterBytes?: number
   /** 传入 identity 的新调用须在写入成功后完成检查点，不能回退未完成写操作。 */
   pending?: boolean
+  /** 桌面审阅回退的来源检查点，原始记录和快照继续保留。 */
+  reviewOf?: string[]
 }
 
 /** 面向 IPC 的轻量摘要，不携带文件内容或备份的磁盘路径。 */
@@ -59,6 +61,7 @@ export interface CheckpointSummary extends CheckpointIdentity {
   legacy: boolean
   /** 快照是否完整；实时冲突检查仍在回退时执行。 */
   complete: boolean
+  reviewOf?: string[]
 }
 
 /** 有界的行级差异；省略计算时不伪造 added/removed 为 0。 */
@@ -82,6 +85,8 @@ export type CheckpointErrorCode =
   | 'snapshot_missing'
   | 'snapshot_corrupt'
   | 'io_error'
+  | 'unsupported'
+  | 'limit_exceeded'
 
 export interface CheckpointFailure {
   code: CheckpointErrorCode
@@ -117,6 +122,7 @@ const MAX_DIFF_INPUT_BYTES = 512 * 1024
 const MAX_DIFF_CELLS = 1_000_000
 const MAX_DIFF_LINES = 200
 const MAX_DIFF_OUTPUT_BYTES = 48 * 1024
+const MAX_REVIEW_FILE_BYTES = 16 * 1024 * 1024
 const HASH_RE = /^[a-f0-9]{64}$/
 const ID_RE = /^[a-zA-Z0-9_-]{1,128}$/
 
@@ -234,6 +240,8 @@ function isValidRecord(value: unknown): value is CheckpointRecord {
     (r.afterHash === undefined || r.afterHash === null || (typeof r.afterHash === 'string' && HASH_RE.test(r.afterHash))) &&
     (r.afterBytes === undefined || (Number.isSafeInteger(r.afterBytes) && r.afterBytes >= 0)) &&
     (r.pending === undefined || typeof r.pending === 'boolean')
+    && (r.reviewOf === undefined || (Array.isArray(r.reviewOf) && r.reviewOf.length > 0
+      && r.reviewOf.length <= MAX_CHECKPOINTS && r.reviewOf.every(isSafeId) && new Set(r.reviewOf).size === r.reviewOf.length))
   )
 }
 
@@ -288,10 +296,11 @@ function fileState(content: Buffer | null): FileState {
   return { content, hash: content === null ? null : hash(content) }
 }
 
-function readFileState(abs: string): FileState {
+function readFileState(abs: string, maxBytes = Number.POSITIVE_INFINITY): FileState {
   try {
     const stat = lstatSync(abs)
     if (!stat.isFile()) throw new CheckpointError('invalid_path', '检查点目标不是普通文件。')
+    if (stat.size > maxBytes) throw new CheckpointError('limit_exceeded', '文件超过当前审阅大小上限。')
     return fileState(readFileSync(abs))
   } catch (error) {
     if (isMissing(error)) return fileState(null)
@@ -308,6 +317,7 @@ export function saveCheckpointBeforeWrite(
   absPath: string,
   tool: CheckpointTool,
   identity?: CheckpointIdentity,
+  reviewOf?: string[],
 ): CheckpointRecord | undefined {
   let id: string | undefined
   try {
@@ -317,6 +327,8 @@ export function saveCheckpointBeforeWrite(
     const before = readFileState(target)
     const fields = storedIdentity(identity)
     const records = loadManifest(cwd, true)
+    if (reviewOf !== undefined && (!reviewOf.length || reviewOf.some((sourceId) => !isSafeId(sourceId))
+      || new Set(reviewOf).size !== reviewOf.length || records.length >= MAX_CHECKPOINTS)) return undefined
     ensureCheckpointDirs(cwd)
     id = `${Date.now()}-${randomBytes(8).toString('hex')}`
     if (before.content !== null) {
@@ -332,6 +344,7 @@ export function saveCheckpointBeforeWrite(
       ...fields,
       ...(before.hash !== null ? { beforeHash: before.hash } : {}),
       ...(identity !== undefined ? { pending: true } : {}),
+      ...(reviewOf ? { reviewOf: [...reviewOf] } : {}),
     }
     records.push(record)
     const removed = records.splice(0, Math.max(0, records.length - MAX_CHECKPOINTS))
@@ -426,13 +439,14 @@ function summarize(record: CheckpointRecord): CheckpointSummary {
     toolCallId: record.toolCallId,
     legacy: !record.sessionId,
     complete: record.afterHash !== undefined && !record.pending,
+    ...(record.reviewOf ? { reviewOf: [...record.reviewOf] } : {}),
   }
 }
 
 /** 仅列出指定会话的记录（旧→新）；legacy 不混入任何会话。 */
-export function listCheckpointSummaries(cwd: string, sessionId: string): CheckpointSummary[] {
+export function listCheckpointSummaries(cwd: string, sessionId: string, strict = false): CheckpointSummary[] {
   if (!isValidIdentity(sessionId)) return []
-  return loadManifest(cwd).filter((record) => record.sessionId === sessionId).map(summarize)
+  return loadManifest(cwd, strict).filter((record) => record.sessionId === sessionId).map(summarize)
 }
 
 /** 复用现有 LCS 算法，但先限制矩阵/文本大小，再限制 IPC 和权限预览的输出体积。 */
@@ -501,11 +515,13 @@ function requireSessionRecord(records: CheckpointRecord[], id: string, sessionId
   return record
 }
 
-function readSnapshot(cwd: string, record: CheckpointRecord, after: boolean): Buffer | null {
+function readSnapshot(cwd: string, record: CheckpointRecord, after: boolean, maxBytes = Number.POSITIVE_INFINITY): Buffer | null {
   if ((!after && record.wasNewFile) || (after && record.afterHash === null)) return null
   let content: Buffer
   try {
-    content = readFileSync(getBackupPath(cwd, record.id, after))
+    const path = getBackupPath(cwd, record.id, after)
+    if (lstatSync(path).size > maxBytes) throw new CheckpointError('limit_exceeded', '快照超过当前审阅大小上限。')
+    content = readFileSync(path)
   } catch (error) {
     if (isMissing(error)) throw new CheckpointError('snapshot_missing', `检查点${after ? '写后' : '写前'}备份丢失。`)
     throw error
@@ -677,6 +693,183 @@ export function undoCheckpointById(cwd: string, id: string, sessionId: string): 
 /** 按 manifest 的逆序回退指定会话的记录；入参顺序不影响执行顺序，预检失败不会写任何文件。 */
 export function undoSessionCheckpoints(cwd: string, ids: string[], sessionId: string): SessionUndoResult {
   return undoSelectedCheckpoints(cwd, ids, sessionId)
+}
+
+export interface CheckpointReview {
+  checkpoint: CheckpointSummary
+  checkpointIds: string[]
+  revision: string
+  diff: CheckpointFileDiff
+  canRevert: boolean
+  reverted: boolean
+  blockedReason?: string
+  undoCheckpointId?: string
+}
+
+export type CheckpointReviewResult =
+  | { ok: true; review: CheckpointReview }
+  | { ok: false; code: CheckpointErrorCode; error: string }
+
+export type CheckpointReviewMutation =
+  | { ok: true; checkpointId: string; path: string }
+  | { ok: false; code: CheckpointErrorCode; error: string; checkpointId?: string }
+
+interface PreparedReview {
+  review: CheckpointReview
+  before: Buffer | null
+  after: Buffer | null
+  records: CheckpointRecord[]
+}
+
+/** 原始轮次快照始终保留，后续审阅检查点表示该文件当前剩余的改动。 */
+function prepareReview(cwd: string, id: string, sessionId: string): PreparedReview {
+  const records = loadManifest(cwd, true)
+  const anchor = requireSessionRecord(records, id, sessionId)
+  if (anchor.reviewOf) throw new CheckpointError('invalid_id', '请选择原始改动检查点进行审阅。')
+  const key = pathKey(anchor.targetPath)
+  const related = records.filter((record) => pathKey(record.targetPath) === key)
+  const sources = related.filter((record) => !record.reviewOf && record.sessionId === sessionId
+    && (anchor.turnId ? record.turnId === anchor.turnId : record.id === id))
+  const sourceIds = sources.map((record) => record.id)
+  const firstIndex = related.indexOf(sources[0])
+  const lastIndex = related.indexOf(sources[sources.length - 1])
+  if (lastIndex - firstIndex + 1 !== sources.length) {
+    throw new CheckpointError('conflict', '同一轮次的文件修改穿插了其他轮次或审阅操作，请按检查点检查历史。')
+  }
+  const chain = [...sources]
+  let blockedReason: string | undefined
+  for (const record of related.slice(lastIndex + 1)) {
+    if (record.sessionId !== sessionId || JSON.stringify(record.reviewOf) !== JSON.stringify(sourceIds)) {
+      blockedReason = '该文件存在后续检查点，请先处理后续轮次。'
+      break
+    }
+    chain.push(record)
+  }
+  let before: Buffer | null = null
+  let after: Buffer | null = null
+  for (const [index, record] of chain.entries()) {
+    if (record.pending || record.afterHash === undefined) throw new CheckpointError('incomplete', '检查点写入尚未完成，请先检查上次写入结果。')
+    if (!record.wasNewFile && !record.beforeHash) throw new CheckpointError('snapshot_corrupt', '检查点缺少写前 hash。')
+    if (record.bytes > MAX_REVIEW_FILE_BYTES || (record.afterBytes ?? 0) > MAX_REVIEW_FILE_BYTES) {
+      throw new CheckpointError('limit_exceeded', '审阅回退支持单文件前后快照各不超过 16 MiB。')
+    }
+    const prior = readSnapshot(cwd, record, false, MAX_REVIEW_FILE_BYTES)
+    if (index === 0) before = prior
+    else if (fileState(prior).hash !== fileState(after).hash) {
+      throw new CheckpointError('conflict', '文件检查点之间存在未记录的修改，无法合并回退。')
+    }
+    after = readSnapshot(cwd, record, true, MAX_REVIEW_FILE_BYTES)
+  }
+  const target = resolveTargetAbs(cwd, anchor.targetPath)
+  const current = readFileState(target, MAX_REVIEW_FILE_BYTES)
+  if (current.hash !== fileState(after).hash) blockedReason = '文件已被用户或其他会话修改，请刷新并检查当前内容。'
+  const reverted = fileState(before).hash === fileState(after).hash
+  const last = chain[chain.length - 1]
+  const diff = buildCheckpointFileDiff(before?.toString('utf8') ?? '', after?.toString('utf8') ?? '')
+  return {
+    before, after, records,
+    review: {
+      checkpoint: {
+        ...summarize(sources[0]), bytes: before?.length ?? 0, afterBytes: after?.length ?? 0,
+        operation: after === null ? 'delete' : before === null ? 'create' : 'edit',
+      },
+      checkpointIds: sourceIds,
+      revision: hash(Buffer.from(JSON.stringify({ related, currentHash: current.hash }))),
+      diff, reverted, canRevert: !reverted && !blockedReason,
+      ...(blockedReason ? { blockedReason } : {}),
+      ...(!blockedReason && last.reviewOf ? { undoCheckpointId: last.id } : {}),
+    },
+  }
+}
+
+/** 按会话和轮次合并同文件修改，输出有界 diff 与用于提交的版本指纹。 */
+export function getCheckpointReview(cwd: string, id: string, sessionId: string): CheckpointReviewResult {
+  try { return { ok: true, review: prepareReview(cwd, id, sessionId).review } } catch (error) {
+    return { ok: false, code: error instanceof CheckpointError ? error.code : 'io_error', error: errorMessage(error) }
+  }
+}
+
+function revertReviewHunk(prepared: PreparedReview, index: number): Buffer | null {
+  const { before, after, review } = prepared
+  if (!Number.isSafeInteger(index) || index < 0 || review.diff.truncated || !review.diff.hunks[index]) {
+    throw new CheckpointError('unsupported', '请选择完整预览中的有效差异块，截断的差异可按整个文件回退。')
+  }
+  // Buffer 往返校验保留 BOM、CRLF 和末尾换行，拒绝有损解码后的块操作。
+  for (const content of [before, after]) {
+    if (content && (content.includes(0) || !Buffer.from(content.toString('utf8')).equals(content))) {
+      throw new CheckpointError('unsupported', '按块回退仅支持 UTF-8 文本，请按整个文件回退。')
+    }
+  }
+  const hunk = review.diff.hunks[index]
+  const text = after?.toString('utf8') ?? ''
+  const lines = text === '' ? [] : text.split('\n')
+  const start = Math.max(0, hunk.newStart - 1)
+  const replacement = hunk.lines.filter((line) => line.type !== 'add').map((line) => line.text)
+  lines.splice(start, hunk.newCount, ...replacement)
+  if (before === null && lines.length === 0) return null
+  return Buffer.from(lines.join('\n'), 'utf8')
+}
+
+/** 每次回退先登记可恢复检查点，成功后保留来源记录，重复/过期提交通过 revision 拒绝。 */
+export function revertCheckpointReview(
+  cwd: string, id: string, sessionId: string, revision: string, hunkIndex?: number,
+): CheckpointReviewMutation {
+  let saved: CheckpointRecord | undefined
+  let prepared: PreparedReview | undefined
+  let desired: Buffer | null = null
+  let applied = false
+  try {
+    prepared = prepareReview(cwd, id, sessionId)
+    const { review, before, after } = prepared
+    if (revision !== review.revision) throw new CheckpointError('conflict', '审阅版本已变化，请刷新后重试。')
+    if (!review.canRevert) throw new CheckpointError('conflict', review.blockedReason ?? '该文件的本轮改动已全部回退。')
+    desired = hunkIndex === undefined ? before : revertReviewHunk(prepared, hunkIndex)
+    if (fileState(desired).hash === fileState(after).hash) throw new CheckpointError('conflict', '所选差异块已回退。')
+    if (prepared.records.length >= MAX_CHECKPOINTS) throw new CheckpointError('limit_exceeded', '检查点已达容量上限，请先清理已有记录后重试。')
+    if (JSON.stringify(loadManifest(cwd, true)) !== JSON.stringify(prepared.records)) throw new CheckpointError('conflict', '检查点列表已变化，请刷新后重试。')
+    saved = saveCheckpointBeforeWrite(cwd, resolveTargetAbs(cwd, review.checkpoint.path), 'edit_file', {
+      sessionId, turnId: review.checkpoint.turnId, runId: review.checkpoint.runId,
+    }, review.checkpointIds)
+    if (!saved) throw new CheckpointError('io_error', '无法保存回退前检查点，文件尚未修改。')
+    if (JSON.stringify(loadManifest(cwd, true)) !== JSON.stringify([...prepared.records, saved])) {
+      throw new CheckpointError('conflict', '保存检查点期间历史记录发生变化，请刷新后重试。')
+    }
+    if ((saved.wasNewFile ? null : saved.beforeHash) !== fileState(after).hash) {
+      throw new CheckpointError('conflict', '保存检查点期间文件发生修改，请刷新后重试。')
+    }
+    restoreState(cwd, saved, desired, fileState(after).hash)
+    applied = true
+    if (!completeCheckpointAfterWrite(cwd, saved.id, desired)) throw new CheckpointError('io_error', '回退结果登记失败。')
+    return { ok: true, checkpointId: saved.id, path: saved.targetPath }
+  } catch (error) {
+    let recoveryError: string | undefined
+    if (saved && prepared) {
+      try {
+        if (applied) restoreState(cwd, saved, prepared.after, fileState(desired).hash)
+        if (!discardPendingCheckpoint(cwd, saved.id)) recoveryError = '回退前检查点已保留，请检查文件状态。'
+      } catch {
+        recoveryError = '文件可能已部分回退，回退前检查点已保留，请先检查文件状态。'
+      }
+    }
+    return {
+      ok: false, code: error instanceof CheckpointError ? error.code : 'io_error',
+      error: [errorMessage(error), recoveryError].filter(Boolean).join(' '),
+      ...(recoveryError && saved ? { checkpointId: saved.id } : {}),
+    }
+  }
+}
+
+/** 撤销某次审阅回退，仍执行会话归属、最新检查点及文件 hash 冲突检查。 */
+export function undoCheckpointReview(cwd: string, id: string, sessionId: string): SessionUndoResult {
+  try {
+    const record = requireSessionRecord(loadManifest(cwd, true), id, sessionId)
+    if (!record.reviewOf) throw new CheckpointError('invalid_id', '该检查点属于原始工具改动，请使用审阅回退。')
+    return undoCheckpointById(cwd, id, sessionId)
+  } catch (error) {
+    const result = emptyUndoResult()
+    addFailure(result, error)
+    return result
+  }
 }
 
 /** CLI 旧入口：允许无身份历史记录；具备 afterHash 的新记录仍执行冲突检查。 */

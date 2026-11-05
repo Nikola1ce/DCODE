@@ -79,6 +79,13 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
 
 describe('AgentConnection', () => {
+  it('指定历史会话首次启动携带 resume 参数并校验握手身份', async () => {
+    const f = fixture({ resumeId: 'session-1' })
+    await f.launch()
+    expect(f.spawn).toHaveBeenCalledWith(executable, [coreEntry, '--ide-server', '--cwd', cwd, '--plan', '--resume', 'session-1'], expect.any(Object))
+    expect(f.connection.getSnapshot().sessionId).toBe('session-1')
+    await f.connection.shutdown()
+  })
   it('免 Shell 使用 Electron Node；ready 后还必须等待 default 权限状态，且连接幂等', async () => {
     const f = fixture()
     const first = f.connection.start()

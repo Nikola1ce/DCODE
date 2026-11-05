@@ -6,6 +6,9 @@ import { MAX_PROMPT_BYTES } from '../shared/api.js'
 import { CHANNELS } from '../shared/channels.js'
 import { DesktopFault, publicError } from './errors.js'
 import type { IpcRequest } from './windowSecurity.js'
+import type { DesktopServices } from './services/index.js'
+import { boolean, invalid, relativePath, sessionId } from './services/validation.js'
+import { preferencePatch, presentationPatch } from './services/settings.js'
 
 export type IpcHandler = (event: IpcRequest, ...args: unknown[]) => Promise<Result<unknown>>
 export interface IpcRouter {
@@ -21,7 +24,7 @@ function count(args: unknown[], size: number): void {
 }
 
 export function installIpcRoutes(router: IpcRouter, controller: IpcController,
-  trusted: (event: IpcRequest) => boolean): () => void {
+  trusted: (event: IpcRequest) => boolean, services?: DesktopServices): () => void {
   const routes: Record<string, (...args: unknown[]) => unknown> = {
     [CHANNELS.snapshot]: (...args) => { count(args, 0); return controller.getSnapshot() },
     [CHANNELS.chooseWorkspace]: (...args) => { count(args, 0); return controller.chooseWorkspace() },
@@ -45,6 +48,49 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
       return controller.respondPermission(permissionId, decision)
     },
   }
+  if (services) Object.assign(routes, {
+    [CHANNELS.listRecentWorkspaces]: (...args: unknown[]) => { count(args, 0); return services.listRecentWorkspaces() },
+    [CHANNELS.openRecentWorkspace]: (...args: unknown[]) => { count(args, 1); return services.openRecentWorkspace(sessionId(args[0])) },
+    [CHANNELS.listFiles]: (...args: unknown[]) => { count(args, 1); return services.listFiles(relativePath(args[0], true)) },
+    [CHANNELS.readFile]: (...args: unknown[]) => { count(args, 1); return services.readFile(relativePath(args[0])) },
+    [CHANNELS.watchWorkspace]: (...args: unknown[]) => { count(args, 1); return services.watchWorkspace(boolean(args[0])) },
+    [CHANNELS.gitStatus]: (...args: unknown[]) => { count(args, 0); return services.gitStatus() },
+    [CHANNELS.gitDiff]: (...args: unknown[]) => { count(args, 2); return services.gitDiff(relativePath(args[0]), boolean(args[1])) },
+    [CHANNELS.gitStage]: (...args: unknown[]) => { count(args, 2); return services.gitStage(relativePath(args[0]), boolean(args[1])) },
+    [CHANNELS.gitDiscard]: (...args: unknown[]) => { count(args, 1); return services.gitDiscard(relativePath(args[0])) },
+    [CHANNELS.gitStageAll]: (...args: unknown[]) => { count(args, 1); return services.gitStageAll(boolean(args[0])) },
+    [CHANNELS.gitHistory]: (...args: unknown[]) => { count(args, 0); return services.gitHistory() },
+    [CHANNELS.gitCommitDiff]: (...args: unknown[]) => {
+      count(args, 1)
+      if (typeof args[0] !== 'string' || !/^[a-f0-9]{40,64}$/.test(args[0])) invalid()
+      return services.gitCommitDiff(args[0])
+    },
+    [CHANNELS.gitCommit]: (...args: unknown[]) => {
+      count(args, 2)
+      const [message, revision] = args
+      if (typeof message !== 'string' || !message.trim() || message.includes('\0') || Buffer.byteLength(message) > 16_384) invalid()
+      if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) invalid()
+      return services.gitCommit(message, revision)
+    },
+    [CHANNELS.getSessionHistory]: (...args: unknown[]) => { count(args, 1); return services.getSessionHistory(sessionId(args[0])) },
+    [CHANNELS.openSession]: (...args: unknown[]) => { count(args, 1); return services.openSession(args[0] === null ? null : sessionId(args[0])) },
+    [CHANNELS.listSessions]: (...args: unknown[]) => { count(args, 1); return services.listSessions(boolean(args[0])) },
+    [CHANNELS.updateSession]: (...args: unknown[]) => { count(args, 2); return services.updateSession(sessionId(args[0]), presentationPatch(args[1])) },
+    [CHANNELS.deleteSession]: (...args: unknown[]) => { count(args, 1); return services.deleteSession(sessionId(args[0])) },
+    [CHANNELS.getUsage]: (...args: unknown[]) => { count(args, 1); return services.getUsage(sessionId(args[0])) },
+    [CHANNELS.listReviews]: (...args: unknown[]) => { count(args, 1); return services.listReviews(sessionId(args[0])) },
+    [CHANNELS.getReview]: (...args: unknown[]) => { count(args, 2); return services.getReview(sessionId(args[0]), sessionId(args[1])) },
+    [CHANNELS.undoReview]: (...args: unknown[]) => { count(args, 2); return services.undoReview(sessionId(args[0]), sessionId(args[1])) },
+    [CHANNELS.revertReview]: (...args: unknown[]) => {
+      count(args, 4)
+      const [session, checkpoint, revision, hunk] = args
+      if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) invalid()
+      if (hunk !== null && (typeof hunk !== 'number' || !Number.isSafeInteger(hunk) || hunk < 0 || hunk > 199)) invalid()
+      return services.revertReview(sessionId(session), sessionId(checkpoint), revision, hunk)
+    },
+    [CHANNELS.getSettings]: (...args: unknown[]) => { count(args, 0); return services.getSettings() },
+    [CHANNELS.updateSettings]: (...args: unknown[]) => { count(args, 1); return services.updateSettings(preferencePatch(args[0])) },
+  })
   for (const [channel, operation] of Object.entries(routes)) {
     router.handle(channel, async (event, ...args) => {
       try {

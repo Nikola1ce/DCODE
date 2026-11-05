@@ -1,6 +1,6 @@
 // Electron 主入口：单实例安全窗口、原生目录授权与内核生命周期；不向 renderer 暴露配置。
 // 制作人：Moriarty_Dox
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AgentConnection } from './agentConnection.js'
@@ -9,12 +9,17 @@ import { DesktopController } from './desktopController.js'
 import { installIpcRoutes } from './ipc.js'
 import { WorkspaceAuthority } from './workspaceAccess.js'
 import { CHANNELS } from '../shared/channels.js'
+import type { DesktopEvent } from '../shared/api.js'
+import { getConfigDir } from '../../src/config.js'
+import { DesktopServices } from './services/index.js'
+import { SettingsService } from './services/settings.js'
 import {
   CONTENT_SECURITY_POLICY, SECURE_WEB_PREFERENCES, isAllowedAssetUrl, isTrustedInvocation,
 } from './windowSecurity.js'
 
 let mainWindow: BrowserWindow | null = null
 let controller: DesktopController | null = null
+let services: DesktopServices | null = null
 let shuttingDown = false
 const rendererFile = join(__dirname, '../renderer/index.html')
 const rendererUrl = pathToFileURL(rendererFile).toString()
@@ -31,22 +36,25 @@ if (!app.requestSingleInstanceLock()) {
     if (shuttingDown || !controller) return
     event.preventDefault()
     shuttingDown = true
-    void controller.dispose().catch(() => {}).finally(() => app.quit())
+    void controller.dispose().finally(() => services?.dispose()).catch(() => {}).finally(() => app.quit())
   })
   app.on('window-all-closed', () => app.quit())
 
   void app.whenReady().then(() => {
     const authority = new WorkspaceAuthority()
+    const settings = new SettingsService(getConfigDir())
     controller = new DesktopController({
       authority,
-      chooseDirectory: async () => {
+      rememberWorkspace: (cwd) => settings.rememberWorkspace(cwd),
+      chooseDirectory: async (defaultPath) => {
         if (!mainWindow || mainWindow.isDestroyed()) return null
         const choice = await dialog.showOpenDialog(mainWindow, {
-          title: '选择 DCODE 项目文件夹', properties: ['openDirectory'], buttonLabel: '授权并连接项目',
+          title: '选择 DCODE 项目文件夹', properties: ['openDirectory'], buttonLabel: '授权并连接项目', defaultPath,
         })
         return choice.canceled ? null : choice.filePaths[0] ?? null
       },
-      createConnection: async (grant) => new AgentConnection({
+      createConnection: async (grant, resumeId) => new AgentConnection({
+        resumeId,
         cwd: grant.cwd,
         executable: process.execPath,
         coreEntry: await resolveCoreEntry({
@@ -58,14 +66,26 @@ if (!app.requestSingleInstanceLock()) {
         validateLaunch: () => authority.validate(grant),
       }),
     })
-    installIpcRoutes(ipcMain, controller, (event) =>
-      isTrustedInvocation(event, mainWindow?.webContents ?? null, rendererUrl))
-    controller.subscribe((event) => {
+    const publish = (event: DesktopEvent) => {
       const contents = mainWindow?.webContents
       if (contents && !contents.isDestroyed() && contents.mainFrame.url === rendererUrl) {
         contents.send(CHANNELS.event, event)
       }
-    })
+    }
+    services = new DesktopServices(controller, settings, {
+      confirm: async (title, detail) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return false
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning', title, message: title, detail,
+          buttons: ['取消', '确认'], defaultId: 0, cancelId: 0, noLink: true,
+        })
+        return result.response === 1
+      },
+      trash: (path) => shell.trashItem(path),
+    }, publish)
+    installIpcRoutes(ipcMain, controller, (event) =>
+      !shuttingDown && isTrustedInvocation(event, mainWindow?.webContents ?? null, rendererUrl), services)
+    controller.subscribe(publish)
 
     mainWindow = new BrowserWindow({
       title: 'DCODE Desktop', width: 1200, height: 820, minWidth: 780, minHeight: 600,
@@ -73,7 +93,7 @@ if (!app.requestSingleInstanceLock()) {
       webPreferences: {
         ...SECURE_WEB_PREFERENCES,
         preload: join(__dirname, 'preload.cjs'),
-        partition: 'dcode-desktop',
+        partition: 'persist:dcode-desktop',
       },
     })
     const contents = mainWindow.webContents

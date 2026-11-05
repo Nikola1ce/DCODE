@@ -42,7 +42,7 @@ export function reduceEvents(state: ChatState, events: readonly DesktopEvent[]):
     if (event.type === 'connection') {
       const old = result.snapshot
       const next = event.snapshot
-      const changed = old.cwd !== next.cwd || (old.sessionId && next.sessionId && old.sessionId !== next.sessionId)
+      const changed = old.cwd !== next.cwd || (old.sessionId && old.sessionId !== next.sessionId)
       result = { snapshot: next, turns: changed ? [] : result.turns }
     } else if (event.type === 'turn_started') {
       result = { ...result, turns: [...result.turns, {
@@ -51,7 +51,7 @@ export function reduceEvents(state: ChatState, events: readonly DesktopEvent[]):
     } else if (event.type === 'turn_interrupted') {
       result = { ...result, turns: result.turns.map((turn) => turn.requestId === event.requestId
         ? { ...turn, status: 'error' as const, error: event.error.message } : turn) }
-    } else {
+    } else if (event.type === 'stream') {
       const message = event.message
       result = { ...result, turns: result.turns.map((turn) => turn.requestId === message.requestId
         ? updateTurn(turn, message) : turn) }

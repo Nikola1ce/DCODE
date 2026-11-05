@@ -18,11 +18,13 @@ export class DesktopController {
   private readonly listeners = new Set<(event: DesktopEvent) => void>()
   private changing = false
   private disposed = false
+  private readonly serviceOperations = new Set<Promise<unknown>>()
 
   constructor(private readonly dependencies: {
     authority: WorkspaceAuthority
-    chooseDirectory(): Promise<string | null>
-    createConnection(grant: WorkspaceGrant): Promise<ConnectionPort>
+    chooseDirectory(defaultPath?: string): Promise<string | null>
+    rememberWorkspace?(cwd: string): Promise<void>
+    createConnection(grant: WorkspaceGrant, resumeId?: string): Promise<ConnectionPort>
   }) {}
 
   getSnapshot(): ConnectionSnapshot {
@@ -34,12 +36,13 @@ export class DesktopController {
     return () => { this.listeners.delete(listener) }
   }
 
-  chooseWorkspace(): Promise<ConnectionSnapshot | null> {
+  chooseWorkspace(defaultPath?: string): Promise<ConnectionSnapshot | null> {
     return this.exclusive(async () => {
-      const selected = await this.dependencies.chooseDirectory()
+      const selected = await this.dependencies.chooseDirectory(defaultPath)
       if (selected === null || this.disposed) return null
       const grant = await this.dependencies.authority.authorizeDialogSelection(selected)
       try {
+        await this.dependencies.rememberWorkspace?.(grant.cwd)
         const connection = await this.dependencies.createConnection(grant)
         await this.connection?.shutdown()
         await this.dependencies.authority.validate(grant)
@@ -70,8 +73,26 @@ export class DesktopController {
   }
 
   sendPrompt(text: string): { requestId: string } {
-    if (this.changing || this.disposed) throw new DesktopFault('BUSY', '工作区正在切换，消息未发送。')
+    if (this.changing || this.disposed) throw new DesktopFault('BUSY', '工作区操作正在进行，消息未发送。')
     return this.requiredConnection().sendPrompt(text)
+  }
+
+  /** 会话归属在独占区内重新核验，防止核验后切换到其他目录。 */
+  openSession(id: string | null, validate: (cwd: string, id: string) => Promise<unknown>): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.grant) throw new DesktopFault('NO_WORKSPACE', '请先选择项目文件夹。')
+      await this.dependencies.authority.validate(this.grant)
+      if (id) await validate(this.grant.cwd, id)
+      const connection = await this.dependencies.createConnection(this.grant, id ?? undefined)
+      await this.connection?.shutdown()
+      if (this.disposed) throw new DesktopFault('CONNECTION_CLOSED', '桌面正在关闭。')
+      this.unsubscribe?.()
+      this.connection = connection
+      this.unsubscribe = connection.subscribe((event) => {
+        for (const listener of this.listeners) listener(event)
+      })
+      await connection.start()
+    })
   }
 
   cancelTurn(): Promise<void> {
@@ -85,12 +106,28 @@ export class DesktopController {
   async dispose(): Promise<void> {
     this.disposed = true
     try {
+      await Promise.allSettled([...this.serviceOperations])
       await this.connection?.shutdown()
     } finally {
       this.unsubscribe?.()
       this.listeners.clear()
       this.dependencies.authority.clear()
     }
+  }
+
+  /** 读服务可并行且允许回合运行，写服务与发消息、切换目录互斥。 */
+  useWorkspace<T>(operation: (grant: WorkspaceGrant) => Promise<T>, mutate = false): Promise<T> {
+    const execute = async () => {
+      if (this.disposed) throw new DesktopFault('CONNECTION_CLOSED', '桌面正在关闭。')
+      if (!this.grant) throw new DesktopFault('NO_WORKSPACE', '请先选择项目文件夹。')
+      const grant = this.grant
+      await this.dependencies.authority.validate(grant)
+      return operation(grant)
+    }
+    if (this.changing || this.disposed) return Promise.reject(new DesktopFault('BUSY', '请等待当前工作区操作完成。'))
+    const pending = mutate ? this.exclusive(execute) : execute()
+    this.serviceOperations.add(pending)
+    return pending.finally(() => { this.serviceOperations.delete(pending) })
   }
 
   private requiredConnection(): ConnectionPort {
@@ -105,6 +142,8 @@ export class DesktopController {
     }
     this.changing = true
     try {
+      await Promise.allSettled([...this.serviceOperations])
+      if (this.disposed) throw new DesktopFault('CONNECTION_CLOSED', '桌面正在关闭。')
       return await operation()
     } finally {
       this.changing = false

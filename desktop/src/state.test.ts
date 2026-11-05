@@ -5,6 +5,12 @@ import { INITIAL_CHAT_STATE, reduceEvents } from './state.js'
 import { EMPTY_SNAPSHOT } from '../shared/api.js'
 
 describe('桌面对话状态', () => {
+  it('新会话握手期间清空旧回合，保留同会话重连的消息', () => {
+    const connected = { ...EMPTY_SNAPSHOT, cwd: '/project', sessionId: 'old' }
+    const state = reduceEvents(INITIAL_CHAT_STATE, [{ type: 'connection', snapshot: connected }, { type: 'turn_started', requestId: 'r', text: 'old' }])
+    expect(reduceEvents(state, [{ type: 'connection', snapshot: { ...connected, phase: 'starting' } }]).turns).toHaveLength(1)
+    expect(reduceEvents(state, [{ type: 'connection', snapshot: { ...connected, sessionId: null, phase: 'starting' } }]).turns).toEqual([])
+  })
   it('一批流式事件保持顺序，完成后显示真实终态', () => {
     const state = reduceEvents(INITIAL_CHAT_STATE, [
       { type: 'turn_started', requestId: 'r1', text: 'test' },

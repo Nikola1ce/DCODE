@@ -31,6 +31,7 @@ export type SpawnCore = (file: string, args: string[], options: CoreSpawnOptions
 export interface AgentConnectionOptions {
   cwd: string
   coreEntry: string
+  resumeId?: string
   // Electron 主进程传 process.execPath；不查找 PATH 中的 node。
   executable: string
   env?: NodeJS.ProcessEnv
@@ -92,7 +93,7 @@ export class AgentConnection {
     if (![options.cwd, options.coreEntry, options.executable].every(isAbsolute)) {
       throw new DesktopFault('INVALID_ARGUMENT', '内核启动路径必须由主进程解析为绝对路径。')
     }
-    this.state = { ...EMPTY_SNAPSHOT, cwd: options.cwd }
+    this.state = { ...EMPTY_SNAPSHOT, cwd: options.cwd, sessionId: options.resumeId ?? null }
     this.spawn = dependencies.spawn ?? ((file, args, config) => nodeSpawn(file, args, config))
     this.terminateTree = dependencies.terminateTree ?? terminateProcessTree
   }

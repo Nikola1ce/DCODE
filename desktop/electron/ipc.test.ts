@@ -105,7 +105,14 @@ describe('隔离 preload 与资源策略', () => {
     }
     const api = createDesktopBridge(transport)
     expect(Object.isFrozen(api)).toBe(true)
-    expect(Object.keys(api).sort()).toEqual(['getSnapshot', 'chooseWorkspace', 'reconnect', 'sendPrompt', 'cancelTurn', 'respondPermission', 'subscribe'].sort())
+    expect(Object.keys(api).sort()).toEqual([
+      'getSnapshot', 'chooseWorkspace', 'reconnect', 'sendPrompt', 'cancelTurn', 'respondPermission', 'subscribe',
+      'listFiles', 'readFile', 'watchWorkspace', 'gitStatus', 'gitDiff', 'gitStage', 'gitDiscard',
+      'gitStageAll', 'gitCommit', 'gitHistory', 'gitCommitDiff', 'getSessionHistory', 'openSession',
+      'listRecentWorkspaces', 'openRecentWorkspace',
+      'listSessions', 'updateSession', 'deleteSession', 'getUsage', 'getSettings', 'updateSettings',
+      'listReviews', 'getReview', 'revertReview', 'undoReview',
+    ].sort())
     const listener = vi.fn()
     const other = vi.fn()
     const unsubscribe = api.subscribe(listener)
