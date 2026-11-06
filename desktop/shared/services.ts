@@ -40,6 +40,18 @@ export type FilePreview =
 export interface GitEntry { path: string; originalPath?: string; index: string; worktree: string }
 export interface GitStatus { branch: string; entries: GitEntry[]; revision?: string; upstream?: string; ahead?: number; behind?: number }
 export interface GitCommit { hash: string; parents: string[]; author: string; timestamp: number; subject: string; refs: string }
+export interface GitBranch {
+  name: string; ref: string; remote: boolean; current: boolean; checkedOut: boolean
+  upstream?: string; remoteName?: string; remoteBranch?: string
+}
+export interface GitBranches {
+  current: string | null; head: string | null; revision: string; branches: GitBranch[]; remotes: string[]
+}
+export interface GitBranchInput {
+  action: 'switch' | 'create' | 'rename' | 'delete'
+  name: string; revision: string; newName?: string; startPoint?: string
+}
+export interface GitRemoteInput { action: 'fetch' | 'pull' | 'push'; remote: string; revision: string }
 export interface SessionHistory {
   messages: { id: string; role: 'user' | 'assistant'; text: string }[]
   truncated: boolean
@@ -83,6 +95,9 @@ export interface ServicesApi {
   readFile(path: string): Promise<Result<FilePreview>>
   watchWorkspace(enabled: boolean): Promise<Result<void>>
   gitStatus(): Promise<Result<GitStatus>>
+  gitBranches(): Promise<Result<GitBranches>>
+  gitBranch(input: GitBranchInput): Promise<Result<boolean>>
+  gitRemote(input: GitRemoteInput): Promise<Result<void>>
   gitDiff(path: string, staged: boolean): Promise<Result<TextDiff>>
   gitStage(path: string, staged: boolean): Promise<Result<void>>
   gitDiscard(path: string): Promise<Result<boolean>>

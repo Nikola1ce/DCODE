@@ -11,6 +11,7 @@ const paths = {
   search: 'M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15 M16 16l5 5',
   plus: 'M12 5v14 M5 12h14',
   minus: 'M5 12h14',
+  more: 'M5 12h.01 M12 12h.01 M19 12h.01',
   close: 'm6 6 12 12 M6 18 18 6',
   chevron: 'm8 10 4 4 4-4',
   right: 'm9 6 6 6-6 6',

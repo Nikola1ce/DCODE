@@ -91,6 +91,13 @@ describe('服务 IPC 与生命周期', () => {
       [CHANNELS.saveModelSettings, [{ apiKey: 'secret' }]], [CHANNELS.searchFiles, ['x'.repeat(201)]],
       [CHANNELS.searchFiles, ['bad\u0000']], [CHANNELS.searchFiles, [false]],
       [CHANNELS.gitStageAll, ['true']], [CHANNELS.gitHistory, [1]],
+      [CHANNELS.gitBranches, ['extra']], [CHANNELS.gitBranch, [{ action: 'switch', name: '--force', revision: 'a'.repeat(64) }]],
+      [CHANNELS.gitBranch, [{ action: ['create'], name: 'feature', revision: 'a'.repeat(64) }]],
+      [CHANNELS.gitRemote, [{ action: ['push'], remote: 'origin', revision: 'a'.repeat(64) }]],
+      [CHANNELS.gitBranch, [{ action: 'rename', name: 'refs/heads/main', revision: 'a'.repeat(64) }]],
+      [CHANNELS.gitBranch, [{ action: 'create', name: 'feature', revision: 'a'.repeat(64), force: true }]],
+      [CHANNELS.gitRemote, [{ action: 'push', remote: 'origin', revision: 'HEAD' }]],
+      [CHANNELS.gitRemote, [{ action: 'push', remote: 'origin', revision: 'a'.repeat(64), force: true }]],
       [CHANNELS.gitCommit, ['', 'a'.repeat(64)]], [CHANNELS.gitCommit, ['message', 'HEAD']],
       [CHANNELS.gitCommitDiff, ['--help']], [CHANNELS.openSession, ['../session']],
       [CHANNELS.getSessionHistory, ['../session']],
@@ -142,6 +149,8 @@ describe('服务 IPC 与生命周期', () => {
     const results = await Promise.all([api.readFile('file.txt'), api.listFiles('')])
     expect(results.every((result) => result.ok)).toBe(true)
     expect(await api.gitStage('file.txt', true)).toMatchObject({ ok: false, error: { code: 'BUSY' } })
+    expect(await api.gitBranch({ action: 'create', name: 'feature', revision: 'a'.repeat(64) })).toMatchObject({ ok: false, error: { code: 'BUSY' } })
+    expect(await api.gitRemote({ action: 'fetch', remote: 'origin', revision: 'a'.repeat(64) })).toMatchObject({ ok: false, error: { code: 'BUSY' } })
     expect(await api.deleteSession('id')).toMatchObject({ ok: false, error: { code: 'BUSY' } })
     expect(await api.revertReview('id', 'checkpoint', 'a'.repeat(64), null)).toMatchObject({ ok: false, error: { code: 'BUSY' } })
     expect(await api.undoReview('id', 'checkpoint')).toMatchObject({ ok: false, error: { code: 'BUSY' } })

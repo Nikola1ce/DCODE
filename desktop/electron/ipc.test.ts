@@ -118,6 +118,7 @@ describe('隔离 preload 与资源策略', () => {
       'getSnapshot', 'chooseWorkspace', 'reconnect', 'sendPrompt', 'cancelTurn', 'respondPermission', 'subscribe',
       'listFiles', 'readFile', 'watchWorkspace', 'gitStatus', 'gitDiff', 'gitStage', 'gitDiscard',
       'gitStageAll', 'gitCommit', 'gitHistory', 'gitCommitDiff', 'getSessionHistory', 'openSession',
+      'gitBranches', 'gitBranch', 'gitRemote',
       'listRecentWorkspaces', 'openRecentWorkspace',
       'getModelSettings', 'validateModelSettings', 'saveModelSettings', 'searchFiles',
       'listSessions', 'updateSession', 'deleteSession', 'getUsage', 'getSettings', 'updateSettings',

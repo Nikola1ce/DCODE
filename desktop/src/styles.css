@@ -418,3 +418,40 @@ kbd { font: 10px "Segoe UI", sans-serif; color: var(--muted); white-space: nowra
 .document-actions button[aria-pressed="true"] { color: var(--accent); background: var(--selected); }
 .diff-meta { color: var(--muted); padding-top: 2px; padding-bottom: 2px; font-size: 10px; }
 .theme-option > span:last-child > .icon:first-child { margin-left: 0; }
+
+/* 分支与远程操作沿用源代码管理的紧凑布局。 */
+.scm-heading-actions { display: flex; gap: 3px; }
+.scm-repository { gap: 8px; padding-bottom: 9px; }
+.branch-trigger { min-width: 0; padding: 4px 6px; margin-left: -6px; border-color: transparent; background: transparent; font-size: 12px; }
+.branch-trigger > .icon:last-child { color: var(--muted); }
+.scm-remote { padding: 0 14px 9px; }
+.remote-actions { display: flex; align-items: center; gap: 5px; }
+.remote-actions select { flex: 1; min-width: 0; padding: 5px 7px; font-size: 11px; }
+.remote-tracking { margin: 5px 0 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; line-height: 1.5; }
+.scm-operation, .branch-progress { display: flex; align-items: center; gap: 7px; color: var(--accent); font-size: 11px; padding: 8px 15px; margin: 0 0 8px; }
+.scm-context-menu { position: fixed; z-index: 50; width: 224px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); animation: enter 100ms var(--ease); }
+.scm-context-menu button { width: 100%; justify-content: flex-start; padding: 7px 12px; border: 0; background: transparent; border-radius: 5px; font-size: 12px; }
+.scm-context-menu button:focus-visible { outline-offset: -2px; background: var(--selected); }
+.branch-dialog { width: min(600px, calc(100vw - 40px)); max-height: min(680px, calc(100vh - 60px)); padding: 0; border: 1px solid var(--border); border-radius: 13px; background: var(--bg); color: var(--text); box-shadow: var(--shadow); overflow: auto; }
+.branch-dialog[open] { display: flex; flex-direction: column; animation: enter 150ms var(--ease); }
+.branch-dialog::backdrop { background: #0007; backdrop-filter: blur(3px); }
+.branch-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 17px 20px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
+.branch-search { display: flex; gap: 10px; padding: 16px; flex-shrink: 0; }
+.branch-search > input { flex: 1; }
+.branch-search > button { flex-shrink: 0; }
+.branch-list { min-height: 0; overflow: auto; padding: 0 10px 12px; }
+.branch-group h3 { color: var(--muted); font-size: 11px; font-weight: 500; padding: 8px 9px; margin: 0; }
+.branch-row { display: flex; align-items: center; gap: 5px; border-radius: 7px; padding: 2px 5px; }
+.branch-row:hover, .branch-row:focus-within { background: var(--hover); }
+.branch-choice { flex: 1; min-width: 0; justify-content: flex-start; text-align: left; border: 0; background: transparent; padding: 8px 5px; }
+.branch-choice:disabled { opacity: .7; }
+.branch-choice > span { min-width: 0; }
+.branch-choice strong { display: block; overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.branch-choice small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; overflow-wrap: anywhere; }
+.branch-actions { display: flex; gap: 3px; }
+.branch-actions button { padding: 5px 7px; font-size: 10px; background: transparent; border-color: transparent; }
+.branch-form { padding: 20px; }
+.branch-form label { display: block; margin-bottom: 18px; color: var(--muted); font-size: 12px; }
+.branch-form input, .branch-form select { display: block; margin-top: 8px; }
+.branch-form .row-actions { justify-content: flex-end; }
+@media (prefers-reduced-motion: reduce) { .scm-context-menu, .branch-dialog[open] { animation: none; } }

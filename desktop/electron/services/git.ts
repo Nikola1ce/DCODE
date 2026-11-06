@@ -1,6 +1,5 @@
 // 异步 Git 服务，固定参数、字面路径、有界输出，丢弃前由原生对话框确认。
 // 制作人：Moriarty_Dox
-import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { samePath } from '../workspaceAccess.js'
@@ -8,25 +7,9 @@ import { DesktopFault } from '../errors.js'
 import { relativePath } from './validation.js'
 import { workspacePath, WorkspaceService } from './workspace.js'
 import { buildCheckpointFileDiff } from '../../../src/core/checkpoint.js'
-import type { GitCommit, GitEntry, GitStatus, TextDiff } from '../../shared/services.js'
-
-function run(cwd: string, args: string[], allowMissingHead = false, input?: string): Promise<string> {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')))
-  return new Promise((resolve, reject) => {
-    const child = execFile('git', ['--no-pager', ...args], {
-      cwd, windowsHide: true, timeout: 15_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
-      env: { ...env, GIT_LITERAL_PATHSPECS: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
-    }, (error, stdout) => {
-      if (allowMissingHead && error?.code === 1 && !stdout) { resolve(''); return }
-      if (error) {
-        reject(new DesktopFault(error.code === 'ENOENT' ? 'GIT_UNAVAILABLE' : 'GIT_FAILED',
-          error.code === 'ENOENT' ? '请安装 Git 后重试。' : 'Git 操作失败，请检查仓库状态、Git 用户姓名/邮箱、提交钩子或文件占用。'))
-      } else resolve(stdout)
-    })
-    child.stdin?.on('error', () => {})
-    child.stdin?.end(input)
-  })
-}
+import { runGit as run } from './gitCommand.js'
+import { gitBranchInput, gitRemoteInput } from './gitInput.js'
+import type { GitBranchInput, GitBranches, GitRemoteInput, GitCommit, GitEntry, GitStatus, TextDiff } from '../../shared/services.js'
 
 export function parseGitStatus(output: string): GitStatus {
   const records = output.split('\0')
@@ -72,6 +55,108 @@ export class GitService {
     return status
   }
 
+  async branches(cwd: string): Promise<GitBranches> {
+    await this.repository(cwd)
+    const current = (await run(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true)).trim() || null
+    const head = (await run(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD'], true)).trim() || null
+    const remotes = (await run(cwd, ['remote'])).split('\n').filter(Boolean)
+    const refs = await run(cwd, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(objectname)%00%(symref)%00%(worktreepath)%00%(upstream:short)%00%(upstream:remotename)%00%(upstream:remoteref)', 'refs/heads/', 'refs/remotes/'])
+    const config = await run(cwd, ['config', '--null', '--get-regexp', '^(remote|branch)[.]'], true)
+    const revision = createHash('sha256').update(current ?? '').update(head ?? '').update(refs).update(config).update(await this.indexRevision(cwd)).digest('hex')
+    const branches: GitBranches['branches'] = []
+    for (const line of refs.split('\n').filter(Boolean)) {
+      const [ref, , symbolic, worktree, upstream, remoteName, remoteBranch] = line.split('\0')
+      if (symbolic) continue
+      const remote = ref.startsWith('refs/remotes/')
+      const name = ref.slice(remote ? 13 : 11)
+      branches.push({ name, ref, remote, current: !remote && name === current, checkedOut: !!worktree,
+        ...(upstream ? { upstream, remoteName, remoteBranch } : {}) })
+    }
+    return { current, head, remotes, branches, revision }
+  }
+
+  private async branchSnapshot(cwd: string, revision: string): Promise<GitBranches> {
+    const snapshot = await this.branches(cwd)
+    if (snapshot.revision !== revision) throw new DesktopFault('CONFLICT', '分支、暂存区或远程配置已变化，请刷新后重试。')
+    return snapshot
+  }
+
+  private async newBranchName(cwd: string, name: string, snapshot: GitBranches): Promise<void> {
+    if (name === 'HEAD' || name.startsWith('-') || snapshot.branches.some((branch) => !branch.remote && branch.name === name)) {
+      throw new DesktopFault('CONFLICT', '分支名称已存在或不可用，请使用其他名称。')
+    }
+    await run(cwd, ['check-ref-format', `refs/heads/${name}`])
+  }
+
+  async branch(cwd: string, value: GitBranchInput): Promise<boolean> {
+    const input = gitBranchInput(value)
+    const snapshot = await this.branchSnapshot(cwd, input.revision)
+    if (input.action === 'create') {
+      await this.newBranchName(cwd, input.name, snapshot)
+      if (input.startPoint && !snapshot.branches.some((branch) => branch.ref === input.startPoint)) {
+        throw new DesktopFault('CONFLICT', '起始分支已变化，请重新选择。')
+      }
+      await run(cwd, ['switch', '--no-track', '-c', input.name, ...(input.startPoint ? ['--', input.startPoint] : [])])
+      return true
+    }
+    const branch = snapshot.branches.find((item) => item.ref === input.name)
+    if (!branch) throw new DesktopFault('CONFLICT', '分支已变化，请刷新列表。')
+    if (input.action === 'switch') {
+      if (branch.current) return true
+      if (branch.remote) {
+        const remote = snapshot.remotes.sort((a, b) => b.length - a.length).find((name) => branch.name.startsWith(`${name}/`))
+        if (!remote) throw new DesktopFault('CONFLICT', '此远程分支缺少远程配置，请刷新后检查。')
+        const name = branch.name.slice(remote.length + 1)
+        await this.newBranchName(cwd, name, snapshot)
+        await run(cwd, ['switch', '--track=direct', '-c', name, '--', branch.ref])
+      } else await run(cwd, ['switch', '--no-guess', '--', branch.name])
+      return true
+    }
+    if (branch.remote || (branch.checkedOut && !branch.current)) {
+      throw new DesktopFault('CONFLICT', '请选择可操作的本地分支，其他工作树占用的分支需要先在对应工作树中处理。')
+    }
+    if (input.action === 'rename') {
+      await this.newBranchName(cwd, input.newName!, snapshot)
+      await run(cwd, ['branch', '-m', '--', branch.name, input.newName!])
+      return true
+    }
+    if (branch.current) throw new DesktopFault('CONFLICT', '请先切换到其他分支，再删除此分支。')
+    if (!await this.dialogs.confirm('删除本地分支', `删除本地分支“${branch.name}”？Git 将检查该分支的合并状态。`)) return false
+    await this.branchSnapshot(cwd, input.revision)
+    await run(cwd, ['branch', '-d', '--', branch.name])
+    return true
+  }
+
+  async remote(cwd: string, value: GitRemoteInput): Promise<void> {
+    const input = gitRemoteInput(value)
+    const snapshot = await this.branchSnapshot(cwd, input.revision)
+    if (!snapshot.remotes.includes(input.remote)) throw new DesktopFault('CONFLICT', '远程配置已变化，请刷新后重试。')
+    if (input.action === 'fetch') {
+      await run(cwd, ['fetch', '--no-recurse-submodules', '--', input.remote], false, undefined, true)
+      return
+    }
+    if (!snapshot.current || !snapshot.head) throw new DesktopFault('CONFLICT', '请先创建提交并切换到本地分支。')
+    const branch = snapshot.branches.find((item) => item.current)!
+    if (branch.upstream && branch.remoteName !== input.remote) {
+      throw new DesktopFault('CONFLICT', '所选远程与当前分支的跟踪远程不同，请选择对应远程。')
+    }
+    if (input.action === 'pull') {
+      if (!branch.remoteBranch?.startsWith('refs/heads/')) throw new DesktopFault('CONFLICT', '当前分支尚未跟踪远程分支，请先发布分支或切换到远程跟踪分支。')
+      const before = await this.indexRevision(cwd)
+      await run(cwd, ['fetch', '--no-recurse-submodules', '--no-tags', '--', input.remote, branch.remoteBranch], false, undefined, true)
+      const current = (await run(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true)).trim()
+      if (current !== snapshot.current || before !== await this.indexRevision(cwd)) {
+        throw new DesktopFault('CONFLICT', '获取期间本地分支或暂存区已变化。远程信息已获取，请检查后重新拉取。')
+      }
+      await run(cwd, ['merge', '--ff-only', '--no-autostash', 'FETCH_HEAD'])
+      return
+    }
+    const target = branch.remoteBranch ?? `refs/heads/${snapshot.current}`
+    if (!target.startsWith('refs/heads/')) throw new DesktopFault('CONFLICT', '当前分支的远程目标不是分支，请检查跟踪配置。')
+    await run(cwd, ['push', '--porcelain', '--no-force', '--no-mirror', '--no-follow-tags', '--recurse-submodules=no',
+      ...(!branch.upstream ? ['--set-upstream'] : []), '--', input.remote, `refs/heads/${snapshot.current}:${target}`], false, undefined, true)
+  }
+
   private async indexRevision(cwd: string): Promise<string> {
     const head = await run(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD'], true)
     const index = await run(cwd, ['ls-files', '--stage', '-z'])
@@ -99,7 +184,10 @@ export class GitService {
   }
 
   async diff(cwd: string, path: string, staged: boolean): Promise<TextDiff> {
+    relativePath(path)
     const status = await this.status(cwd)
+    // 提交、暂存或切换分支后，已打开的差异可能恢复干净；正常显示空差异。
+    if (!status.entries.some((entry) => entry.path === path)) return { text: '', truncated: false }
     const paths = await this.paths(cwd, path, status)
     const entry = status.entries.find((item) => item.path === path)
     if (!staged && entry?.index === '?') {

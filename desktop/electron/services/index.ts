@@ -2,7 +2,7 @@
 // 制作人：Moriarty_Dox
 import type { DesktopController } from '../desktopController.js'
 import type { DesktopEvent } from '../../shared/api.js'
-import type { DesktopPreferences, ModelSettingsInput, SessionPresentation } from '../../shared/services.js'
+import type { DesktopPreferences, GitBranchInput, GitRemoteInput, ModelSettingsInput, SessionPresentation } from '../../shared/services.js'
 import { ConfigurationService } from './configuration.js'
 import { samePath } from '../workspaceAccess.js'
 import { WorkspaceService } from './workspace.js'
@@ -69,6 +69,19 @@ export class DesktopServices {
   }
   readFile(path: string) { return this.controller.useWorkspace((grant) => this.workspace.read(grant.cwd, path)) }
   gitStatus() { return this.controller.useWorkspace((grant) => this.git.status(grant.cwd)) }
+  gitBranches() { return this.controller.useWorkspace((grant) => this.git.branches(grant.cwd)) }
+  gitBranch(input: GitBranchInput) {
+    return this.controller.useWorkspace(async (grant) => {
+      try { return await this.git.branch(grant.cwd, input) }
+      finally { this.publish({ type: 'workspace_changed', cwd: grant.cwd }) }
+    }, true)
+  }
+  gitRemote(input: GitRemoteInput) {
+    return this.controller.useWorkspace(async (grant) => {
+      try { await this.git.remote(grant.cwd, input) }
+      finally { this.publish({ type: 'workspace_changed', cwd: grant.cwd }) }
+    }, true)
+  }
   gitDiff(path: string, staged: boolean) { return this.controller.useWorkspace((grant) => this.git.diff(grant.cwd, path, staged)) }
   gitStage(path: string, staged: boolean) {
     return this.controller.useWorkspace(async (grant) => {

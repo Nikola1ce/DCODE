@@ -10,6 +10,7 @@ import type { DesktopServices } from './services/index.js'
 import { boolean, invalid, relativePath, sessionId } from './services/validation.js'
 import { preferencePatch, presentationPatch } from './services/settings.js'
 import { modelSettingsInput } from './services/configuration.js'
+import { gitBranchInput, gitRemoteInput } from './services/gitInput.js'
 
 export type IpcHandler = (event: IpcRequest, ...args: unknown[]) => Promise<Result<unknown>>
 export interface IpcRouter {
@@ -64,6 +65,9 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
     [CHANNELS.readFile]: (...args: unknown[]) => { count(args, 1); return services.readFile(relativePath(args[0])) },
     [CHANNELS.watchWorkspace]: (...args: unknown[]) => { count(args, 1); return services.watchWorkspace(boolean(args[0])) },
     [CHANNELS.gitStatus]: (...args: unknown[]) => { count(args, 0); return services.gitStatus() },
+    [CHANNELS.gitBranches]: (...args: unknown[]) => { count(args, 0); return services.gitBranches() },
+    [CHANNELS.gitBranch]: (...args: unknown[]) => { count(args, 1); return services.gitBranch(gitBranchInput(args[0])) },
+    [CHANNELS.gitRemote]: (...args: unknown[]) => { count(args, 1); return services.gitRemote(gitRemoteInput(args[0])) },
     [CHANNELS.gitDiff]: (...args: unknown[]) => { count(args, 2); return services.gitDiff(relativePath(args[0]), boolean(args[1])) },
     [CHANNELS.gitStage]: (...args: unknown[]) => { count(args, 2); return services.gitStage(relativePath(args[0]), boolean(args[1])) },
     [CHANNELS.gitDiscard]: (...args: unknown[]) => { count(args, 1); return services.gitDiscard(relativePath(args[0])) },
