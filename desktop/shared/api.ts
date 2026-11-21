@@ -37,6 +37,7 @@ export type PermissionCard = Pick<ServerPermissionRequestMessage, 'requestId' | 
 
 type MessageOf<T extends ServerMessage['type']> = Extract<ServerMessage, { type: T }>
 export type StreamMessage =
+  | { type: 'message_identity'; requestId: string; role: 'user' | 'assistant'; messageId: string }
   | Pick<MessageOf<'text'>, 'type' | 'requestId' | 'delta'>
   | Pick<MessageOf<'reasoning'>, 'type' | 'requestId' | 'delta'>
   | Pick<MessageOf<'tool_start'>, 'type' | 'requestId' | 'toolCallId' | 'name' | 'summary'>
@@ -45,7 +46,11 @@ export type StreamMessage =
   | Pick<MessageOf<'turn_done'>, 'type' | 'requestId' | 'reason' | 'costUsd'>
   | Pick<MessageOf<'turn_error'>, 'type' | 'requestId' | 'message'>
 
+export interface FollowUp { mode: 'queue' | 'steer' | 'withdraw'; requestId: string }
+
 export interface ConnectionSnapshot {
+  memorySources?: string[]
+  followUp?: { requestId: string; text: string; mode: 'queue' | 'steer' | 'unsent' }
   phase: ConnectionPhase
   cwd: string | null
   model: string | null
@@ -62,8 +67,12 @@ export interface ConnectionSnapshot {
 }
 
 export type DesktopEvent =
+  | { type: 'preferences'; value: import('./services.js').DesktopPreferences }
+  | { type: 'terminal_data'; id: string; text: string }
+  | { type: 'terminal_exit'; id: string; code: number }
   | { type: 'workspace_changed' | 'workspace_watch_error'; cwd: string }
   | { type: 'connection'; snapshot: ConnectionSnapshot }
+  | { type: 'guidance'; requestId: string; text: string }
   | { type: 'turn_started'; requestId: string; text: string }
   | { type: 'stream'; message: StreamMessage }
   | { type: 'turn_interrupted'; requestId: string; error: DesktopError }
@@ -73,7 +82,7 @@ export interface DesktopApi extends ServicesApi {
   getSnapshot(): Promise<Result<ConnectionSnapshot>>
   chooseWorkspace(): Promise<Result<ConnectionSnapshot | null>>
   reconnect(): Promise<Result<ConnectionSnapshot>>
-  sendPrompt(text: string): Promise<Result<{ requestId: string }>>
+  sendPrompt(text: string, followUp?: FollowUp, image?: string): Promise<Result<{ requestId: string }>>
   cancelTurn(): Promise<Result<void>>
   respondPermission(permissionId: string, decision: PermissionChoice): Promise<Result<void>>
   subscribe(listener: (event: DesktopEvent) => void): () => void

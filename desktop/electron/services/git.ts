@@ -1,7 +1,8 @@
 // 异步 Git 服务，固定参数、字面路径、有界输出，丢弃前由原生对话框确认。
 // 制作人：Moriarty_Dox
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rmdir, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { samePath } from '../workspaceAccess.js'
 import { DesktopFault } from '../errors.js'
 import { relativePath } from './validation.js'
@@ -38,6 +39,21 @@ export class GitService {
     confirm(title: string, detail: string): Promise<boolean>
     trash(path: string): Promise<void>
   }) {}
+
+  async createWorktree(cwd: string, parent: string): Promise<string> {
+    await this.repository(cwd)
+    const head = (await run(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim()
+    await mkdir(parent, { recursive: true })
+    const directory = await mkdtemp(join(parent, 'task-'))
+    try {
+      await run(cwd, ['worktree', 'add', '-b', 'dcode/' + basename(directory), directory, head])
+      return directory
+    } catch (error) {
+      // 只清理本次创建的空目录，工作树已有内容时保留。
+      await rmdir(directory).catch(() => {})
+      throw error
+    }
+  }
 
   private async repository(cwd: string): Promise<void> {
     let root: string

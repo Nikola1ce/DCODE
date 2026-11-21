@@ -1,9 +1,9 @@
-// 项目记忆模块（DCODE.md）。
+// 项目记忆模块（AGENTS.md、DCODE.md）。
 // 借鉴 Claude Code 的 CLAUDE.md 机制：在工作目录与用户主目录读取 DCODE.md，
 // 将其内容注入系统提示，让助手记住项目约定、技术栈、命令、风格偏好等长期上下文。
 // 制作人：Moriarty_Dox
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MEMORY_FILE_NAME } from './constants.js'
 import { getConfigDir } from './config.js'
@@ -20,7 +20,7 @@ export interface MemoryEntry {
 
 /**
  * 加载所有可用的记忆文件。
- * 顺序：先全局（~/.dcode/DCODE.md），后项目（<cwd>/DCODE.md）；
+ * 顺序：全局 DCODE.md、项目根目录 AGENTS.md、项目根目录 DCODE.md。
  * 项目级排后面，便于在提示中“后者优先”，覆盖全局偏好。
  * @param cwd 当前工作目录。
  * @returns 记忆条目数组（可能为空）。
@@ -28,34 +28,17 @@ export interface MemoryEntry {
 export function loadMemories(cwd: string): MemoryEntry[] {
   const entries: MemoryEntry[] = []
 
-  // 全局记忆：跨项目通用的个人偏好。
-  const globalPath = join(getConfigDir(), MEMORY_FILE_NAME)
-  if (existsSync(globalPath)) {
+  const sources = [
+    { scope: 'global', path: join(getConfigDir(), MEMORY_FILE_NAME) },
+    { scope: 'project', path: join(cwd, 'AGENTS.md') },
+    { scope: 'project', path: join(cwd, MEMORY_FILE_NAME) },
+  ] as const
+  for (const source of sources) {
     try {
-      entries.push({
-        scope: 'global',
-        path: globalPath,
-        content: readFileSync(globalPath, 'utf8'),
-      })
-    } catch {
-      // 读取失败忽略。
-    }
+      if (source.path === join(cwd, 'AGENTS.md') && !lstatSync(source.path).isFile()) continue
+      entries.push({ ...source, content: readFileSync(source.path, 'utf8') })
+    } catch { /* 缺失或不可读的规则文件不影响会话启动。 */ }
   }
-
-  // 项目记忆：当前仓库的专属约定。
-  const projectPath = join(cwd, MEMORY_FILE_NAME)
-  if (existsSync(projectPath)) {
-    try {
-      entries.push({
-        scope: 'project',
-        path: projectPath,
-        content: readFileSync(projectPath, 'utf8'),
-      })
-    } catch {
-      // 读取失败忽略。
-    }
-  }
-
   return entries
 }
 

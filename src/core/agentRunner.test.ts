@@ -87,6 +87,31 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
+describe('桌面回合输入', () => {
+  it('补充要求替代未执行的工具决策，保留已显示的文字并按顺序持久化', async () => {
+    const client = new FakeClient([[{ type: 'done', finishReason: 'tool_calls', message: {
+      role: 'assistant', content: '准备读取', toolCalls: [{ id: 't', name: 'read_file', argsJson: '{}' }],
+    } }], [done('调整完成')]])
+    const messages: DeepMessage[] = []
+    let consumed = false
+    const events = await collect(makeRunner(client, messages, { takeSteering: () => {
+      if (consumed || !client.calls.length) return
+      consumed = true
+      return '只看配置'
+    } }))
+    expect(events.some(event => event.type === 'tool_start')).toBe(false)
+    expect(messages.map(message => message.content)).toEqual(['hello', '准备读取', '只看配置', '调整完成'])
+    expect(client.calls[1].messages.at(-1)?.content).toBe('只看配置')
+  })
+  it('图片只附在本轮模型请求上', async () => {
+    const client = new FakeClient([[done('图片说明')]])
+    const messages: DeepMessage[] = []
+    await collect(makeRunner(client, messages, { image: 'data:image/jpeg;base64,test' }))
+    expect(client.calls[0].messages.at(-1)?.imageDataUrl).toBe('data:image/jpeg;base64,test')
+    expect(messages.some(message => message.imageDataUrl)).toBe(false)
+  })
+})
+
 describe('AgentRunner 上下文预算', () => {
   beforeEach(() => vi.stubEnv('DCODE_COMPACT_MAX_TOKENS', ''))
   const history = (): DeepMessage[] => [

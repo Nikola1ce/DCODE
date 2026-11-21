@@ -2,10 +2,11 @@
 // 制作人：Moriarty_Dox
 import type { GitCommit } from '../shared/services.js'
 
-export interface DiffRow { kind: 'add' | 'remove' | 'context' | 'meta'; text: string; oldLine?: number; newLine?: number }
+export interface DiffRow { kind: 'add' | 'remove' | 'context' | 'meta'; text: string; file?: string; oldLine?: number; newLine?: number }
 export function diffRows(text: string): DiffRow[] {
   let oldLine = 0
   let newLine = 0
+  let file: string | undefined
   let inHunk = false
   return text.split('\n').map((line) => {
     const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
@@ -13,10 +14,11 @@ export function diffRows(text: string): DiffRow[] {
       oldLine = Number(header[1])
       newLine = Number(header[2])
       inHunk = true
-    } else if (line.startsWith('diff --git')) inHunk = false
-    if (inHunk && line.startsWith('+')) return { kind: 'add', text: line.slice(1), newLine: newLine++ }
-    if (inHunk && line.startsWith('-')) return { kind: 'remove', text: line.slice(1), oldLine: oldLine++ }
-    if (inHunk && line.startsWith(' ')) return { kind: 'context', text: line.slice(1), oldLine: oldLine++, newLine: newLine++ }
+    } else if (line.startsWith('diff --git')) { inHunk = false; file = undefined }
+    else if (!inHunk && /^(--- a\/|\+\+\+ b\/)/.test(line)) file = line.slice(6).trimEnd()
+    if (inHunk && line.startsWith('+')) return { kind: 'add', file, text: line.slice(1), newLine: newLine++ }
+    if (inHunk && line.startsWith('-')) return { kind: 'remove', file, text: line.slice(1), oldLine: oldLine++ }
+    if (inHunk && line.startsWith(' ')) return { kind: 'context', file, text: line.slice(1), oldLine: oldLine++, newLine: newLine++ }
     return { kind: 'meta', text: line }
   })
 }

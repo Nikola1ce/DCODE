@@ -35,6 +35,8 @@ export interface AgentRunnerOptions {
   extraDirs?: string[]
   permissionMode: PermissionMode
   model: string
+  image?: string
+  takeSteering?: () => string | undefined
   userInput: string
   abortSignal: AbortSignal
   requestPermission: (req: PermissionRequest) => Promise<PermissionDecision>
@@ -57,6 +59,10 @@ export class AgentRunner {
   private readonly turnId: string
   // 本轮压缩失败或没有收益后不反复消耗请求；下一次用户输入可重新尝试。
   private compactUnavailable = false
+
+  private appendSteering(text: string) {
+    this.opts.appendMessage({ id: randomUUID(), role: 'user', runId: this.runId, turnId: this.turnId, content: text, timestamp: Date.now() })
+  }
 
   constructor(opts: AgentRunnerOptions) {
     this.opts = opts
@@ -91,6 +97,8 @@ export class AgentRunner {
         return
       }
 
+      const nextInstruction = this.opts.takeSteering?.()
+      if (nextInstruction) this.appendSteering(nextInstruction)
       const availableTools = this.resolveAvailableTools()
       const apiTools = toOpenAITools(availableTools)
       yield* this.compactIfNeeded(iter, apiTools)
@@ -112,7 +120,8 @@ export class AgentRunner {
       const llmStartedAt = Date.now()
       // 发送前对历史副本做「瘦身」：截断滚出最近窗口的超大旧工具结果，降低每轮输入 token。
       // 纯函数变换，不修改 this.messages，磁盘会话记录与 /resume 仍保留完整原文。
-      const requestMessages = trimHistoryForRequest(this.opts.getMessages())
+      const requestMessages = trimHistoryForRequest(this.opts.getMessages()).map(message =>
+        this.opts.image && message.id === userMsg.id ? { ...message, imageDataUrl: this.opts.image } : message)
       try {
         for await (const ev of this.opts.client.streamChat({
           messages: requestMessages,
@@ -192,6 +201,13 @@ export class AgentRunner {
         throw e
       }
 
+      // 新要求到达时，在执行刚生成的工具调用前重新询问模型。
+      const revisedInstruction = this.opts.takeSteering?.()
+      if (revisedInstruction) {
+        yield* this.preservePartialMessage(assistantMsg, streamedText, streamedReasoning, iter)
+        this.appendSteering(revisedInstruction)
+        continue
+      }
       assistantMsg.metadata = {
         ...assistantMsg.metadata,
         source: 'model',

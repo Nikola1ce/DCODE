@@ -51,14 +51,28 @@ export interface GitBranchInput {
   action: 'switch' | 'create' | 'rename' | 'delete'
   name: string; revision: string; newName?: string; startPoint?: string
 }
+export interface ManagedWorktree {
+  id: string; branch: string | null; base: string | null; ahead: number; behind: number
+  dirty: boolean; merging: boolean; conflicts: string[]; revision: string
+}
+export interface WorktreeInput {
+  id: string; revision: string
+  action: 'open' | 'sync' | 'integrate' | 'remove' | 'ours' | 'theirs' | 'resolved' | 'preview' | 'abort' | 'finish'
+  path?: string
+}
 export interface GitRemoteInput { action: 'fetch' | 'pull' | 'push'; remote: string; revision: string }
+export interface HistoryCursor { id: string; offset: number; direction: 'before' | 'after' }
+export interface HistoryMessage {
+  id: string; role: 'user' | 'assistant' | 'tool'; text: string; offset: number
+  continued: boolean; tool?: string; failed?: boolean; highlight?: [number, number]
+}
 export interface SessionHistory {
-  messages: { id: string; role: 'user' | 'assistant'; text: string }[]
-  truncated: boolean
+  messages: HistoryMessage[]; truncated: boolean; before?: HistoryCursor; after?: HistoryCursor
 }
 export interface TextDiff { text: string; truncated: boolean }
 export interface SessionPresentation { title?: string; pinned?: boolean; archived?: boolean }
 export interface DesktopSession extends SessionPresentation {
+  match?: { id: string; snippet: string }
   id: string; createdAt: string; updatedAt: number; title: string; messageCount: number
 }
 export interface SessionListing { sessions: DesktopSession[]; skipped: number; truncated: boolean }
@@ -80,7 +94,14 @@ export interface DesktopPreferences {
   notifyComplete: boolean
   notifyError: boolean
 }
+export type TerminalAction =
+  | { type: 'open'; id: string; session: string }
+  | { type: 'input'; id: string; data: string }
+  | { type: 'resize'; id: string; cols: number; rows: number }
+  | { type: 'close'; id: string }
+
 export interface ServicesApi {
+  terminal(action: TerminalAction): Promise<Result<void>>
   getModelSettings(): Promise<Result<ModelSettings>>
   validateModelSettings(input: ModelSettingsInput): Promise<Result<string>>
   saveModelSettings(input: ModelSettingsInput): Promise<Result<ConfigurationSave>>
@@ -94,6 +115,9 @@ export interface ServicesApi {
   listFiles(path: string): Promise<Result<FileListing>>
   readFile(path: string): Promise<Result<FilePreview>>
   watchWorkspace(enabled: boolean): Promise<Result<void>>
+  listWorktrees(): Promise<Result<ManagedWorktree[]>>
+  manageWorktree(input: WorktreeInput): Promise<Result<string>>
+  openWorktree(): Promise<Result<void>>
   gitStatus(): Promise<Result<GitStatus>>
   gitBranches(): Promise<Result<GitBranches>>
   gitBranch(input: GitBranchInput): Promise<Result<boolean>>
@@ -105,9 +129,10 @@ export interface ServicesApi {
   gitCommit(message: string, revision: string): Promise<Result<string>>
   gitHistory(): Promise<Result<GitCommit[]>>
   gitCommitDiff(hash: string): Promise<Result<TextDiff>>
-  getSessionHistory(id: string): Promise<Result<SessionHistory>>
+  forkSession(id: string, messageId: string): Promise<Result<string>>
+  getSessionHistory(id: string, target?: string | HistoryCursor, query?: string): Promise<Result<SessionHistory>>
   openSession(id: string | null): Promise<Result<void>>
-  listSessions(archived: boolean): Promise<Result<SessionListing>>
+  listSessions(archived: boolean, query?: string): Promise<Result<SessionListing>>
   updateSession(id: string, patch: SessionPresentation): Promise<Result<void>>
   deleteSession(id: string): Promise<Result<boolean>>
   getUsage(id: string): Promise<Result<SessionUsage>>

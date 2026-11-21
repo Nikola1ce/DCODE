@@ -7,7 +7,7 @@ import { CHANNELS } from '../shared/channels.js'
 import { DesktopFault, publicError } from './errors.js'
 import type { IpcRequest } from './windowSecurity.js'
 import type { DesktopServices } from './services/index.js'
-import { boolean, invalid, relativePath, sessionId } from './services/validation.js'
+import { boolean, invalid, record, relativePath, sessionId } from './services/validation.js'
 import { preferencePatch, presentationPatch } from './services/settings.js'
 import { modelSettingsInput } from './services/configuration.js'
 import { gitBranchInput, gitRemoteInput } from './services/gitInput.js'
@@ -21,6 +21,11 @@ export type IpcController = Pick<DesktopController,
   'getSnapshot' | 'chooseWorkspace' | 'reconnect' | 'sendPrompt' | 'cancelTurn' | 'respondPermission'
 >
 
+function searchText(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 200) invalid()
+  return value
+}
+
 function count(args: unknown[], size: number): void {
   if (args.length !== size) throw new DesktopFault('INVALID_ARGUMENT', 'IPC 参数数量不正确。')
 }
@@ -33,11 +38,21 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
     [CHANNELS.reconnect]: (...args) => { count(args, 0); return controller.reconnect() },
     [CHANNELS.cancel]: (...args) => { count(args, 0); return controller.cancelTurn() },
     [CHANNELS.prompt]: (...args) => {
-      count(args, 1)
-      const [text] = args
+      if (args.length < 1 || args.length > 3) invalid()
+      const [text, follow, image] = args
       if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_PROMPT_BYTES) {
         throw new DesktopFault('INVALID_ARGUMENT', '消息必须为非空字符串，UTF-8 长度上限 64 KiB。')
       }
+      if (follow != null) {
+        if (typeof follow !== 'object' || !('mode' in follow) || !('requestId' in follow)
+          || (follow.mode !== 'queue' && follow.mode !== 'steer' && follow.mode !== 'withdraw') || typeof follow.requestId !== 'string'
+          || !/^[a-zA-Z0-9_-]{1,128}$/.test(follow.requestId) || image !== undefined) invalid()
+        return controller.sendPrompt(text, { mode: follow.mode, requestId: follow.requestId })
+      }
+      if (args.length === 3 && follow === null && typeof image === 'string' && image.length <= 720000 && /^data:image\/jpeg;base64,\/9j\/[a-zA-Z0-9+/]+=*$/.test(image)) {
+        return controller.sendPrompt(text, undefined, image)
+      }
+      if (args.length !== 1) invalid()
       return controller.sendPrompt(text)
     },
     [CHANNELS.permission]: (...args) => {
@@ -64,6 +79,28 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
     [CHANNELS.listFiles]: (...args: unknown[]) => { count(args, 1); return services.listFiles(relativePath(args[0], true)) },
     [CHANNELS.readFile]: (...args: unknown[]) => { count(args, 1); return services.readFile(relativePath(args[0])) },
     [CHANNELS.watchWorkspace]: (...args: unknown[]) => { count(args, 1); return services.watchWorkspace(boolean(args[0])) },
+    [CHANNELS.terminal]: (...args: unknown[]) => {
+      count(args, 1)
+      const input = record(args[0], ['type', 'id', 'data', 'session', 'cols', 'rows'])
+      const id = sessionId(input.id)
+      if (input.type === 'open') return services.terminal({ type: 'open', id, session: sessionId(input.session) })
+      if (input.type === 'close') return services.terminal({ type: 'close', id })
+      if (input.type === 'input' && typeof input.data === 'string' && input.data.length <= 65536) return services.terminal({ type: 'input', id, data: input.data })
+      if (input.type === 'resize' && [input.cols, input.rows].every(v => typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= 1000)) {
+        return services.terminal({ type: 'resize', id, cols: Number(input.cols), rows: Number(input.rows) })
+      }
+      invalid()
+    },
+    [CHANNELS.listWorktrees]: (...args: unknown[]) => { count(args, 0); return services.listWorktrees() },
+    [CHANNELS.manageWorktree]: (...args: unknown[]) => {
+      count(args, 1)
+      const { id, revision, action, path } = record(args[0], ['id', 'revision', 'action', 'path'])
+      if (typeof id !== 'string' || !/^task-[a-zA-Z0-9]{6}$/.test(id) || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) invalid()
+      if (action === 'ours' || action === 'theirs' || action === 'resolved' || action === 'preview') return services.manageWorktree({ id, revision, action, path: relativePath(path) })
+      if (path !== undefined || (action !== 'open' && action !== 'sync' && action !== 'integrate' && action !== 'remove' && action !== 'abort' && action !== 'finish')) invalid()
+      return services.manageWorktree({ id, revision, action })
+    },
+    [CHANNELS.openWorktree]: (...args: unknown[]) => { count(args, 0); return services.openWorktree() },
     [CHANNELS.gitStatus]: (...args: unknown[]) => { count(args, 0); return services.gitStatus() },
     [CHANNELS.gitBranches]: (...args: unknown[]) => { count(args, 0); return services.gitBranches() },
     [CHANNELS.gitBranch]: (...args: unknown[]) => { count(args, 1); return services.gitBranch(gitBranchInput(args[0])) },
@@ -85,9 +122,15 @@ export function installIpcRoutes(router: IpcRouter, controller: IpcController,
       if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) invalid()
       return services.gitCommit(message, revision)
     },
-    [CHANNELS.getSessionHistory]: (...args: unknown[]) => { count(args, 1); return services.getSessionHistory(sessionId(args[0])) },
+    [CHANNELS.forkSession]: (...args: unknown[]) => { count(args, 2); return services.forkSession(sessionId(args[0]), sessionId(args[1])) },
+    [CHANNELS.getSessionHistory]: (...args: unknown[]) => { if (args.length === 2) {
+      const cursor = record(args[1], ['direction', 'id', 'offset'])
+      if ((cursor.direction !== 'before' && cursor.direction !== 'after') || !Number.isSafeInteger(cursor.offset) || Number(cursor.offset) < 0 || Number(cursor.offset) > 32 * 1024 * 1024) invalid()
+      return services.getSessionHistory(sessionId(args[0]), { direction: cursor.direction, id: sessionId(cursor.id), offset: Number(cursor.offset) })
+    }
+    if (args.length === 3) return services.getSessionHistory(sessionId(args[0]), sessionId(args[1]), searchText(args[2])); count(args, 1); return services.getSessionHistory(sessionId(args[0])) },
     [CHANNELS.openSession]: (...args: unknown[]) => { count(args, 1); return services.openSession(args[0] === null ? null : sessionId(args[0])) },
-    [CHANNELS.listSessions]: (...args: unknown[]) => { count(args, 1); return services.listSessions(boolean(args[0])) },
+    [CHANNELS.listSessions]: (...args: unknown[]) => { if (args.length === 2) return services.listSessions(boolean(args[0]), searchText(args[1])); count(args, 1); return services.listSessions(boolean(args[0])) },
     [CHANNELS.updateSession]: (...args: unknown[]) => { count(args, 2); return services.updateSession(sessionId(args[0]), presentationPatch(args[1])) },
     [CHANNELS.deleteSession]: (...args: unknown[]) => { count(args, 1); return services.deleteSession(sessionId(args[0])) },
     [CHANNELS.getUsage]: (...args: unknown[]) => { count(args, 1); return services.getUsage(sessionId(args[0])) },

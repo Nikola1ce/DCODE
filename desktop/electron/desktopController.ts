@@ -1,7 +1,7 @@
 // 单窗口工作区控制器：目录仅来自原生选择，切换串行化，先退出旧内核再连接新内核。
 // 制作人：Moriarty_Dox
 import type { AgentConnection } from './agentConnection.js'
-import type { ConnectionSnapshot, DesktopEvent, PermissionChoice } from '../shared/api.js'
+import type { ConnectionSnapshot, FollowUp, DesktopEvent, PermissionChoice } from '../shared/api.js'
 import { EMPTY_SNAPSHOT } from '../shared/api.js'
 import { DesktopFault } from './errors.js'
 import { WorkspaceAuthority } from './workspaceAccess.js'
@@ -93,9 +93,9 @@ export class DesktopController {
     return operation.finally(() => { this.serviceOperations.delete(operation) })
   }
 
-  sendPrompt(text: string): { requestId: string } {
+  sendPrompt(text: string, followUp?: FollowUp, image?: string): { requestId: string } {
     if (this.changing || this.disposed) throw new DesktopFault('BUSY', '工作区操作正在进行，消息未发送。')
-    return this.requiredConnection().sendPrompt(text)
+    return this.requiredConnection().sendPrompt(text, followUp, image)
   }
 
   /** 会话归属在独占区内重新核验，防止核验后切换到其他目录。 */

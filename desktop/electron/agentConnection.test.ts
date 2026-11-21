@@ -79,6 +79,42 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
 
 describe('AgentConnection', () => {
+  it('排队仅在所属回合正常完成后发出一次，迟到的旧回执不会重发', async () => {
+    const f = fixture()
+    const child = await f.launch()
+    const { requestId } = f.connection.sendPrompt('第一轮')
+    f.connection.sendPrompt('第二轮', { requestId, mode: 'queue' })
+    const done = { type: 'turn_done', requestId, reason: 'final', costUsd: 0 }
+    child.send(done); child.send(done)
+    expect(child.messages.filter(msg => msg.type === 'prompt')).toHaveLength(2)
+    expect(f.connection.getSnapshot().followUp).toBeUndefined()
+  })
+
+  it('取消后允许取回排队消息，迟到的补充不能进入其他回合', async () => {
+    const f = fixture()
+    const child = await f.launch({ capabilities: { steer: true } })
+    const { requestId } = f.connection.sendPrompt('开始')
+    f.connection.sendPrompt('下一轮', { requestId, mode: 'queue' })
+    const cancelling = f.connection.cancelTurn()
+    child.send({ type: 'turn_done', requestId, reason: 'aborted', costUsd: 0 })
+    await cancelling
+    expect(f.connection.getSnapshot().followUp?.mode).toBe('unsent')
+    f.connection.sendPrompt('取回', { requestId, mode: 'withdraw' })
+    expect(() => f.connection.sendPrompt('补充', { requestId, mode: 'steer' })).toThrow()
+    expect(child.messages.filter(msg => msg.type === 'prompt')).toHaveLength(1)
+  })
+
+  it('内核确认采用补充要求后才更新对话', async () => {
+    const f = fixture()
+    const child = await f.launch({ capabilities: { steer: true } })
+    const { requestId } = f.connection.sendPrompt('开始')
+    f.connection.sendPrompt('补充', { requestId, mode: 'steer' })
+    expect(f.events.some(e => e.type === 'guidance')).toBe(false)
+    child.send({ type: 'steer_applied', requestId })
+    expect(f.events).toContainEqual({ type: 'guidance', requestId, text: '补充' })
+    expect(f.connection.getSnapshot().followUp).toBeUndefined()
+  })
+
   it('指定历史会话首次启动携带 resume 参数并校验握手身份', async () => {
     const f = fixture({ resumeId: 'session-1' })
     await f.launch()

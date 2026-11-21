@@ -28,6 +28,8 @@ export interface ToolCall {
  * 并在发送前由 deepseek/client 转换为严格的 API 消息体。
  */
 export interface DeepMessage {
+  // 仅附在当前回合的请求副本上。
+  imageDataUrl?: string
   // 持久化身份；旧会话在加载时补齐，不传给模型 API。
   id?: string
   runId?: string

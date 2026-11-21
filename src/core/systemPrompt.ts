@@ -14,6 +14,7 @@ import { formatSkillsForPrompt } from './skills.js'
 
 // 构建系统提示所需的运行期信息。
 export interface SystemPromptContext {
+  onMemorySources?(paths: string[]): void
   // 当前工作目录。
   cwd: string
   // 当前模型名称。
@@ -33,7 +34,9 @@ export interface SystemPromptContext {
  */
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 加载并格式化项目/全局记忆。
-  const memories = formatMemories(loadMemories(ctx.cwd))
+  const entries = loadMemories(ctx.cwd)
+  ctx.onMemorySources?.(entries.map(entry => entry.path))
+  const memories = formatMemories(entries)
   const skillsBlock = formatSkillsForPrompt(ctx.activeSkills ?? [])
 
   // 不同权限模式给模型的行为约束说明。

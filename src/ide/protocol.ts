@@ -36,6 +36,8 @@ export interface IdeCapabilities {
   checkpointUndoById?: boolean
   hostTools?: boolean
   rewind?: boolean
+  imageInput?: boolean
+  steer?: boolean
   forkSession?: boolean
 }
 
@@ -86,6 +88,7 @@ export interface ClientPromptMessage {
   text: string
   // 随本轮一并提供的上下文附件（拖拽的文件、右键加入的选区等）。
   // 服务端会把它们转写为一段「上下文清单」前缀拼接到 text 之前，引导模型按需读取。
+  image?: string
   attachments?: ContextAttachment[]
 }
 
@@ -182,6 +185,7 @@ export type ClientDesktopMessage =
 // 客户端可发送的全部消息联合类型。
 export type ClientMessage =
   | ClientDesktopMessage
+  | { type: 'steer'; requestId: string; text: string }
   | ClientPromptMessage
   | ClientCancelMessage
   | ClientPermissionResponseMessage
@@ -227,6 +231,7 @@ export interface ModelOption {
 
 // 服务端就绪（启动并完成 Agent 初始化后第一条消息）。
 export interface ServerReadyMessage {
+  memorySources?: string[]
   type: 'ready'
   capabilities?: IdeCapabilities
   reasoningEffort?: ReasoningEffort
@@ -337,6 +342,7 @@ export interface ServerTurnErrorMessage {
 
 // 服务端状态变更通知（模型/权限模式/会话被切换后回推，便于客户端刷新 UI）。
 export interface ServerStatusMessage {
+  memorySources?: string[]
   type: 'status'
   reasoningEffort?: ReasoningEffort
   model: string
@@ -426,6 +432,7 @@ export type ServerDesktopMessage =
   | { type: 'operation_error'; requestId: string; operation: string; message: string; code?: 'busy' | 'invalid_request' | 'not_found' | 'conflict' | 'unsupported' }
 
 export type ServerMessage = (
+  | { type: 'steer_applied'; requestId: string }
   | ServerDesktopMessage
   | ServerReadyMessage
   | ServerReasoningMessage

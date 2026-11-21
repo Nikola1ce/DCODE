@@ -32,6 +32,46 @@ function create() {
 }
 
 describe('会话与用量服务', () => {
+  it('超过 10 MiB 的会话前后翻页可还原文字和工具输出，追加消息不会使旧游标错位', async () => {
+    const recorder = create()
+    const huge = 'x'.repeat(16383) + '🙂' + 'y'.repeat(10 * 1024 * 1024)
+    recorder.append({ id: 'large', role: 'assistant', content: huge, reasoning: 'internal-reasoning' })
+    recorder.append({ id: 'call', role: 'assistant', content: '', toolCalls: [{ id: 't', name: 'run_command', argsJson: '{"command":"test"}' }] })
+    recorder.appendEvent({ type: 'tool_progress', timestamp: 1, iteration: 1, turnId: 'turn', runId: 'run', id: 't', text: 'live stdout' })
+    recorder.append({ id: 'out', role: 'tool', turnId: 'turn', toolCallId: 't', content: 'exit 1', isError: true })
+    recorder.append({ id: 'final', role: 'assistant', content: '已结束' })
+    let page = await service.history(cwd, recorder.id)
+    expect(page.messages.at(-2)).toMatchObject({ id: 'out', tool: 'run_command', failed: true, text: '运行输出\nlive stdout\n\n工具结果\n\nexit 1' })
+    const seen = [...page.messages]
+    while (page.before) {
+      page = await service.history(cwd, recorder.id, page.before)
+      expect(page.messages.reduce((sum, row) => sum + row.text.length, 0)).toBeLessThanOrEqual(96 * 1024)
+      seen.unshift(...page.messages)
+    }
+    expect(seen.filter(row => row.id === 'large').map(row => row.text).join('')).toBe(huge)
+    expect(seen.find(row => row.id === 'call')?.text).toContain('{"command":"test"}')
+    expect(JSON.stringify(seen)).not.toMatch(/internal-reasoning|private system/)
+    const splitHit = await service.history(cwd, recorder.id, 'large', 'x🙂')
+    expect(splitHit.messages.slice(0, 2).map(row => row.text.slice(...row.highlight!)).join('')).toBe('x🙂')
+    const cursor = page.after!
+    recorder.append({ role: 'user', content: '追加' })
+    const next = await service.history(cwd, recorder.id, cursor)
+    expect(next.messages[0]).toMatchObject({ id: cursor.id, offset: cursor.offset })
+    expect((await service.history(cwd, recorder.id, 'large', '🙂')).messages[0]?.text).toContain('🙂')
+  })
+
+  it('正文搜索限定在所属项目的对话消息，旧消息可定位并派生独立会话', async () => {
+    const recorder = create()
+    recorder.append({ id: 'target', role: 'assistant', content: '曾经出现的渲染错误' })
+    for (let i = 0; i < 102; i++) recorder.append({ role: 'user', content: '后续消息' })
+    expect((await service.list(cwd, false, 'private system')).sessions).toHaveLength(0)
+    expect((await service.list(cwd, false, '渲染')).sessions[0]?.match?.id).toBe('target')
+    expect((await service.history(cwd, recorder.id, 'target', '渲染')).messages[0]?.text).toBe('曾经出现的渲染错误')
+    const child = await service.fork(cwd, recorder.id, 'target')
+    expect((await service.snapshot(cwd, child)).meta.parentSessionId).toBe(recorder.id)
+    expect((await service.history(cwd, child)).messages.at(-1)?.id).toBe('target')
+  })
+
   it('展示兼容旧消息，重命名/置顶/归档/恢复使用独立元信息', async () => {
     const recorder = create()
     const path = join(disk.directory, 'sessions', `${recorder.id}.jsonl`)

@@ -15,7 +15,7 @@ export const SETTINGS_SECTIONS = [
 ] as const
 export type SettingsSection = typeof SETTINGS_SECTIONS[number]['id']
 
-const SHORTCUTS = [['命令面板', 'Ctrl / ⌘ + K'], ['快速打开文件', 'Ctrl / ⌘ + P'], ['新建会话', 'Ctrl / ⌘ + N'],
+const SHORTCUTS = [['项目终端', 'Ctrl + `'], ['命令面板', 'Ctrl / ⌘ + K'], ['快速打开文件', 'Ctrl / ⌘ + P'], ['新建会话', 'Ctrl / ⌘ + N'],
   ['切换侧栏', 'Ctrl / ⌘ + B'], ['上一 / 下一会话', 'Alt + ↑ / ↓'], ['文件审阅', 'Ctrl / ⌘ + Shift + R'],
   ['关闭预览 / 停止回合', 'Esc'], ['输入框换行', 'Shift + Enter'], ['提交暂存的更改', 'Ctrl / ⌘ + Enter']]
 

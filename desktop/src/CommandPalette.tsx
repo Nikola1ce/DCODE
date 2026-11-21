@@ -2,6 +2,7 @@
 // 制作人：Moriarty_Dox
 import { useEffect, useRef, useState } from 'react'
 import type { DocumentPreview } from './DocumentView.js'
+import { filePreview } from './DocumentView.js'
 import { unwrap, useAction, useResource } from './serviceHooks.js'
 import { Icon } from './Icon.js'
 
@@ -27,10 +28,7 @@ export function CommandPalette({ mode, commands, cwd, close, open }: {
   const files = useResource(resourceKey, () => mode === 'files' && cwd ? unwrap(window.dcode.searchFiles(search)) : Promise.resolve({ entries: [], truncated: false }))
   const searching = mode === 'files' && !!cwd && (query !== search || files.loading || (!files.error && files.resolvedKey !== resourceKey))
   const choices: DesktopCommand[] = mode === 'commands' ? commands.filter((item) => item.label.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-    : (searching || files.resolvedKey !== resourceKey ? [] : files.value?.entries ?? []).map((file) => ({ id: file.path, label: file.path, run: async () => {
-      const preview = await unwrap(window.dcode.readFile(file.path))
-      open({ title: file.path, text: preview.kind === 'text' ? preview.text : `二进制文件 · ${preview.size} 字节`, truncated: preview.kind === 'text' && preview.truncated })
-    } }))
+    : (searching || files.resolvedKey !== resourceKey || files.error ? [] : files.value?.entries ?? []).map((file) => ({ id: file.path, label: file.path, run: () => open(filePreview(file.path)) }))
   useEffect(() => { setSelected((index) => Math.max(0, Math.min(index, choices.length - 1))) }, [choices.length])
   useEffect(() => { dialog.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }) }, [selected])
   async function execute(item: DesktopCommand | undefined) {
@@ -54,8 +52,8 @@ export function CommandPalette({ mode, commands, cwd, close, open }: {
       {(action.error || files.error) && <p className="inline-error" role="alert">{action.error || files.error}{files.error && <button onClick={files.refresh}>重试搜索</button>}</p>}
       <div className="palette-list" id="palette-options" role="listbox" aria-label="搜索结果">{choices.map((item, index) => <button id={`palette-option-${index}`} role="option" aria-selected={selected === index} key={item.id} disabled={item.disabled || action.busy}
         className={selected === index ? 'selected' : ''} onFocus={() => setSelected(index)} onMouseMove={() => setSelected(index)} onClick={() => void execute(item)}><Icon name={mode === 'files' ? 'files' : 'terminal'} size={16} /><span>{item.label}</span>{item.shortcut && <kbd>{item.shortcut}</kbd>}</button>)}</div>
-      {files.value?.truncated && <p className="muted small">显示前 200 项，目录扫描上限 10,000 项，请输入更具体的路径。</p>}
-      {!choices.length && <p className="empty-panel" role="status">{searching ? '正在搜索…' : '没有匹配项'}</p>}
+      {!searching && !files.error && files.value?.truncated && <p className="muted small">显示前 200 项，目录扫描上限 10,000 项，请输入更具体的路径。</p>}
+      {!choices.length && !files.error && (mode === 'commands' || cwd) && <p className="empty-panel" role="status">{searching ? '正在搜索…' : '没有匹配项'}</p>}
       <div className="palette-footer">↑ ↓ 选择 · Enter 执行 · Esc 关闭<button onClick={close}>关闭</button></div>
     </div>
   </dialog>

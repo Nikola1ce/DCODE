@@ -1,9 +1,9 @@
 // 工作区导航、会话管理、历史、检查点审阅及用量面板。
 // 制作人：Moriarty_Dox
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { DesktopSession } from '../shared/services.js'
 import type { DocumentPreview } from './DocumentView.js'
-import { DocumentView } from './DocumentView.js'
+import { DocumentView, filePreview, type AddReference } from './DocumentView.js'
 import { unwrap, useAction, useResource } from './serviceHooks.js'
 import { Icon } from './Icon.js'
 
@@ -23,64 +23,75 @@ export function ProjectsPanel({ locked, revision }: { locked: boolean; revision:
     </div></>
 }
 
-export function FilesPanel({ revision, open }: PanelProps) {
+export function FilesPanel({ revision, open, search, selectedPath }: PanelProps & { search(): void; selectedPath?: string }) {
   const [directory, setDirectory] = useState('')
-  const files = useResource(`${directory}:${revision}`, () => unwrap(window.dcode.listFiles(directory)))
-  const action = useAction()
+  const files = useResource(`${directory}:${revision}`, async () => ({ directory, ...await unwrap(window.dcode.listFiles(directory)) }))
+  const listing = files.value?.directory === directory ? files.value : undefined
+  const parts = directory.split('/').filter(Boolean)
+  const breadcrumb = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    if (breadcrumb.current) breadcrumb.current.scrollLeft = breadcrumb.current.scrollWidth
+  }, [directory])
   return <>
     <div className="panel-heading"><h2>资源管理器</h2><button className="icon-button" title="刷新文件" aria-label="刷新文件" onClick={files.refresh}><Icon name="refresh" size={16} className={files.loading ? 'spin' : ''} /></button></div>
-    <div className="breadcrumb"><button aria-label="返回上级目录" disabled={!directory} onClick={() => setDirectory(directory.split('/').slice(0, -1).join('/'))}><Icon name="arrow" size={14} /></button><span>{directory || '项目根目录'}</span></div>
-    {(files.error || action.error) && <p className="inline-error" role="alert">{files.error || action.error}</p>}
-    <div className="panel-scroll">
-      {files.value?.entries.map((entry) => <button className="tree-row" key={entry.path} disabled={action.busy} onClick={() => {
-        if (entry.kind === 'directory') { setDirectory(entry.path); return }
-        void action.run(async () => {
-          const file = await unwrap(window.dcode.readFile(entry.path))
-          open({ title: entry.path, text: file.kind === 'text' ? file.text : `二进制文件 · ${file.size.toLocaleString()} 字节`, truncated: file.kind === 'text' && file.truncated,
-            reload: async () => {
-              const latest = await unwrap(window.dcode.readFile(entry.path))
-              return { text: latest.kind === 'text' ? latest.text : `二进制文件 · ${latest.size.toLocaleString()} 字节`, truncated: latest.kind === 'text' && latest.truncated }
-            } })
-        })
-      }}><span className="file-symbol"><Icon name={entry.kind === 'directory' ? 'projects' : 'files'} size={16} /></span>{entry.name}</button>)}
-      {files.value?.entries.length === 0 && <p className="empty-panel">目录为空</p>}
-      {files.value?.truncated && <p className="inline-notice">目录较大，仅显示前 2000 项。</p>}
+    <div className="panel-controls"><button className="file-search-trigger" onClick={search}><Icon name="search" size={15} />快速打开文件<kbd>Ctrl P</kbd></button></div>
+    <nav className="breadcrumb" ref={breadcrumb} aria-label="文件夹路径">{['项目根目录', ...parts].map((part, index) => {
+      const path = parts.slice(0, index).join('/')
+      return <span key={path}>{index > 0 && <Icon name="right" size={12} />}
+        {index === parts.length ? <strong aria-current="location" title={path || part}>{part}</strong>
+          : <button title={path || part} onClick={() => setDirectory(path)}>{part}</button>}</span>
+    })}</nav>
+    {files.error && <p className="inline-error" role="alert">{files.error}<button onClick={files.refresh}>重试</button></p>}
+    <div key={directory} className="panel-scroll">
+      {!listing && !files.error && <p className="empty-panel" role="status">正在读取目录…</p>}
+      {listing?.entries.map((entry) => <button className="tree-row" key={entry.path} title={entry.path}
+        aria-current={entry.path === selectedPath ? 'true' : undefined}
+        onClick={() => entry.kind === 'directory' ? setDirectory(entry.path) : open(filePreview(entry.path))}>
+        <Icon name={entry.kind === 'directory' ? 'projects' : 'files'} size={16} /><span className="truncate">{entry.name}</span>
+        {entry.kind === 'directory' && <Icon name="right" size={12} />}</button>)}
+      {listing?.entries.length === 0 && !files.error && <p className="empty-panel">目录为空</p>}
+      {listing?.truncated && <p className="inline-notice">目录较大，仅显示前 2000 项。</p>}
     </div>
   </>
 }
 
 export function SessionsPanel({ revision, locked, sessionId, select }: {
-  revision: number; locked: boolean; sessionId: string | null; select(id: string | null): Promise<void>
+  revision: number; locked: boolean; sessionId: string | null; select(id: string | null, target?: string, query?: string): Promise<void>
 }) {
   const [archived, setArchived] = useState(false)
   const [filter, setFilter] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
   const [title, setTitle] = useState('')
-  const sessions = useResource(`${revision}:${archived}`, () => unwrap(window.dcode.listSessions(archived)))
+  const [query, setQuery] = useState('')
+  useEffect(() => { const timer = setTimeout(() => setQuery(filter.trim()), 220); return () => clearTimeout(timer) }, [filter])
+  const listingKey = JSON.stringify([revision, archived, query])
+  const sessions = useResource(listingKey, () => unwrap(window.dcode.listSessions(archived, query)))
+  const listing = query === filter.trim() && sessions.resolvedKey === listingKey ? sessions.value : undefined
   const action = useAction(sessions.refresh)
   const disabled = locked || action.busy
   function rename(session: DesktopSession) { setRenaming(session.id); setTitle(session.title) }
   return <>
     <div className="panel-heading"><h2>项目会话</h2><button className="icon-button" title="新建会话 Ctrl+N" aria-label="新建会话" disabled={disabled} onClick={() => void action.run(() => select(null))}><Icon name="plus" size={17} /></button></div>
-    <div className="panel-controls"><input aria-label="搜索会话" placeholder="搜索会话…" value={filter} onChange={(event) => setFilter(event.target.value)} />
+    <div className="panel-controls"><input aria-label="搜索会话" maxLength={200} placeholder="搜索标题或对话正文…" value={filter} onChange={(event) => setFilter(event.target.value)} />
       <label className="checkbox"><input type="checkbox" checked={archived} onChange={(event) => setArchived(event.target.checked)} />显示已归档</label></div>
     {(sessions.error || action.error) && <p className="inline-error" role="alert">{sessions.error || action.error}</p>}
     <div className="panel-scroll">
-      {sessions.value?.sessions.filter((session) => session.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())).map((session) => <article className={`session-item ${session.id === sessionId ? 'selected' : ''}`} key={session.id}>
+      {listing?.sessions.map((session) => <article className={`session-item ${session.id === sessionId ? 'selected' : ''}`} key={session.id}>
         {renaming === session.id ? <form onSubmit={(event) => {
           event.preventDefault()
           void action.run(async () => { await unwrap(window.dcode.updateSession(session.id, { title })); setRenaming(null) })
         }}><input autoFocus aria-label="会话名称" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
           <div className="row-actions"><button disabled={disabled || !title.trim()} type="submit">保存</button><button type="button" onClick={() => setRenaming(null)}>取消</button></div></form>
-          : <button className="session-title" disabled={disabled} onClick={() => void action.run(() => select(session.id))}>{session.pinned && <span>⌖ </span>}{session.title}</button>}
+          : <button className="session-title" disabled={disabled} onClick={() => void action.run(() => select(session.id, session.match?.id, query))}>{session.pinned && <span>⌖ </span>}{session.title}{session.match && <small className="search-excerpt">{session.match.snippet}</small>}</button>}
         <div className="session-meta"><span>{new Date(session.updatedAt).toLocaleDateString()} · {session.messageCount} 条</span><span>{session.id === sessionId ? '当前' : ''}</span></div>
         <div className="session-actions"><button disabled={disabled} onClick={() => rename(session)}>重命名</button>
           <button disabled={disabled} onClick={() => void action.run(() => unwrap(window.dcode.updateSession(session.id, { pinned: !session.pinned })))}>{session.pinned ? '取消置顶' : '置顶'}</button>
           <button disabled={disabled} onClick={() => void action.run(() => unwrap(window.dcode.updateSession(session.id, { archived: !archived })))}>{archived ? '恢复' : '归档'}</button>
           <button disabled={disabled || session.id === sessionId} onClick={() => void action.run(() => unwrap(window.dcode.deleteSession(session.id)))}>删除</button></div>
       </article>)}
-      {sessions.value?.sessions.length === 0 && <p className="empty-panel">{archived ? '还没有归档会话' : '点击 + 开始新会话'}</p>}
-      {!!sessions.value?.sessions.length && !sessions.value.sessions.some((session) => session.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())) && <p className="empty-panel">没有匹配的会话<button className="text-button" onClick={() => setFilter('')}>清除搜索</button></p>}
+      {!listing && !sessions.error && <p className="empty-panel">正在读取会话…</p>}
+      {listing?.sessions.length === 0 && !query && <p className="empty-panel">{archived ? '还没有归档会话' : '点击 + 开始新会话'}</p>}
+      {listing?.sessions.length === 0 && query && <p className="empty-panel">没有匹配的会话<button className="text-button" onClick={() => setFilter('')}>清除搜索</button></p>}
       {!!sessions.value?.skipped && <p className="inline-notice">已跳过 {sessions.value.skipped} 个无法读取的记录。</p>}
       {sessions.value?.truncated && <p className="inline-notice">已达到 2000 个会话的扫描上限。</p>}
     </div>
@@ -103,7 +114,7 @@ export function ReviewPanel({ revision, sessionId, open }: PanelProps & { sessio
   </>
 }
 
-export function ReviewEditor({ sessionId, checkpointId, locked, revision }: { sessionId: string; checkpointId: string; locked: boolean; revision: number }) {
+export function ReviewEditor({ sessionId, checkpointId, locked, revision, addReference }: { addReference: AddReference; sessionId: string; checkpointId: string; locked: boolean; revision: number }) {
   const review = useResource(`${sessionId}:${checkpointId}:${revision}`, async () => {
     const result = await unwrap(window.dcode.getReview(sessionId, checkpointId))
     if (!result.ok) throw new Error(result.error)
@@ -134,7 +145,7 @@ export function ReviewEditor({ sessionId, checkpointId, locked, revision }: { se
         <button className="danger" disabled={action.busy} onClick={() => void action.run(revert)}>确认回退</button><button onClick={() => setConfirmation(null)}>取消</button></div>}
       <div className="hunk-actions">{current.diff.hunks.map((hunk, index) => <button key={index} disabled={locked || action.busy || review.loading || !current.canRevert}
         onClick={() => setConfirmation(index)}>回退第 {hunk.newStart} 行附近变更</button>)}</div>
-      <DocumentView key={current.revision} document={{ title: current.checkpoint.path, text: current.diff.preview, diff: true, truncated: current.diff.truncated }} />
+      <DocumentView key={current.revision} addReference={addReference} document={{ title: current.checkpoint.path, text: current.diff.preview, diffPath: current.checkpoint.path, diff: true, truncated: current.diff.truncated }} />
     </>}
   </div>
 }

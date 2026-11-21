@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WorktreeService } from './worktrees.js'
 import { GitService, parseGitStatus } from './git.js'
 
 let root: string
@@ -24,6 +25,64 @@ beforeEach(async () => {
 afterEach(async () => { await rm(root, { recursive: true, force: true }) })
 
 describe('Git 服务', () => {
+  it('并行工作树从 HEAD 创建，原目录未提交的修改留在原处', async () => {
+    await writeFile(join(root, 'tracked.txt'), '已提交')
+    git('add', '.'); git('commit', '-qm', '基线')
+    await writeFile(join(root, 'tracked.txt'), '本地修改')
+    const parent = await mkdtemp(join(tmpdir(), 'dcode-parallel-'))
+    try {
+      const checkout = await service.createWorktree(root, parent)
+      expect(await readFile(join(checkout, 'tracked.txt'), 'utf8')).toBe('已提交')
+      expect(await readFile(join(root, 'tracked.txt'), 'utf8')).toBe('本地修改')
+    } finally { await rm(parent, { recursive: true, force: true }) }
+  })
+
+  it('工作树处理分叉冲突，合回后仅清理干净且未被替换的工作树', async () => {
+    await writeFile(join(root, 'shared.txt'), 'base\n')
+    git('add', '.'); git('commit', '-qm', 'base')
+    const parent = await mkdtemp(join(tmpdir(), 'dcode-managed-'))
+    try {
+      const path = await service.createWorktree(root, parent)
+      const manager = new WorktreeService(parent, confirm)
+      const list = async () => (await manager.list(root))[0]!
+      const act = async (action: import('../../shared/services.js').WorktreeInput['action'], file?: string) => {
+        const tree = await list()
+        return manager.apply(root, { id: tree.id, revision: tree.revision, action, path: file }, path)
+      }
+      await writeFile(join(path, 'shared.txt'), 'child\n')
+      git('-C', path, 'commit', '-qam', 'task')
+      await writeFile(join(root, 'shared.txt'), 'parent\n')
+      git('commit', '-qam', 'source')
+      expect(await list()).toMatchObject({ ahead: 1, behind: 1, dirty: false })
+      await expect(act('integrate')).rejects.toMatchObject({ code: 'CONFLICT' })
+      await act('sync')
+      expect((await list()).conflicts).toEqual(['shared.txt'])
+      expect(await act('preview', 'shared.txt')).toContain('shared.txt')
+      await act('ours', 'shared.txt')
+      expect((await list()).conflicts).toEqual([])
+      await act('finish')
+      confirm.mockResolvedValueOnce(false)
+      expect(await act('integrate')).toContain('取消')
+      expect(await readFile(join(root, 'shared.txt'), 'utf8')).toBe('parent\n')
+      await act('integrate')
+      expect(await readFile(join(root, 'shared.txt'), 'utf8')).toBe('child\n')
+      await writeFile(join(path, 'untracked.txt'), 'local')
+      await expect(act('remove')).rejects.toMatchObject({ code: 'CONFLICT' })
+      await rm(join(path, 'untracked.txt'))
+      await writeFile(join(root, '.git/info/exclude'), 'ignored.txt\n')
+      await writeFile(join(path, 'ignored.txt'), 'local')
+      await expect(act('remove')).rejects.toMatchObject({ code: 'CONFLICT' })
+      await rm(join(path, 'ignored.txt'))
+      const old = await list()
+      await writeFile(join(path, 'changed'), 'new')
+      await expect(manager.apply(root, { id: old.id, revision: old.revision, action: 'remove' }, path)).rejects.toMatchObject({ code: 'CONFLICT' })
+      await rm(join(path, 'changed'))
+      await act('remove')
+      expect(await manager.list(root)).toEqual([])
+      expect(git('branch', '--list', old.branch!)).toContain(old.branch)
+    } finally { await rm(parent, { recursive: true, force: true }) }
+  }, 60000)
+
   it('批量暂存/取消暂存支持中文和字面路径，提交后可读取父提交及差异', async () => {
     await writeFile(join(root, '[文件].txt'), '第一行\n')
     await writeFile(join(root, 'second.txt'), '内容\n')

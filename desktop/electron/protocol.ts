@@ -9,11 +9,11 @@ import { DesktopFault } from './errors.js'
 
 export type ReadyInfo = Pick<ServerReadyMessage,
   'type' | 'protocolVersion' | 'version' | 'model' | 'provider' | 'permissionMode' | 'cwd' | 'hasApiKey' | 'sessionId'
-> & { capabilities: string[] }
+> & { capabilities: string[]; memorySources?: string[] }
 export type StatusInfo = Pick<ServerStatusMessage,
-  'type' | 'model' | 'provider' | 'permissionMode' | 'sessionId'
+  'type' | 'model' | 'provider' | 'permissionMode' | 'sessionId' | 'memorySources'
 >
-export type DecodedMessage = ReadyInfo | StatusInfo | StreamMessage | (PermissionCard & { type: 'permission_request' })
+export type DecodedMessage = ReadyInfo | StatusInfo | StreamMessage | (PermissionCard & { type: 'permission_request' }) | { type: 'steer_applied'; requestId: string }
 
 function invalid(): never {
   throw new DesktopFault('INVALID_MESSAGE', '内核消息结构无效，连接已停止。')
@@ -84,11 +84,13 @@ export function requireCapability(version: number | null, capabilities: readonly
 export function decodeServerMessage(value: unknown): DecodedMessage | null {
   const msg = record(value)
   const type = text(msg.type, 80)
+  const memorySources = (type === 'ready' || type === 'status') && Array.isArray(msg.memorySources)
+    ? msg.memorySources.slice(0, 32).map(value => text(value, 32768)) : undefined
   switch (type) {
     case 'ready': {
       if (!Number.isSafeInteger(msg.protocolVersion)) return invalid()
       return {
-        type, protocolVersion: msg.protocolVersion as number, version: text(msg.version, 100),
+        type, memorySources, protocolVersion: msg.protocolVersion as number, version: text(msg.version, 100),
         model: text(msg.model, 200), provider: text(msg.provider, 100), permissionMode: mode(msg.permissionMode),
         cwd: text(msg.cwd, 32_768), hasApiKey: boolean(msg.hasApiKey), sessionId: session(msg.sessionId),
         capabilities: normalizeCapabilities(msg.capabilities),
@@ -96,9 +98,13 @@ export function decodeServerMessage(value: unknown): DecodedMessage | null {
     }
     case 'status':
       return {
-        type, model: text(msg.model, 200), provider: text(msg.provider, 100),
+        type, memorySources, model: text(msg.model, 200), provider: text(msg.provider, 100),
         permissionMode: mode(msg.permissionMode), sessionId: session(msg.sessionId),
       }
+    case 'turn_started':
+    case 'assistant_done':
+      return msg.messageId ? { type: 'message_identity', requestId: id(msg.requestId), role: type === 'turn_started' ? 'user' : 'assistant', messageId: id(msg.messageId) } : null
+    case 'steer_applied': return { type, requestId: id(msg.requestId) }
     case 'text':
     case 'reasoning':
       return { type, requestId: id(msg.requestId), delta: text(msg.delta, 1024 * 1024) }

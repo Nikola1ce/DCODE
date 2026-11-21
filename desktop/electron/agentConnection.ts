@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import type { ClientMessage } from '../../src/ide/protocol.js'
 import type {
-  ConnectionPhase, ConnectionSnapshot, DesktopEvent, PermissionCard, PermissionChoice,
+  FollowUp, ConnectionPhase, ConnectionSnapshot, DesktopEvent, PermissionCard, PermissionChoice,
 } from '../shared/api.js'
 import { EMPTY_SNAPSHOT, MAX_PROMPT_BYTES } from '../shared/api.js'
 import { coreEnvironment } from './corePath.js'
@@ -164,9 +164,27 @@ export class AgentConnection {
     return wait.promise
   }
 
-  sendPrompt(text: string): { requestId: string } {
+  sendPrompt(text: string, followUp?: FollowUp, image?: string): { requestId: string } {
     if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_PROMPT_BYTES) {
       throw new DesktopFault('INVALID_ARGUMENT', '请输入非空消息，UTF-8 长度不得超过 64 KiB。')
+    }
+    if (followUp) {
+      const { requestId, mode } = followUp
+      if (mode === 'withdraw' && requestId === this.state.followUp?.requestId && this.state.followUp.mode !== 'steer') {
+        delete this.state.followUp
+        this.publish()
+        return { requestId }
+      }
+      if (this.state.phase !== 'running' || requestId !== this.state.activeRequestId || this.state.followUp || mode === 'withdraw') {
+        throw new DesktopFault('BUSY', '回合已变化或已有待处理消息。')
+      }
+      if (mode === 'steer') {
+        if (!this.state.capabilities.includes('steer')) throw new DesktopFault('UNSUPPORTED_CAPABILITY', '当前内核不支持回合中补充。')
+        this.write({ type: 'steer', requestId, text })
+      }
+      this.state.followUp = { mode, requestId, text }
+      this.publish()
+      return { requestId }
     }
     if (this.state.phase !== 'ready' || !this.context?.secured) {
       throw new DesktopFault('NOT_READY', '内核尚未就绪或已有回合正在运行。消息未发送。')
@@ -174,13 +192,14 @@ export class AgentConnection {
     if (!this.state.hasApiKey) {
       throw new DesktopFault('API_KEY_REQUIRED', '内核尚未配置 API Key，请先通过命令行 /login 配置后重新连接。')
     }
+    if (image && !this.state.capabilities.includes('imageInput')) throw new DesktopFault('UNSUPPORTED_CAPABILITY', '当前模型未启用图像输入。')
     const requestId = randomUUID()
     this.clearTimer('idle')
     this.state.activeRequestId = requestId
     this.phase('running')
     this.emit({ type: 'turn_started', requestId, text })
     try {
-      this.write({ type: 'prompt', requestId, text })
+      this.write({ type: 'prompt', requestId, text, ...(image ? { image } : {}) })
     } catch (error) {
       this.fail(error as DesktopFault)
       throw error
@@ -346,7 +365,7 @@ export class AgentConnection {
       }
       context.receivedReady = true
       this.state = {
-        ...this.state, model: msg.model, provider: msg.provider, sessionId: msg.sessionId,
+        ...this.state, memorySources: msg.memorySources, model: msg.model, provider: msg.provider, sessionId: msg.sessionId,
         protocolVersion: msg.protocolVersion, permissionMode: msg.permissionMode, hasApiKey: msg.hasApiKey,
         capabilities: msg.protocolVersion === 5 ? msg.capabilities : [],
         compatibilityWarning: compatibilityWarning(msg.protocolVersion),
@@ -364,6 +383,7 @@ export class AgentConnection {
       if (msg.permissionMode !== 'default') {
         throw new DesktopFault('UNSAFE_PERMISSION_MODE', '内核未确认逐次审批模式，拒绝继续执行。')
       }
+      this.state.memorySources = msg.memorySources ?? this.state.memorySources
       this.state.model = msg.model
       this.state.provider = msg.provider
       this.state.permissionMode = msg.permissionMode
@@ -395,6 +415,15 @@ export class AgentConnection {
       this.publish()
       return
     }
+    if (msg.type === 'steer_applied') {
+      const follow = this.state.followUp
+      if (follow?.mode === 'steer') {
+        this.emit({ type: 'guidance', requestId: msg.requestId, text: follow.text })
+        delete this.state.followUp
+        this.publish()
+      }
+      return
+    }
     this.emit({ type: 'stream', message: msg })
     if (msg.type === 'turn_done' || msg.type === 'turn_error') {
       this.state.activeRequestId = null
@@ -402,8 +431,13 @@ export class AgentConnection {
       this.clearTimer('cancel')
       this.cancelWait?.resolve()
       this.cancelWait = null
+      const follow = this.state.followUp
+      const next = follow?.mode === 'queue' && msg.type === 'turn_done' && msg.reason === 'final' && this.state.phase === 'running'
+      if (next) delete this.state.followUp
+      else if (follow) this.state.followUp = { ...follow, mode: 'unsent' }
       this.phase('ready')
-      this.scheduleIdle()
+      if (next) this.sendPrompt(follow.text)
+      else this.scheduleIdle()
     }
   }
 
@@ -483,6 +517,7 @@ export class AgentConnection {
   }
 
   private clearPending(error: DesktopFault): void {
+    if (this.state.followUp) this.state.followUp = { ...this.state.followUp, mode: 'unsent' }
     this.clearTimer('ready')
     this.clearTimer('cancel')
     this.readyWait?.reject(error)

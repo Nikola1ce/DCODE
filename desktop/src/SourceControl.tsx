@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import type { MouseEvent } from 'react'
 import type { GitBranchInput, GitEntry, GitRemoteInput } from '../shared/services.js'
 import type { DocumentPreview } from './DocumentView.js'
+import { filePreview } from './DocumentView.js'
 import { commitGraph } from './diffModel.js'
 import { unwrap, useAction, useDraft, useResource } from './serviceHooks.js'
 import { Icon } from './Icon.js'
@@ -17,8 +18,8 @@ type MenuTarget =
   | { kind: 'group'; staged: boolean }
   | { kind: 'commit'; hash: string }
 
-export function SourceControl({ cwd, revision, locked, open }: {
-  cwd: string; revision: number; locked: boolean; open(document: DocumentPreview): void
+export function SourceControl({ cwd, revision, locked, open, manageWorktrees }: {
+  cwd: string; revision: number; locked: boolean; open(document: DocumentPreview): void; manageWorktrees(): void
 }) {
   const status = useResource(String(revision), () => unwrap(window.dcode.gitStatus()))
   const history = useResource(String(revision), () => unwrap(window.dcode.gitHistory()))
@@ -60,16 +61,13 @@ export function SourceControl({ cwd, revision, locked, open }: {
     void action.run(async () => {
       const diff = await unwrap(window.dcode.gitDiff(entry.path, isStaged))
       setSelected(`${isStaged}:${entry.path}`)
-      open({ title: `${entry.path} · ${isStaged ? '暂存区' : '工作区'}`, ...diff, diff: true, reload: () => unwrap(window.dcode.gitDiff(entry.path, isStaged)) })
+      open({ title: `${entry.path} · ${isStaged ? '暂存区' : '工作区'}`, ...diff, diffPath: entry.path, diff: true, reload: () => unwrap(window.dcode.gitDiff(entry.path, isStaged)) })
     })
   }
   function fileMenu(entry: GitEntry, isStaged: boolean): MenuAction[] {
     return [
       { label: '打开差异', disabled: action.busy, run: () => openDiff(entry, isStaged) },
-      { label: '打开文件', disabled: action.busy || entry.worktree === 'D' || entry.index === 'D', run: () => void action.run(async () => {
-        const file = await unwrap(window.dcode.readFile(entry.path))
-        open({ title: entry.path, text: file.kind === 'text' ? file.text : `二进制文件 · ${file.size} 字节`, truncated: file.kind === 'text' && file.truncated })
-      }) },
+      { label: '打开文件', disabled: action.busy || entry.worktree === 'D' || entry.index === 'D', run: () => open(filePreview(entry.path)) },
       { label: '复制相对路径', run: () => void action.run(async () => { await navigator.clipboard.writeText(entry.path); setFeedback('已复制文件路径') }) },
       { label: isStaged ? '取消暂存' : '暂存更改', disabled: busy, run: () => void mutate(() => unwrap(window.dcode.gitStage(entry.path, !isStaged))) },
       ...(!isStaged ? [{ label: '放弃更改', danger: true, disabled: busy, run: () => void mutate(() => unwrap(window.dcode.gitDiscard(entry.path))) }] : []),
@@ -96,6 +94,7 @@ export function SourceControl({ cwd, revision, locked, open }: {
   }
   function repositoryMenu(): MenuAction[] {
     return [
+      { label: '管理并行工作树', disabled: busy, run: manageWorktrees },
       { label: '切换 / 管理分支', disabled: busy || branches.loading || !branches.value, run: () => setBranchDialog('list') },
       { label: '创建分支…', disabled: busy || branches.loading || !branches.value, run: () => setBranchDialog('create') },
       { label: '获取远程更新', disabled: remoteBusy, run: () => remoteOperation('fetch') },

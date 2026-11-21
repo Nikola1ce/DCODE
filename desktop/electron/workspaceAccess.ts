@@ -27,7 +27,7 @@ export class WorkspaceAuthority {
   constructor(private readonly fs: DirectoryFs = {
     realpath,
     isDirectory: async (path) => (await stat(path)).isDirectory(),
-  }) {}
+  }, private readonly sharedGrants?: Map<WorkspaceGrant, WorkspaceAuthority>) {}
 
   /** 只能由主进程原生对话框的结果调用；此方法不注册到 IPC。 */
   async authorizeDialogSelection(selected: string): Promise<WorkspaceGrant> {
@@ -36,9 +36,14 @@ export class WorkspaceAuthority {
       const cwd = await this.fs.realpath(selected)
       if (!isAbsolute(cwd) || !await this.fs.isDirectory(cwd)) throw new Error('directory')
       const grant = Object.freeze({ id: randomUUID(), cwd })
+      if (this.sharedGrants && [...this.sharedGrants].some(([other, owner]) => owner !== this && samePath(other.cwd, cwd))) {
+        throw new DesktopFault('BUSY', '项目已在另一个窗口打开。')
+      }
+      this.sharedGrants?.set(grant, this)
       this.grants.set(grant.id, grant)
       return grant
-    } catch {
+    } catch (error) {
+      if (error instanceof DesktopFault) throw error
       throw new DesktopFault('INVALID_WORKSPACE', '无法打开所选目录，请选择可访问的本地项目文件夹。')
     }
   }
@@ -56,10 +61,12 @@ export class WorkspaceAuthority {
   }
 
   revoke(grant: WorkspaceGrant): void {
+    this.sharedGrants?.delete(grant)
     this.grants.delete(grant.id)
   }
 
   clear(): void {
+    for (const grant of this.grants.values()) this.sharedGrants?.delete(grant)
     this.grants.clear()
   }
 }

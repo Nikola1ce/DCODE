@@ -115,9 +115,9 @@ describe('隔离 preload 与资源策略', () => {
     const api = createDesktopBridge(transport)
     expect(Object.isFrozen(api)).toBe(true)
     expect(Object.keys(api).sort()).toEqual([
-      'getSnapshot', 'chooseWorkspace', 'reconnect', 'sendPrompt', 'cancelTurn', 'respondPermission', 'subscribe',
+      'getSnapshot', 'terminal', 'openWorktree', 'listWorktrees', 'manageWorktree', 'chooseWorkspace', 'reconnect', 'sendPrompt', 'cancelTurn', 'respondPermission', 'subscribe',
       'listFiles', 'readFile', 'watchWorkspace', 'gitStatus', 'gitDiff', 'gitStage', 'gitDiscard',
-      'gitStageAll', 'gitCommit', 'gitHistory', 'gitCommitDiff', 'getSessionHistory', 'openSession',
+      'gitStageAll', 'gitCommit', 'gitHistory', 'gitCommitDiff', 'getSessionHistory', 'forkSession', 'openSession',
       'gitBranches', 'gitBranch', 'gitRemote',
       'listRecentWorkspaces', 'openRecentWorkspace',
       'getModelSettings', 'validateModelSettings', 'saveModelSettings', 'searchFiles',

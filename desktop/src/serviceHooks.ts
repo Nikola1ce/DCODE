@@ -58,23 +58,56 @@ export function useAction(refresh?: () => void) {
   return { busy, error, run }
 }
 
+const draftPrefix = 'dcode.draft.v2:'
+const draftLimit = 40
+
+function loadDraft(key: string): string {
+  let fallback = ''
+  try {
+    const current = localStorage.getItem(draftPrefix + key)
+    if (current !== null) {
+      const saved = JSON.parse(current)
+      return typeof saved?.text === 'string' && saved.text.length <= 32_000 ? saved.text : ''
+    }
+    const legacy = JSON.parse(localStorage.getItem('dcode.drafts') ?? 'null')
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return ''
+    if (typeof legacy[key] === 'string' && legacy[key].length <= 32_000) fallback = legacy[key]
+    for (const [name, text] of Object.entries(legacy).slice(-draftLimit)) {
+      if (name.length >= 2048 || typeof text !== 'string' || !text || text.length > 32_000) continue
+      if (localStorage.getItem(draftPrefix + name) === null)
+        localStorage.setItem(draftPrefix + name, JSON.stringify({ text, updated: 0 }))
+    }
+    localStorage.removeItem('dcode.drafts')
+  } catch { /* 浏览器空间不足时仍可读取旧格式中的当前草稿。 */ }
+  return fallback
+}
+
+// 每份草稿独立写入，两个工作树同时输入时互不覆盖。
+function storeDraft(key: string, text: string) {
+  try {
+    const name = draftPrefix + key
+    if (!text) { localStorage.removeItem(name); return }
+    const isNew = localStorage.getItem(name) === null
+    localStorage.setItem(name, JSON.stringify({ text, updated: Date.now() }))
+    if (!isNew) return
+    const names = Object.keys(localStorage).filter(item => item.startsWith(draftPrefix) && item !== name)
+    if (names.length < draftLimit) return
+    const recent = names.map(item => ({ item, updated: Number(JSON.parse(localStorage.getItem(item) ?? 'null')?.updated) || 0 }))
+    recent.sort((a, b) => a.updated - b.updated)
+    for (const old of recent.slice(0, recent.length + 1 - draftLimit)) localStorage.removeItem(old.item)
+  } catch { /* 空间不足时保留窗口内的草稿。 */ }
+}
+
 export function useDraft(key: string) {
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
-    try {
-      const raw: unknown = JSON.parse(localStorage.getItem('dcode.drafts') ?? '{}')
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-      return Object.fromEntries(Object.entries(raw).filter(([name, value]) => name.length < 2048 && typeof value === 'string' && value.length <= 32_000).slice(-40))
-    } catch { return {} }
-  })
-  function update(value: string) {
-    setDrafts((previous) => {
-      let saved = previous
-      try { saved = JSON.parse(localStorage.getItem('dcode.drafts') ?? '{}') as Record<string, string> } catch { /* 使用内存草稿。 */ }
-      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = previous
-      const next = Object.fromEntries([...Object.entries(saved).filter(([name, text]) => name !== key && typeof text === 'string' && text.length <= 32_000), [key, value]].slice(-40))
-      try { localStorage.setItem('dcode.drafts', JSON.stringify(next)) } catch { /* 空间不足时仍保留窗口内草稿。 */ }
-      return next
-    })
+  const cache = useRef(new Map<string, string>())
+  const [current, setCurrent] = useState(() => ({ key, text: loadDraft(key) }))
+  if (current.key !== key) setCurrent({ key, text: cache.current.get(key) ?? loadDraft(key) })
+  function update(text: string) {
+    cache.current.delete(key)
+    if (cache.current.size >= draftLimit) cache.current.delete(cache.current.keys().next().value!)
+    cache.current.set(key, text)
+    storeDraft(key, text)
+    setCurrent({ key, text })
   }
-  return [drafts[key] ?? '', update] as const
+  return [current.text, update] as const
 }

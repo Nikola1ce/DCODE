@@ -26,6 +26,8 @@ export function toResponsesInput(messages: DeepMessage[]): ResponseInputItem[] {
           input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.argsJson || '{}' })
         }
       }
+    } else if (message.role === 'user' && message.imageDataUrl) {
+      input.push({ role: 'user', content: [{ type: 'input_text', text: message.content }, { type: 'input_image', image_url: message.imageDataUrl, detail: 'auto' }] })
     } else {
       input.push({ role: message.role, content: message.content })
     }

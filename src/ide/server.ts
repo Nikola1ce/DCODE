@@ -91,6 +91,7 @@ export class IdeServer {
   private readonly applyConfig: (patch: Partial<DCodeConfig>) => void
 
   // 当前进行中的轮次 id；为 null 表示空闲。用于串行化与中断定位。
+  private steering: string | undefined
   private activeRequestId: string | null = null
   // 当前轮次的中断控制器。
   private activeAbort: AbortController | null = null
@@ -143,12 +144,12 @@ export class IdeServer {
       // 第一条消息：宣告就绪并回传当前状态，客户端据此初始化 UI。
       // 一并下发可用供应商与模型列表，使面板可直接渲染「点击切换模型 / 供应商」下拉菜单。
       this.send({
-        type: 'ready',
+        type: 'ready', memorySources: this.agent.memorySources,
         protocolVersion: IDE_PROTOCOL_VERSION,
         capabilities: {
           reasoningEffort: true, historySnapshot: true, turnMetadata: true,
           structuredPermissions: true, checkpointDiff: true, checkpointUndoById: true,
-          hostTools: true, rewind: true, forkSession: true,
+          imageInput: this.supportsImage(), steer: true, hostTools: true, rewind: true, forkSession: true,
         },
         reasoningEffort: this.config.reasoningEffort,
         version: VERSION,
@@ -194,7 +195,11 @@ export class IdeServer {
       }
       switch (msg.type) {
         case 'prompt':
-          await this.handlePrompt(msg.requestId, msg.text, msg.attachments)
+          await this.handlePrompt(msg.requestId, msg.text, msg.attachments, msg.image)
+          break
+        case 'steer':
+          if (msg.requestId === this.activeRequestId && !this.activeAbort?.signal.aborted && !this.steering
+            && typeof msg.text === 'string' && msg.text.trim() && Buffer.byteLength(msg.text) <= 65536) this.steering = msg.text
           break
         case 'cancel':
           this.handleCancel(msg.requestId)
@@ -281,6 +286,13 @@ export class IdeServer {
     }
   }
 
+  private supportsImage(): boolean {
+    const provider = this.agent.getProviderId()
+    const model = this.agent.getModel()
+    return (provider === 'openai' && /^(gpt-4o(?:-|$)|gpt-4\.1(?:-|$)|gpt-[56](?:[.-]|$))/i.test(model) && !/audio|tts|transcribe/i.test(model))
+      || (provider === 'zhipu' && /^glm-[\d.]+v(?:-|$)/i.test(model))
+  }
+
   /**
    * 处理一轮对话请求：驱动 Agent.runTurn，并把事件流转换为协议消息。
    * @param requestId 客户端轮次 id。
@@ -291,6 +303,7 @@ export class IdeServer {
     requestId: string,
     text: string,
     attachments?: ContextAttachment[],
+    image?: string,
   ): Promise<void> {
     // 串行约束：同一时刻只允许一轮，避免消息历史竞态与输出交织。
     if (this.activeRequestId) {
@@ -317,6 +330,10 @@ export class IdeServer {
       return
     }
 
+    if (image !== undefined && (!this.supportsImage() || typeof image !== 'string' || image.length > 720000 || !/^data:image\/jpeg;base64,\/9j\/[a-zA-Z0-9+/]+=*$/.test(image))) {
+      this.send({ type: 'turn_error', requestId, message: '当前模型或图片格式不支持此次输入。' })
+      return
+    }
     this.activeRequestId = requestId
     const ac = new AbortController()
     this.activeAbort = ac
@@ -328,6 +345,13 @@ export class IdeServer {
     try {
       await this.agent.runTurn(finalText, {
         abortSignal: ac.signal,
+        image,
+        takeSteering: () => {
+          const text = this.steering
+          this.steering = undefined
+          if (text) this.send({ type: 'steer_applied', requestId })
+          return text
+        },
         // 权限请求：转为 IPC 往返，等待客户端弹窗决策。
         requestPermission: (req) => this.requestPermissionViaIpc(requestId, req),
         // 直接消费结构化事件，逐一转换为协议消息（比旧回调更完整）。
@@ -363,6 +387,7 @@ export class IdeServer {
     } finally {
       // 清理本轮状态；若有未回执的权限请求，按拒绝处理避免悬挂。
       this.failPendingPermissions()
+      this.steering = undefined
       this.activeRequestId = null
       this.activeAbort = null
       // 先释放串行槽，再通知客户端结束，收到结束帧后立即发下一轮也不会误报忙碌。
@@ -780,7 +805,7 @@ export class IdeServer {
   /** 回推当前状态（模型/Provider/权限模式/会话 + 可切换供应商与模型列表）。 */
   private emitStatus(): void {
     this.send({
-      type: 'status',
+      type: 'status', memorySources: this.agent.memorySources,
       reasoningEffort: this.config.reasoningEffort,
       model: this.agent.getModel(),
       provider: this.agent.getProviderId(),

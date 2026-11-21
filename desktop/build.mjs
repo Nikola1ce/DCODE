@@ -30,7 +30,7 @@ const common = {
 const configs = [
   {
     ...common, entryPoints: ['electron/main.ts'], outfile: 'dist/electron/main.cjs',
-    platform: 'node', format: 'cjs', target: 'node22', external: ['electron'],
+    platform: 'node', format: 'cjs', target: 'node22', external: ['electron', 'node-pty'],
   },
   {
     ...common, entryPoints: ['electron/preload.ts'], outfile: 'dist/electron/preload.cjs',

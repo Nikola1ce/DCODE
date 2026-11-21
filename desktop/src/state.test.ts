@@ -34,6 +34,17 @@ describe('桌面对话状态', () => {
     expect(result.turns[0]).toMatchObject({ status: 'error', error: 'interrupted' })
   })
 
+  it('工具增量按调用身份累积，并只保留最近 16 Ki 字符', () => {
+    const requestId = 'r'
+    const result = reduceEvents(INITIAL_CHAT_STATE, [
+      { type: 'turn_started', requestId, text: '运行测试' },
+      { type: 'stream', message: { type: 'tool_start', requestId, toolCallId: 't', name: 'run_command', summary: '测试' } },
+      { type: 'stream', message: { type: 'tool_progress', requestId, toolCallId: 't', text: 'a'.repeat(18000) } },
+      { type: 'stream', message: { type: 'tool_progress', requestId, toolCallId: 't', text: '完成' } },
+    ])
+    expect(result.turns[0].tools[0].output).toBe('a'.repeat(16382) + '完成')
+  })
+
   it('流式文本有界，切换授权工作区时清空旧窗口视图', () => {
     const state = reduceEvents(INITIAL_CHAT_STATE, [
       { type: 'turn_started', requestId: 'r1', text: 'test' },

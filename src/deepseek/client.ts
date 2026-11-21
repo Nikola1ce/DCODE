@@ -115,7 +115,7 @@ function toApiMessages(messages: DeepMessage[]): ChatCompletionMessageParam[] {
     if (m.role === 'system') {
       return { role: 'system', content: m.content }
     }
-    return { role: 'user', content: m.content }
+    return { role: 'user', content: m.imageDataUrl ? [{ type: 'text', text: m.content }, { type: 'image_url', image_url: { url: m.imageDataUrl } }] : m.content }
   })
 }
 

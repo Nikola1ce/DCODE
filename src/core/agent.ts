@@ -35,6 +35,8 @@ import type { AgentRunEvent, DeepMessage, PermissionDecision, PermissionRequest,
  * 上层（UI 或无头执行器）实现这些回调以接收增量更新并提供权限决策。
  */
 export interface TurnHandlers {
+  image?: string
+  takeSteering?: () => string | undefined
   // 思维链增量（reasoner 模型）。
   onReasoning?: (delta: string) => void
   // 正文文本增量。
@@ -78,6 +80,7 @@ export class Agent {
   // 累计用量统计。
   usage: UsageTotals = emptyUsageTotals()
   // 当前工作目录。
+  memorySources: string[] = []
   readonly cwd: string
   // 当前会话已加载的技能（/skill 注入 system 提示）。
   private activeSkills: SkillDefinition[] = []
@@ -117,6 +120,7 @@ export class Agent {
         {
           role: 'system',
           content: buildSystemPrompt({
+            onMemorySources: paths => { this.memorySources = paths },
             cwd: this.cwd,
             model: this.config.model,
             permissionMode: this.permissionMode,
@@ -378,6 +382,7 @@ export class Agent {
       const sys: DeepMessage = {
         role: 'system',
         content: buildSystemPrompt({
+          onMemorySources: paths => { this.memorySources = paths },
           cwd: this.cwd,
           model: this.config.model,
           permissionMode: this.permissionMode,
@@ -405,6 +410,7 @@ export class Agent {
     const sys: DeepMessage = {
       role: 'system',
       content: buildSystemPrompt({
+        onMemorySources: paths => { this.memorySources = paths },
         cwd: this.cwd,
         model: this.config.model,
         permissionMode: this.permissionMode,
@@ -447,6 +453,8 @@ export class Agent {
       permissionMode: this.permissionMode,
       model: this.config.model,
       userInput,
+      image: handlers.image,
+      takeSteering: handlers.takeSteering,
       abortSignal: handlers.abortSignal,
       requestPermission: handlers.requestPermission,
       getAvailableTools: (mode) => this.getToolsForMode(mode),
